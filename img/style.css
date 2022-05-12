@@ -497,7 +497,7 @@ header .navigation li a:hover {
     filter: invert(0);
   }
   .hamburger.active {
-    background: url(./close.png);
+    background: url(/close.png);
     background-size: 30px;
     background-repeat: no-repeat;
   }
