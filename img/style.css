@@ -90,7 +90,7 @@ section {
   width: 100%;
   min-height: 70vh;
   display: flex;
-  background: url(/img/headerblurlow.png);
+  background: url(./img/headerblurlow.png);
   background-color: var(--dark-blue);
   background-size: cover;
 }
