@@ -90,7 +90,7 @@ section {
   width: 100%;
   min-height: 70vh;
   display: flex;
-  background: url(headerblurlow.png);
+  background: url(./headerblurlow.png);
   background-color: var(--dark-blue);
   background-size: cover;
 }
@@ -485,7 +485,7 @@ header .navigation li a:hover {
     position: relative;
     width: 40px;
     height: 40px;
-    background: url(menu.png);
+    background: url(./menu.png);
     background-size: 30px;
     background-repeat: no-repeat;
     
@@ -497,7 +497,7 @@ header .navigation li a:hover {
    
   }
   .hamburger.active {
-    background: url(close.png);
+    background: url(./close.png);
     background-size: 30px;
     background-repeat: no-repeat;
   }
