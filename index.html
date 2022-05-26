@@ -4,277 +4,675 @@
     <meta charset="UTF-8" />
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SmartScan</title>
-    <!-- Font import -->
-    <script
-      src="https://kit.fontawesome.com/0dc2f2d926.js"
-      crossorigin="anonymous"
-    ></script>
-    <!-- css import -->
-    <link rel="stylesheet" href="img/style.css" />
+    <title>gastronomicadabuleni</title>
+    <!-- font awesome cdn link -->
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css"
+    />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/swiper@7/swiper-bundle.min.css"
+    />
+
+    <!-- custom css file link -->
+    <link rel="stylesheet" href="css/style.css" />
   </head>
   <body>
-    <!-- ========Header========= -->
-    <header class="header" id="header" onclick="header();">
-      <a href="#" class="logo">Smart<span>Scan</span>.</a>
-      <div class="hamburger" onclick="hamburger();"></div>
-      <ul class="navigation" onclick="navigation();">
-        <li><a href="#banner">Acasa</a></li>
-        <li><a href="#services">Servicii</a></li>
-        <li><a href="#despre">Despre Noi</a></li>
-        <li><a href="#contact">Contact</a></li>
-      </ul>
-    </header>
-    <!-- ========Banner========= -->
-    <section class="banner" id="banner">
-      <div class="container">
-        <div class="header-content">
-          <h1>
-            Scanați Un Document <br />
-            Rapid Și Usor
-          </h1>
-          <p>
-            “Lucrurile de mare insemnatate nu trebuie niciodata lasate in voia
-            lucrurilor neinsemnate.”
-          </p>
-          <button class="btn">Contactați-ne</button>
+    <!-- header section starts -->
+    <section class="header">
+      <a href="#" class="logo">
+        <i class="fas fa-utensils"></i> GastronomicaDabuleni
+      </a>
+      <nav class="navbar">
+        <a href="#acasa">acasa</a>
+        <a href="#despre">despre noi</a>
+        <a href="#galerie">galerie</a>
+        <a href="#menu">meniu</a>
+        <a href="#contact">contact</a>
+      </nav>
+      <div id="menu-btn" class="fas fa-bars"></div>
+      <!-- header section ends -->
+    </section>
+    <!-- home section starts -->
+    <section class="acasa" id="acasa">
+      <div class="swiper home-slider">
+        <div class="swiper-wrapper">
+          <div
+            class="swiper-slide slide"
+            style="background: url(images/acasa-1.jpg) no-repeat"
+          >
+            <div class="content">
+              <span>gastronomicaDabuleni</span>
+              <h3>mancare delicioasa</h3>
+              <p>Str Unirii , Nr 9 , Dabuleni</p>
+            </div>
+          </div>
+          <div
+            class="swiper-slide slide"
+            style="background: url(images/acasa-2.jpg) no-repeat"
+          >
+            <div class="content">
+              <span>gastronomicaDabuleni</span>
+              <h3>bucatari priceputi</h3>
+              <p>Str Unirii , Nr 9 , Dabuleni</p>
+            </div>
+          </div>
+          <div
+            class="swiper-slide slide"
+            style="background: url(images/acasa-3.jpg) no-repeat"
+          >
+            <div class="content">
+              <span>gastronomicaDabuleni</span>
+              <h3>preparare rapida</h3>
+              <p>Str Unirii , Nr 9 , Dabuleni</p>
+            </div>
+          </div>
         </div>
+        <div class="swiper-button-next"></div>
+        <div class="swiper-button-prev"></div>
       </div>
     </section>
-    <!-- ========Servicii========= -->
-    <section id="services" class="services">
-      <div class="container">
-        <div class="title">
-          <h1>Serviciile Noastre Sunt</h1>
-          <p>
-            Lorem ipsum dolor sit amet consectetur adipisicing elit. Id
-            asperiores reiciendis eaque dolorem? Similique
-          </p>
-        </div>
-        <div class="servicii-box grid">
-          <div class="servicii">
-            <i class="fa-solid fa-book"></i>
-            <h1>Carti, Cataloage</h1>
-            <p>
-              Servicii de scanare carti, cataloage, manuale, ce se adreseaza
-              tuturor scolilor, institutiilor de educatie, persoanelor ce doresc
-              sa isi scaneze cartile din biblioteca, cataloagele sau manualele
-              necesare.
-            </p>
-          </div>
-          <div class="servicii">
-            <i class="fa-solid fa-file-lines"></i>
-            <h1>Acte contabile</h1>
-            <p>
-              Servicii de scanare acte contabile ale tuturor societatilor
-              comerciale ce doresc sa aibe o copie electronica a acestora.
-            </p>
-          </div>
-          <div class="servicii">
-            <i class="fa-solid fa-box-archive"></i>
-            <h1>Dosare personal</h1>
-            <p>
-              Servicii de scanare dosare personal tuturor societatilor ce doresc
-              sa aiba o copie electronica a dosarului fizic. Dosare client -
-              servicii de scanare dosare de clienti ale tuturor societatilor ce
-              doresc sa aiba o copie electronica a dosarelor clientilor cu care
-              au relatii contractuale.
-            </p>
-          </div>
-          <div class="servicii">
-            <i class="fa-solid fa-image"></i>
-            <h1>Fotografii</h1>
-            <p>
-              serviciul de scanare de fotografii vechi sau noi (care nu mai
-              exista in format digital) destinat tuturor persoanelor ce doresc
-              sa aiba o copie electronica a fotografiilor fizice.
-            </p>
-          </div>
-        </div>
+    <!-- Despre Noi start -->
+    <section class="despre" id="despre">
+      <div class="image">
+        <img src="images/despre-img.png" alt="DespreNoiImg" />
       </div>
-    </section>
-    <section class="container despre" id="despre">
-      <div class="row">
-        <div class="col50">
-          <h2 class="titletxt"><span>D</span>espre Noi</h2>
-          <p>
-            Intreprinderea sociala <b> SERVICII DE SCANARE SMART S.R.L.</b> a
-            fost infiintata datorita dragostei fata de semeni si a unei
-            perspective indraznete, dedicandu-ne cauzei de a asigura un trai
-            mult mai bun persoanelor cu dizabilitati din Romania prin generarea
-            oportunitatii de dezvoltare si creare a noi locuri de munca.
-          </p>
-          <p>
-            Astfel, intreprinderea sociala se diferentiaza de alte organizatii
-            ale sectorului serviciilor publice (asociatii, fundatii si societati
-            de ajutor reciproc). Intreprinderea sociala chiar daca impartaseste
-            cu aceste organizatii capacitatea de a fi un catalizator de resurse
-            profesionale si financiare de natura si provenienta diferita, are ca
-            scop organizarea factorilor productiei pentru realizarea de bunuri
-            si servicii destinate satisfacerii nevoilor sociale.
-          </p>
-          <div class="read-more-container">
-            <div>
-              <p>
-                De aceea, intreprinderea sociala este o organizatie care da
-                raspunsuri antreprenoriale nevoilor de natura sociala, este un
-                subiect care se propune a fi conjugat impreuna cu dimensiunea
-                sociala, referitoare la rezolvarea problemelor care se manifesta
-                in cadrul contextelor sociale si teritoriale specifice.
-              </p>
-              <span class="read-more-text">
-                <ul>
-                  <p>
-                    Obiectul principal de activitate al intreprinderii sociale
-                    este codificat CAEN 1813 Servicii pregatitoare pentru
-                    pretiparire, incluzand urmatoarele activitati:
-                  </p>
-                  <li>
-                    -lucrari de culegere, fotoculegere, introducere de date,
-                    inclusiv scanare si recunoasterea optica a caracterelor,
-                    aranjare electronica;
-                  </li>
-                  <li>
-                    -lucrari de prelucrare a fisierelor de date pentru aplicatii
-                    multimedia (tiparire pe hartie, CD-uri, Internet);
-                  </li>
-                  <li>
-                    -lucrari de realizare a placilor tipografice, inclusiv
-                    fixarea imaginii si a paginilor cu ilustratii (pentru tipar
-                    inalt si offset);
-                  </li>
-                  <li>
-                    -lucrari de realizare a placilor tipografice, inclusiv
-                    fixarea imaginii si a paginilor cu ilustratii (pentru tipar
-                    inalt si offset);
-                  </li>
-                  <li>
-                    -lucrari de prelucrare, executate direct pe placa (inclusiv
-                    placi din fotopolimeri);
-                  </li>
-                  <li>
-                    -lucrari de prelucrare a placilor tipografice si matritelor
-                    pentru imprimarea sau tiparire in relief;
-                  </li>
-                  <ul class="ul2">
-                    -activitati de pregatire:
-                    <li>
-                      ● lucrari artistice cu caracter tehnic, ca de exemplu:
-                      pregatirea pietrelor si blocurilor de lemn pentru
-                      litografie;
-                    </li>
-                    <li>
-                      ● suporti de prezentare de exemplu: diapozitive si alte
-                      forme de prezentare;
-                    </li>
-                    <li>● schite, proiecte, copii/imitatii</li>
-                    <li>● spalturi.</li>
-                  </ul>
-                </ul>
-                <p>
-                  Prin dotarea proprie, intreprinderea sociala ofera servicii
-                  profesionale lucrari de culegere, fotoculegere, introducere de
-                  date, inclusiv scanare si recunoasterea optica a caracterelor,
-                  aranjare electronica.
-                </p>
-              </span>
-
-              <span class="read-more-btn">Read More...</span>
-            </div>
-          </div>
-        </div>
-        <div class="col50">
-          <div class="imgAUS"><img src="img/AboutusHD.jpg" alt="" /></div>
-        </div>
-      </div>
-    </section>
-    <!-- ========ContactUS========= -->
-    <div class="bg-contactus">
-      <div class="container">
-        <div class="title">
-          <h1 id="contact">Contactati-ne</h1>
-        </div>
-        <div class="contact-body">
-          <div class="contact-info">
-            <div>
-              <span><i class="fas fa-mobile-alt"></i></span>
-              <span>Numar de Telefon</span>
-              <span class="text">+04 745 029 012</span>
-            </div>
-            <div>
-              <span><i class="fas fa-envelope-open"></i></span>
-              <span>E-mail</span>
-              <span class="text">mail@company.com</span>
-            </div>
-            <div>
-              <span><i class="fas fa-map-marker-alt"></i></span>
-              <span>Adresa</span>
-              <span class="text">Craiova , Strada Pascani Nr9</span>
-            </div>
-            <div>
-              <span><i class="fas fa-clock"></i></span>
-              <span>Program</span>
-              <span class="text">Luni - Vineri (9:00 - 17:00)</span>
-            </div>
-          </div>
-
-          <div class="contact-form">
-            <form>
-              <div>
-                <input
-                  type="text"
-                  class="form-control"
-                  placeholder="First Name"
-                />
-                <input
-                  type="text"
-                  class="form-control"
-                  placeholder="Last Name"
-                />
-              </div>
-              <div>
-                <input type="email" class="form-control" placeholder="E-mail" />
-                <input type="text" class="form-control" placeholder="Phone" />
-              </div>
-              <textarea
-                rows="5"
-                placeholder="Message"
-                class="form-control"
-              ></textarea>
-              <input type="submit" class="send-btn" value="Trimite Mesaj" />
-            </form>
-
-            <div>
-              <img src="img/contact.png" alt="" style="width: 400px" />
-            </div>
-          </div>
-        </div>
-
-        <iframe
-          class="iframe"
-          id="iframe"
-          src="https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d1427.0107544683929!2d23.78070835872192!3d44.3300626!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x4752d77d973b9717%3A0x97229fa26f26f1fb!2sStrada%20Pa%C8%99cani%209%2C%20Craiova!5e0!3m2!1sro!2sro!4v1652368989858!5m2!1sro!2sro"
-          width="100%"
-          height="550"
-          style="border: 0"
-          allowfullscreen=""
-          loading="lazy"
-          referrerpolicy="no-referrer-when-downgrade"
-        ></iframe>
-      </div>
-    </div>
-
-    <!-- ========footer========= -->
-    <footer>
-      <div class="footer-text">
-        <img src="img/logolight.png" alt="" style="width: 170px" />
-        <p style="color: rgb(170, 168, 168)">
-          “Lucrurile de mare insemnatate nu trebuie niciodata lasate in voia
-          lucrurilor neinsemnate.”
+      <div class="content">
+        <h3 class="title">Despre Noi</h3>
+        <p>
+          GastronomicaDabuleni este locul unde bucuria, oamenii si placerea de a
+          gati, ne ofera zilnic contextul ideal pentru a va demonstra pasiunea
+          noastra pentru arta culinara si ingrediente de cea mai inalta
+          calitate.
         </p>
-        <div class="footer-bottom"><p>Copyright &copy;2022 SmartScan</p></div>
+        <div class="icons-container">
+          <div class="icons">
+            <img src="images/despre-icon-1.png" alt="" />
+            <h3>mancare delicioasa</h3>
+          </div>
+          <div class="icons">
+            <img src="images/despre-icon-2.png" alt="" />
+            <h3>bauturi</h3>
+          </div>
+          <div class="icons">
+            <img src="images/despre-icon-3.png" alt="" />
+            <h3>bucatari priceputi</h3>
+          </div>
+        </div>
       </div>
-    </footer>
-    <script type="text/javascript" src="js/script.js"></script>
+    </section>
+    <!-- Despre Noi final -->
+
+    <section class="galerie" id="galerie">
+      <!-- galerie start -->
+      <div class="heading"><h3>Galeria Noastra</h3></div>
+      <div class="galerie-container">
+        <a href="images/food-galerie-img-1.jpg" class="box">
+          <img src="images/food-galerie-img-1.jpg" alt="" />
+          <div class="icon"><i class="fa-solid fa-angle-up"></i></div>
+        </a>
+        <a href="images/food-galerie-img-2.jpg" class="box">
+          <img src="images/food-galerie-img-2.jpg" alt="" />
+          <div class="icon"><i class="fas fa-plus"></i></div>
+        </a>
+        <a href="images/food-galerie-img-3.jpg" class="box">
+          <img src="images/food-galerie-img-3.jpg" alt="" />
+          <div class="icon"><i class="fas fa-plus"></i></div>
+        </a>
+        <a href="images/food-galerie-img-4.jpg" class="box">
+          <img src="images/food-galerie-img-4.jpg" alt="" />
+          <div class="icon"><i class="fas fa-plus"></i></div>
+        </a>
+        <a href="images/food-galerie-img-5.jpg" class="box">
+          <img src="images/food-galerie-img-5.jpg" alt="" />
+          <div class="icon"><i class="fas fa-plus"></i></div>
+        </a>
+        <a href="images/food-galerie-img-6.jpg" class="box">
+          <img src="images/food-galerie-img-6.jpg" alt="" />
+          <div class="icon"><i class="fas fa-plus"></i></div>
+        </a>
+        <a href="images/food-galerie-img-7.jpg" class="box">
+          <img src="images/food-galerie-img-7.jpg" alt="" />
+          <div class="icon"><i class="fas fa-plus"></i></div>
+        </a>
+        <a href="images/food-galerie-img-8.jpg" class="box">
+          <img src="images/food-galerie-img-8.jpg" alt="" />
+          <div class="icon"><i class="fas fa-plus"></i></div>
+        </a>
+      </div>
+    </section>
+    <!-- galerie final -->
+    <section class="food-preview-container">
+      <div id="close-preview"></div>
+    </section>
+    <section class="menu" id="menu">
+      <!-- meniu start -->
+      <div class="heading"><h3>Meniul Nostru</h3></div>
+      <div class="swiper menu-slider">
+        <div class="swiper-wrapper">
+          <div class="swiper-slide slide">
+            <h3 class="title">Ciorbe</h3>
+            <!-- Ciorba -->
+            <div class="box-container">
+              <div class="box">
+                <div class="info">
+                  <h3>Ciorbă á la grec</h3>
+                  <p>
+                    carne de pui, supă de pui, măsline, orez, ceapă, morcovi,
+                    pătrunjel, țelină, lămâie, gălbenușuri, mărar
+                  </p>
+                </div>
+                <div class="price">12Lei</div>
+              </div>
+              <div class="box">
+                <div class="info">
+                  <h3>Ciorbă de burtă</h3>
+                  <p>
+                    Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                    Ex, dolores.
+                  </p>
+                </div>
+                <div class="price">12Lei</div>
+              </div>
+              <div class="box">
+                <div class="info">
+                  <h3>Ciorbă de fasole</h3>
+                  <p>
+                    Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                    Ex, dolores.
+                  </p>
+                </div>
+                <div class="price">8Lei</div>
+              </div>
+              <div class="box">
+                <div class="info">
+                  <h3>Ciorbă de legume</h3>
+                  <p>
+                    Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                    Ex, dolores.
+                  </p>
+                </div>
+                <div class="price">8Lei</div>
+              </div>
+              <div class="box">
+                <div class="info">
+                  <h3>Ciorbă de perişoare</h3>
+                  <p>
+                    Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                    Ex, dolores.
+                  </p>
+                </div>
+                <div class="price">10Lei</div>
+              </div>
+              <div class="box">
+                <div class="info">
+                  <h3>Ciorbă de porc</h3>
+                  <p>
+                    Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                    Ex, dolores.
+                  </p>
+                </div>
+                <div class="price">12Lei</div>
+              </div>
+              <div class="box">
+                <div class="info">
+                  <h3>Ciorbă de pui</h3>
+                  <p>
+                    Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                    Ex, dolores.
+                  </p>
+                </div>
+                <div class="price">10Lei</div>
+              </div>
+              <div class="box">
+                <div class="info">
+                  <h3>Ciorbă de văcuţă</h3>
+                  <p>
+                    Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                    Ex, dolores.
+                  </p>
+                </div>
+                <div class="price">13Lei</div>
+              </div>
+              <div class="box">
+                <div class="info">
+                  <h3>Ciorbă de găluşte</h3>
+                  <p>
+                    Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                    Ex, dolores.
+                  </p>
+                </div>
+                <div class="price">8Lei</div>
+              </div>
+              <div class="box">
+                <div class="info">
+                  <h3>Ciorbă de fasole cu afumătură</h3>
+                  <p>
+                    Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                    Ex, dolores.
+                  </p>
+                </div>
+                <div class="price">10Lei</div>
+              </div>
+              <div class="box">
+                <div class="info">
+                  <h3>Ciorbă de miel</h3>
+                  <p>
+                    Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                    Ex, dolores.
+                  </p>
+                </div>
+                <div class="price">13Lei</div>
+              </div>
+              <div class="box">
+                <div class="info">
+                  <h3>Saramură de peşte</h3>
+                  <p>
+                    Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                    Ex, dolores.
+                  </p>
+                </div>
+                <div class="price">12Lei</div>
+              </div>
+            </div>
+          </div>
+          <!-- Ciorba final -->
+          <div class="swiper-slide slide">
+            <h3 class="title">Fel Principal</h3>
+            <!-- Fel Principal -->
+            <div class="box-container">
+              <div class="box-container">
+                <div class="box">
+                  <div class="info">
+                    <h3>Ardei umplut</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">5Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Fasole cu cârnați</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">10Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Fasole cu ciolan</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">12Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Fasole scăzută</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">7Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Friptură porc</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">12Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Friptură țărănească</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">12Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Hamsie</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">10Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Mămăligă cu ou și brânză</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">5Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Mâncare de cartofi</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">7Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Mâncare de cartofi cu cârnați</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">10Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Mazăre</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">7Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Mazăre cu carne</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">10Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Musaca</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">10Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Ostropel</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">8Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Ou ochi</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">2,5Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Pește</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">13Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Pește macrou</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">10Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Pește dorada</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">8Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Pulpe pui la cuptor cu cartofi</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">8Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Sarmale</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">4Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Șnițel și piure de post</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">14Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Tocăniță de miel</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">15Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Tochitură de porc</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">13Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Tochitură de pui</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">13Lei</div>
+                </div>
+                <div class="box">
+                  <div class="info">
+                    <h3>Varză călită</h3>
+                    <p>
+                      Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                      Ex, dolores.
+                    </p>
+                  </div>
+                  <div class="price">7Lei</div>
+                </div>
+              </div>
+            </div>
+            <!-- Ciorba final -->
+          </div>
+          <div class="swiper-slide slide">
+            <h3 class="title">Preparate din porc</h3>
+            <div class="box-container">
+              <div class="box">
+                <div class="info">
+                  <h3>Cârnat gros</h3>
+                  <p>
+                    Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                    Ex, dolores.
+                  </p>
+                </div>
+                <div class="price">8Lei</div>
+              </div>
+              <div class="box">
+                <div class="info">
+                  <h3>Cârnați subțiri</h3>
+                  <p>
+                    Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                    Ex, dolores.
+                  </p>
+                </div>
+                <div class="price">4Lei</div>
+              </div>
+              <div class="box">
+                <div class="info">
+                  <h3>Ceafă de porc</h3>
+                  <p>
+                    Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                    Ex, dolores.
+                  </p>
+                </div>
+                <div class="price">12Lei</div>
+              </div>
+              <div class="box">
+                <div class="info">
+                  <h3>Chifteluțe</h3>
+                  <p>
+                    Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                    Ex, dolores.
+                  </p>
+                </div>
+                <div class="price">3Lei</div>
+              </div>
+              <div class="box">
+                <div class="info">
+                  <h3>Chifteluțe cu sos</h3>
+                  <p>
+                    Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                    Ex, dolores.
+                  </p>
+                </div>
+                <div class="price">10Lei</div>
+              </div>
+              <div class="box">
+                <div class="info">
+                  <h3>Ciolan porc</h3>
+                  <p>
+                    Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                    Ex, dolores.
+                  </p>
+                </div>
+                <div class="price">8Lei</div>
+              </div>
+              <div class="box">
+                <div class="info">
+                  <h3>Mușchi porc</h3>
+                  <p>
+                    Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                    Ex, dolores.
+                  </p>
+                </div>
+                <div class="price">8Lei</div>
+              </div>
+              <div class="box">
+                <div class="info">
+                  <h3>Șnițel porc</h3>
+                  <p>
+                    Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                    Ex, dolores.
+                  </p>
+                </div>
+                <div class="price">12Lei</div>
+              </div>
+              <div class="box">
+                <div class="info">
+                  <h3>Varză cu ciolan</h3>
+                  <p>
+                    Lorem ipsum, dolor sit amet consectetur adipisicing elit.
+                    Ex, dolores.
+                  </p>
+                </div>
+                <div class="price">12Lei</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="swiper-pagination"></div>
+      </div>
+    </section>
+    <!-- meniu final -->
+    <!-- footer section starts -->
+    <section class="footer">
+      <div class="icons-container">
+        <div class="icons">
+          <i class="fas fa-clock"></i>
+          <h3>Program</h3>
+          <p>Luni-Vineri</p>
+          <p>09:00-21:00</p>
+        </div>
+        <div class="icons">
+          <i class="fas fa-phone"></i>
+          <h3>Telefon</h3>
+          <p>+40 760 324 234</p>
+        </div>
+        <div class="icons">
+          <i class="fas fa-envelope"></i>
+          <h3>email</h3>
+          <p>GastronomicaDabuleni@gmail.com</p>
+        </div>
+        <div class="icons">
+          <i class="fas fa-map"></i>
+          <h3>Adresa</h3>
+          <p>Str Unirii,Nr9,Dabuleni</p>
+        </div>
+      </div>
+      <div class="credit">
+        Copyright ©2022 <span>GastronomicaDabuleni</span>
+      </div>
+    </section>
+    <!-- footer section ends -->
+    <script src="https://unpkg.com/swiper@7/swiper-bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lightgalerie-js/1.4.0/js/lightgalerie.min.js"></script>
+    <!-- custom js file link -->
+    <script src="js/script.js"></script>
+    <script>
+      lightgalerie(document.querySelector(".galerie .galerie-container"));
+    </script>
   </body>
 </html>

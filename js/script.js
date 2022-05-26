@@ -1,31 +1,102 @@
-window.addEventListener("scroll", function () {
-  const header = document.querySelector("header");
-  header.classList.toggle("sticky", window.scrollY > 0);
+let navbar = document.querySelector('.header .navbar');
+let menuBtn = document.querySelector('#menu-btn');
+
+menuBtn.onclick = () =>{
+   menuBtn.classList.toggle('fa-times');
+   navbar.classList.toggle('active');
+};
+
+window.onscroll = () =>{
+   menuBtn.classList.remove('fa-times');
+   navbar.classList.remove('active');
+};
+
+var swiper = new Swiper(".home-slider", {
+   grabCursor:true,
+   loop:true,
+   centeredSlides:true,
+   navigation: {
+     nextEl: ".swiper-button-next",
+     prevEl: ".swiper-button-prev",
+   },
 });
 
-function hamburger() {
-  const hamburger = document.querySelector(".hamburger");
-  const navigation = document.querySelector(".navigation");
-  const header = document.querySelector("header");
-  hamburger.classList.toggle("active");
-  navigation.classList.toggle("active");
-  header.classList.toggle("active");
-}
+var swiper = new Swiper(".food-slider", {
+   grabCursor:true,
+   loop:true,
+   centeredSlides:true,
+   spaceBetween: 20,
+   pagination: {
+      el: ".swiper-pagination",
+      clickable: true,
+   },
+   breakpoints: {
+      0: {
+        slidesPerView: 1,
+      },
+      700: {
+        slidesPerView: 2,
+      },
+      1000: {
+        slidesPerView: 3,
+      },
+   },
+});
 
-const parentContainer = document.querySelector(".read-more-container");
+let previewContainer = document.querySelector('.food-preview-container');
+let previewBox = previewContainer.querySelectorAll('.food-preview');
 
-parentContainer.addEventListener("click", (event) => {
-  const current = event.target;
+document.querySelectorAll('.food .slide').forEach(food =>{
+   food.onclick = () =>{
+      previewContainer.style.display = 'flex';
+      let name = food.getAttribute('data-name');
+      previewBox.forEach(preveiw =>{
+         let target = preveiw.getAttribute('data-target');
+         if(name == target){
+            preveiw.classList.add('active');
+         }
+      });
+   };
+});
 
-  const isReadMoreBtn = current.className.includes("read-more-btn");
+previewContainer.querySelector('#close-preview').onclick = () =>{
+   previewContainer.style.display = 'none';
+   previewBox.forEach(close =>{
+      close.classList.remove('active');
+   });
+};
 
-  if (!isReadMoreBtn) return;
+var swiper = new Swiper(".menu-slider", {
+   grabCursor:true,
+   loop:true,
+   autoHeight:true,
+   centeredSlides:true,
+   spaceBetween: 20,
+   pagination: {
+      el: ".swiper-pagination",
+      clickable: true,
+   },
+});
 
-  const currentText = event.target.parentNode.querySelector(".read-more-text");
-
-  currentText.classList.toggle("read-more-text--show");
-
-  current.textContent = current.textContent.includes("Read More")
-    ? "Read Less..."
-    : "Read More...";
+var swiper = new Swiper(".blogs-slider", {
+   grabCursor:true,
+   loop:true,
+   centeredSlides:true,
+   autoHeight:true,
+   spaceBetween: 20,
+   pagination: {
+      el: ".swiper-pagination",
+      clickable: true,
+   },
+   breakpoints: {
+      0: {
+        slidesPerView: 1,
+      },
+      700: {
+        slidesPerView: 2,
+      },
+      1000: {
+        slidesPerView: 3,
+      },
+   },
 });
