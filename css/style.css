@@ -76,7 +76,10 @@ section {
   cursor: pointer;
   padding: 1rem 3rem;
 }
-
+.btn a {
+  color: var(--white);
+  text-decoration: none;
+}
 .btn:hover {
   letter-spacing: 0.2rem;
 }
@@ -218,6 +221,30 @@ section {
   align-items: center;
   flex-wrap: wrap;
   gap: 2rem;
+}
+ul {
+  font-size: 2rem;
+  color: var(--light-black);
+  padding: 1rem 0;
+  line-height: 2;
+  text-transform: none;
+}
+ul li {
+  font-size: 2rem;
+  color: var(--light-black);
+  padding: 1rem 0;
+  line-height: 2;
+  text-transform: none;
+  margin-left: 30px;
+}
+.despre .pdf span {
+  font-size: 2rem;
+  color: var(--peru);
+  padding: 1rem 0;
+  line-height: 2;
+  text-decoration: underline;
+  margin-left: 30px;
+  text-transform: none;
 }
 
 .despre .image {
