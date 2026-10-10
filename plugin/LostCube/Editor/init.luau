@@ -27,7 +27,7 @@ local Selection = game:GetService("Selection")
 local VFX = require(script:FindFirstChild("VFX") or script.Parent:WaitForChild("VFX"))
 
 local Editor = {}
-Editor.VERSION = "1.6.0"
+Editor.VERSION = "2.0.0"
 
 local P = "rbxasset://textures/particles/"
 -- the ground crack streak (Textures/ground_crack_trail.png), uploaded as one asset

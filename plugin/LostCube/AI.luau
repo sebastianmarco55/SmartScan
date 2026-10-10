@@ -504,6 +504,31 @@ local function presetList(): string
 	return (ok and type(list) == "string" and list ~= "") and list or STATIC_PRESETS
 end
 
+-- the effect templates (Editor.TEMPLATES) and the generated animations (AnimGen.LIST), if this build has them
+local function templateList(): string
+	local ok, list = pcall(function()
+		local Editor = require(script.Parent.Editor)
+		local lines = {}
+		for _, t in Editor.TEMPLATES or {} do
+			table.insert(lines, string.format("%s (%s: %s)", t.key, t.category or "", t.label))
+		end
+		return table.concat(lines, "; ")
+	end)
+	return (ok and type(list) == "string" and list ~= "") and list or "(none in this build)"
+end
+
+local function animGenList(): string
+	local ok, list = pcall(function()
+		local AnimGen = require(script.Parent.AnimGen)
+		local names = {}
+		for _, a in AnimGen.LIST do
+			table.insert(names, a.label)
+		end
+		return table.concat(names, ", ")
+	end)
+	return (ok and type(list) == "string" and list ~= "") and list or "combos, sword slashes, spells, hit reactions, emotes"
+end
+
 -- the LostCube API in a few lines, so Claude can answer with code that runs as is (stable text: cacheable)
 function AI.editorCheatSheet(): string
 	if cheatSheet then
@@ -513,8 +538,8 @@ function AI.editorCheatSheet(): string
 # LostCube reference
 LostCube puts two modules in the game (ReplicatedStorage.LostCube, installed from the plugin's ◆ Claude tab → "Module în joc"): Editor (create/edit effects in Studio) and VFX (plays them in the game). Effects are Models in ReplicatedStorage.LostCube.Effects. Plugin tabs:
 - 🧠 Joc: game scan + analysis. ✨ VFX: effect editor with live preview. ◆ Claude: this chat, API key, module installer.
-- 🎬 Anim: preview a KeyframeSequence on a rig in Edit mode, Moon-style easing per keyframe (Linear, Constant, Cubic, Bounce, Elastic × In / Out / InOut), effects on animation markers.
-- 📚 Lib: free animations owned by Roblox (they play in any game): character packs (]] .. packList() .. [[) with idle / walk / run / jump / fall / climb / swim / sit / tool states, and emotes (wave, point, cheer, laugh, dances). Preview on a rig, add them to the game as Animation instances in ReplicatedStorage.LostCube.Animations.<Pack>.<state>, or make a pack the default animation set of every character. Attack combos, abilities and hit reactions are not in the library: they are made in the Roblox Animation Editor (or Moon Animator) and then polished in 🎬 Anim.
+- 🎬 Anim: preview a KeyframeSequence on a rig in Edit mode, Moon-style easing per keyframe (Linear, Constant, Cubic, Bounce, Elastic × In / Out / InOut), effects on animation markers, and a generator of procedural animations the developer owns (R6 / R15, intensity, speed, mirror; saved as KeyframeSequences in ServerStorage.RBX_ANIMSAVES, ready to polish and publish from the Animation Editor): ]] .. animGenList() .. [[.
+- 📚 Lib: free animations owned by Roblox (they play in any game): character packs (]] .. packList() .. [[) with idle / walk / run / jump / fall / climb / swim / sit / tool states, and emotes (wave, point, cheer, laugh, dances). Preview on a rig, add them to the game as Animation instances in ReplicatedStorage.LostCube.Animations.<Pack>.<state>, or make a pack the default animation set of every character. Attack combos, abilities and hit reactions are not in the library: they are generated in 🎬 Anim (owned by the developer, so they play once published to their account or group).
 
 ## Editor API (Studio command bar or plugin code; every call is one Ctrl+Z; times in seconds)
 ```lua
@@ -536,6 +561,13 @@ Trail props: height, widthHead, widthEnd, ground = true (ribbon lying on the flo
 MESH (3D pieces) props: mode = Ring | Crack | Pulse | Puff | Trail | Debris; shape = Block | Ball | Cylinder | Wedge; material (Neon, ForceField, Slate…); color; colorEnd; size = Vector3; grow = { g0, g1 }; transparency = { a0, a1 }; lifetime = { min, max }; count; radius = { r0, r1 }; speed; spread; direction; rise; spin; jitter; Rate; ground.
 attach = GROUND | GROUND_FOLLOW | ROOT | TORSO | HEAD | RIGHT_HAND | LEFT_HAND | RIGHT_FOOT | LEFT_FOOT | WORLD.
 Presets: ]] .. presetList() .. [[
+
+Templates (complete multi-element effects, the fastest start):
+- Editor.newFromTemplate(name, TEMPLATE_KEY, { color = Color3?, scale = number?, attach = string?, duration = number? }) -> Model (color recolors the whole template)
+- Templates: ]] .. templateList() .. [[
+
+- Editor.importAsset(assetId, effectName) -> (Model?, report) - takes the particles / trails / lights of a free Creator Store model into a new effect; every script in the model is deleted first (free models can hide backdoors).
+- Editor.importEmitters(effect, instance) - the same for something already in the place.
 
 
 ## In the game (LocalScript; each client plays its own copy)
@@ -578,7 +610,7 @@ Concrete problems from the scan (instance and part counts, unanchored parts, man
 ## Plan de upgrade în 10 pași
 Exactly 10 numbered steps, the highest impact for the least work first; each one line: what to do → the visible result.
 ## Acțiuni în LostCube
-4-8 bullets of concrete LostCube actions: effects to create (name, when it plays, attach point, which presets to combine, colors), animations to preview and ease in the 🎬 Anim tab, effects bound to animation markers. If the scan lists LostCube templates or existing effects, reuse them by name. Use the preset keys and API names from the reference below exactly. End with one short ready-to-run ```lua block (Studio command bar) that creates the most important effect with the LostCube Editor API.
+4-8 bullets of concrete LostCube actions: effects to create (name, when it plays, attach point, which template or presets to combine, colors), animations to generate (by name), preview and ease in the 🎬 Anim tab, Roblox packs to take from 📚 Lib, effects bound to animation markers. If the scan lists LostCube templates or existing effects, reuse them by name. Use the preset keys and API names from the reference below exactly. End with one short ready-to-run ```lua block (Studio command bar) that creates the most important effect with the LostCube Editor API.
 ]]
 
 AI.CHAT_PROMPT = [[
