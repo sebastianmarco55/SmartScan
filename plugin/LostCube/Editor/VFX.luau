@@ -2,7 +2,7 @@
 Plays the effects made with LostCube (the Studio plugin's VFX tab, or the Blender exporter).
 
 	local VFX = require(ReplicatedStorage.LostCube.VFX)
-	VFX.Library = ReplicatedStorage.LostCube.Effects     -- folder with the exported effects
+	VFX.Library = ReplicatedStorage.LostCube.Effects     -- optional: by default, the Effects folder next to this module
 
 	VFX.play("TeleportCast", character)                  -- on a character (uses the effect's "Prins de")
 	VFX.play("Boom", CFrame.new(0, 5, 0))                -- at a place
@@ -37,6 +37,11 @@ local TweenService = game:GetService("TweenService")
 
 local VFX = {}
 VFX.Library = nil :: Instance?
+
+-- where effects named by a string are looked up: VFX.Library, else ReplicatedStorage.LostCube.Effects (installed next to us)
+local function library(): Instance?
+	return VFX.Library or (script.Parent and script.Parent:FindFirstChild("Effects"))
+end
 
 local PARTS = {
 	ROOT = { "HumanoidRootPart" },
@@ -148,6 +153,8 @@ local function applyScale(model: Model, root: BasePart, k: number)
 			d.Size = scaleSequence(d.Size, k)
 			d.Speed = NumberRange.new(d.Speed.Min * k, d.Speed.Max * k)
 			d.Acceleration *= k
+		elseif d:IsA("PointLight") or d:IsA("SpotLight") or d:IsA("SurfaceLight") then
+			(d :: any).Range = math.min((d :: any).Range * k, 60) -- keyed lights are set again every frame (r * scale)
 		end
 	end
 end
@@ -255,9 +262,10 @@ local function newMesh(model, ignore)
 		if colorEnd then
 			goal.Color = colorEnd
 		end
-		tween(p, life, goal, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-		task.delay(life + 0.05, function()
-			if not self.paused then
+		-- removed when the fade has really ended: a paused preview keeps its pieces and they still go away afterwards
+		local tw = tween(p, life, goal, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		tw.Completed:Once(function(state)
+			if state == Enum.PlaybackState.Completed then
 				p:Destroy()
 			end
 		end)
@@ -293,7 +301,7 @@ local function newMesh(model, ignore)
 			local cf = e.ground and onGround(t.CFrame) or t.CFrame
 			local life = rnd(e.life0, e.life1) / e.speed
 			local jit = 1 + (math.random() * 2 - 1) * e.jitter
-			local base = e.base * k * jit
+			local base = e.base * jit -- e.base is the template size, already scaled by applyScale
 			if e.mode == "Ring" then
 				local count = math.max(3, e.count)
 				local r0, r1 = e.r0 * k, e.r1 * k
@@ -354,14 +362,14 @@ local function newMesh(model, ignore)
 				self.debris[p] = true
 				task.delay(life * 0.6, function()
 					if p.Parent then
-						tween(p, life * 0.4, { Transparency = e.a1, Size = base * e.g1 }, Enum.EasingStyle.Quad,
+						local tw = tween(p, life * 0.4, { Transparency = e.a1, Size = base * e.g1 }, Enum.EasingStyle.Quad,
 							Enum.EasingDirection.In)
-					end
-				end)
-				task.delay(life + 0.05, function()
-					if not self.paused then
-						self.debris[p] = nil
-						p:Destroy()
+						tw.Completed:Once(function(state)
+							if state == Enum.PlaybackState.Completed then
+								self.debris[p] = nil
+								p:Destroy()
+							end
+						end)
 					end
 				end)
 			end
@@ -531,7 +539,8 @@ export type Handle = {
 function VFX.play(effect: Instance | string, target: any, options: { [string]: any }?): Handle
 	local opts = options or {}
 	if type(effect) == "string" then
-		local found = VFX.Library and VFX.Library:FindFirstChild(effect)
+		local lib = library()
+		local found = lib and lib:FindFirstChild(effect)
 		assert(found, "LostCubeVFX: no effect named " .. effect)
 		effect = found
 	end
@@ -572,6 +581,7 @@ function VFX.play(effect: Instance | string, target: any, options: { [string]: a
 			d.TimeScale = speed
 		elseif d:IsA("Trail") then
 			d.Enabled = false
+			d.Lifetime = math.clamp(d.Lifetime / speed, 0.01, 20)
 		end
 	end
 	if follow then
@@ -624,7 +634,7 @@ function VFX.play(effect: Instance | string, target: any, options: { [string]: a
 					mesh.spawn(e, b[2] or 1)
 				end)
 			end
-			tail = math.max(tail, mesh.tail(e) / speed)
+			tail = math.max(tail, mesh.tail(e))
 		elseif d:IsA("ParticleEmitter") or d:IsA("Trail") then
 			local emitter = d
 			for _, w in parseList(d:GetAttribute("LC_On")) do
@@ -644,7 +654,7 @@ function VFX.play(effect: Instance | string, target: any, options: { [string]: a
 				end
 				tail = math.max(tail, d.Lifetime.Max)
 			else
-				tail = math.max(tail, (d :: Trail).Lifetime)
+				tail = math.max(tail, (d :: Trail).Lifetime * speed) -- back to effect time
 			end
 		elseif d:IsA("PointLight") then
 			local keys = parseList(d:GetAttribute("LC_Keys"))
@@ -678,6 +688,10 @@ function VFX.play(effect: Instance | string, target: any, options: { [string]: a
 	local function step()
 		if pausedAt then
 			return
+		end
+		if follow and not follow.Parent then
+			root.Anchored = true
+			follow = nil
 		end
 		for _, update in grounders do
 			update()
@@ -772,7 +786,11 @@ end
 -- loads the textures of a folder of effects before they are first played (avoids a blank first play)
 function VFX.preload(folder: Instance?)
 	local list = {}
-	for _, d in (folder or VFX.Library or Instance.new("Folder")):GetDescendants() do
+	local source = folder or library()
+	if not source then
+		return
+	end
+	for _, d in source:GetDescendants() do
 		if d:IsA("ParticleEmitter") or d:IsA("Trail") then
 			table.insert(list, d)
 		end

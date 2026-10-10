@@ -25,6 +25,22 @@ button.Click:Connect(function()
 	widget.Enabled = not widget.Enabled
 end)
 
+-- shortcuts for the VFX preview; a key is bound in Studio: File > Advanced > Customize Shortcuts > "LostCube"
+local playAction = plugin:CreatePluginAction("LostCube_PlayEffect", "LostCube: redă efectul",
+	"Redă efectul ales în tab-ul VFX", "rbxasset://textures/sparkle.png", true)
+local stopAction = plugin:CreatePluginAction("LostCube_StopPreview", "LostCube: oprește previzualizarea",
+	"Oprește și scoate previzualizarea din scenă", "rbxasset://textures/sparkle.png", true)
+playAction.Triggered:Connect(function()
+	if app then
+		app:panel("VFX"):play()
+	end
+end)
+stopAction.Triggered:Connect(function()
+	if app then
+		app:panel("VFX"):stopPreview()
+	end
+end)
+
 widget:GetPropertyChangedSignal("Enabled"):Connect(function()
 	button:SetActive(widget.Enabled)
 	if widget.Enabled then
@@ -72,7 +88,8 @@ UI.LABEL_W = 104
 
 local C = UI.C
 local order = 0
-local root, overlay
+local root, overlay, tipLabel
+local tipToken
 UI.collapsed = {} -- section title -> collapsed (survives re-renders)
 
 function UI.make(class, props, children)
@@ -129,9 +146,48 @@ function UI.setRoot(frame)
 	overlay.MouseButton1Click:Connect(function()
 		UI.closePopup()
 	end)
+	tipLabel = make("TextLabel", { Name = "Tooltip", Parent = frame, Visible = false, ZIndex = 60, Text = "", Font = UI.FONT,
+		TextSize = 12, TextColor3 = C.text, BackgroundColor3 = C.input, AutomaticSize = Enum.AutomaticSize.XY,
+		Size = UDim2.fromOffset(0, 0) }, { UI.corner(4), UI.stroke(C.accentDark), UI.pad(3, 6, 3, 6) })
+end
+
+-- a small hint under a control after hovering it for a moment (opts.tip of buttons and number boxes)
+function UI.tip(target, text)
+	target.MouseEnter:Connect(function()
+		local token = {}
+		tipToken = token
+		task.delay(0.4, function()
+			if tipToken ~= token or not tipLabel or not target.Parent then
+				return
+			end
+			local rootPos, rootSize = root.AbsolutePosition, root.AbsoluteSize
+			tipLabel.Text = text
+			local x = target.AbsolutePosition.X - rootPos.X
+			local y = target.AbsolutePosition.Y - rootPos.Y + target.AbsoluteSize.Y + 3
+			if y > rootSize.Y - 24 then
+				y = target.AbsolutePosition.Y - rootPos.Y - 24
+			end
+			tipLabel.Position = UDim2.fromOffset(math.max(4, x), y)
+			tipLabel.Visible = true
+			task.defer(function() -- keep it inside the panel once its width is known
+				local w = tipLabel.AbsoluteSize.X
+				tipLabel.Position = UDim2.fromOffset(math.clamp(x, 4, math.max(4, rootSize.X - w - 4)), y)
+			end)
+		end)
+	end)
+	target.MouseLeave:Connect(function()
+		tipToken = nil
+		if tipLabel then
+			tipLabel.Visible = false
+		end
+	end)
 end
 
 function UI.closePopup()
+	tipToken = nil
+	if tipLabel then
+		tipLabel.Visible = false
+	end
 	if not overlay then
 		return
 	end
@@ -202,7 +258,7 @@ function UI.button(parent, text, onClick, opts)
 		b.MouseButton1Click:Connect(onClick)
 	end
 	if opts.tip then
-		b:SetAttribute("Tip", opts.tip)
+		UI.tip(b, opts.tip)
 	end
 	return b
 end
@@ -230,6 +286,23 @@ function UI.row(parent, text, opts)
 	return area
 end
 
+local UserInputService = game:GetService("UserInputService")
+local CTRL_KEYS = { Enum.KeyCode.LeftControl, Enum.KeyCode.RightControl }
+local SHIFT_KEYS = { Enum.KeyCode.LeftShift, Enum.KeyCode.RightShift }
+
+local function modifierDown(input, modifier, keys)
+	local ok, down = pcall(input.IsModifierKeyDown, input, modifier)
+	if ok and down then
+		return true
+	end
+	for _, key in keys do
+		if UserInputService:IsKeyDown(key) then
+			return true
+		end
+	end
+	return false
+end
+
 local function fmt(v, decimals)
 	if decimals == 0 then
 		return tostring(math.floor(v + 0.5))
@@ -247,14 +320,20 @@ function UI.number(parent, value, onChange, opts)
 		Size = opts.width and UDim2.new(0, opts.width, 0, UI.H) or UDim2.new(1, 0, 0, UI.H) },
 		{ UI.corner(4), UI.stroke(C.border), UI.pad(0, 6, 0, 6) })
 	local current = value
-	local function commit(v)
+	local committed = value -- last value sent to onChange
+	local function clamp(v)
 		if opts.min then
 			v = math.max(opts.min, v)
 		end
 		if opts.max then
 			v = math.min(opts.max, v)
 		end
+		return v
+	end
+	local function commit(v)
+		v = clamp(v)
 		current = v
+		committed = v
 		box.Text = fmt(v, opts.decimals)
 		if onChange then
 			onChange(v)
@@ -268,17 +347,28 @@ function UI.number(parent, value, onChange, opts)
 			box.Text = fmt(current, opts.decimals)
 		end
 	end)
-	-- mouse wheel nudges the value (Shift = x10)
+	-- Ctrl + mouse wheel nudges the value (Shift = x10). A plain wheel only scrolls the panel: before, scrolling
+	-- the property list over a number box changed that value. The new value is applied once the wheel stops
+	-- (one Ctrl+Z per gesture and no redraw on every notch).
+	local wheelGen = 0
 	box.InputChanged:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseWheel and not box:IsFocused() then
-			local step = opts.step or 0.1
-			local shift = game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.LeftShift)
-			commit(current + (input.Position.Z > 0 and 1 or -1) * step * (shift and 10 or 1))
+		if input.UserInputType ~= Enum.UserInputType.MouseWheel or box:IsFocused()
+			or not modifierDown(input, Enum.ModifierKey.Ctrl, CTRL_KEYS) then
+			return
 		end
+		local step = (opts.step or 0.1) * (modifierDown(input, Enum.ModifierKey.Shift, SHIFT_KEYS) and 10 or 1)
+		current = clamp(current + (input.Position.Z > 0 and 1 or -1) * step)
+		box.Text = fmt(current, opts.decimals)
+		wheelGen += 1
+		local gen = wheelGen
+		task.delay(0.35, function()
+			if gen == wheelGen and current ~= committed then -- e.g. not when it was already at min / max
+				commit(current)
+			end
+		end)
 	end)
-	if opts.tip then
-		box:SetAttribute("Tip", opts.tip)
-	end
+	UI.tip(box, (opts.tip and (opts.tip .. "  ·  ") or "") .. "Ctrl + rotiță: ±" .. fmt(opts.step or 0.1, 3)
+		.. " (Shift ×10)")
 	return box
 end
 
@@ -437,6 +527,9 @@ function UI.section(parent, title, opts)
 		arrow.Text = collapsed and "►" or "▼"
 		head.BackgroundTransparency = collapsed and 1 or 0
 		body.Visible = not collapsed
+		if UI.onCollapse then
+			UI.onCollapse()
+		end
 		if opts.onToggle then
 			opts.onToggle(collapsed)
 		end
@@ -541,6 +634,24 @@ function App.mount(container, ctx)
 	ctx.Editor = ctx.Editor or require(script.Parent.Editor)
 	local self = setmetatable({ ctx = ctx, tab = "VFX", conns = {}, panels = {} }, App)
 	ctx.app = self
+	-- remembered between Studio sessions: the open tab and the folded sections
+	local savedTab = self:setting("tab")
+	for _, t in TABS do
+		if t.key == savedTab then
+			self.tab = savedTab
+		end
+	end
+	local folded = self:setting("collapsed")
+	if type(folded) == "table" then
+		for key, value in folded do
+			if type(key) == "string" and type(value) == "boolean" then
+				UI.collapsed[key] = value
+			end
+		end
+	end
+	UI.onCollapse = function()
+		self:save("collapsed", UI.collapsed)
+	end
 
 	local root = UI.make("Frame", { Name = "LostCube", Parent = container, Size = UDim2.fromScale(1, 1), BackgroundColor3 = C.bg,
 		ClipsDescendants = true })
@@ -575,6 +686,23 @@ function App.mount(container, ctx)
 	return self
 end
 
+-- plugin settings (nothing is saved when the panels run outside a plugin, e.g. in a ScreenGui)
+function App:setting(key)
+	local plugin = self.ctx.plugin
+	if not plugin then
+		return nil
+	end
+	local ok, value = pcall(plugin.GetSetting, plugin, "LostCube." .. key)
+	return ok and value or nil
+end
+
+function App:save(key, value)
+	local plugin = self.ctx.plugin
+	if plugin then
+		pcall(plugin.SetSetting, plugin, "LostCube." .. key, value)
+	end
+end
+
 function App:panel(key)
 	if not self.panels[key] then
 		for _, t in TABS do
@@ -597,6 +725,7 @@ function App:render()
 		UI.button(self.tabBar, t.label, function()
 			if self.tab ~= t.key then
 				self.tab = t.key
+				self:save("tab", t.key)
 				self.scroll.CanvasPosition = Vector2.zero
 				self:render()
 			end
@@ -699,6 +828,7 @@ function App:watch()
 end
 
 function App:destroy()
+	UI.onCollapse = nil
 	for _, c in self.conns do
 		c:Disconnect()
 	end
@@ -760,11 +890,16 @@ function Panel:refresh()
 	self.ctx.app:refresh()
 end
 
+-- "ReplicatedStorage.LostCube.Editor:123: LostCube: ..." -> "LostCube: ..."
+local function clean(err)
+	return (tostring(err):gsub("^.-:%d+: ", ""))
+end
+
 -- every edit goes through the Editor (one undo step each); errors show up in the panel instead of breaking it
 function Panel:try(fn, ...)
 	local ok, err = pcall(fn, ...)
 	if not ok then
-		self.error = tostring(err):gsub("^.-:%d+: ", "")
+		self.error = clean(err)
 		warn("LostCube:", err)
 	else
 		self.error = nil
@@ -786,13 +921,29 @@ function Panel:play()
 	if self.handle and not self.handle.Done then
 		self.handle:Destroy()
 	end
+	local wasPaused = self.paused
+	self.paused = false
 	local ok, h = pcall(self.Editor.preview, self.effect, { speed = self.speed })
 	if ok then
 		self.handle = h
 	else
-		self.error = tostring(h)
+		self.error = clean(h)
+	end
+	if wasPaused or not ok then
 		self:refresh()
 	end
+end
+
+-- removes the preview from the scene (a paused one would otherwise stay frozen there) and ends the loop
+function Panel:stopPreview()
+	self.loop = false
+	self.loopId = (self.loopId or 0) + 1
+	self.paused = false
+	if self.handle and not self.handle.Done then
+		self.handle:Destroy()
+	end
+	self.handle = nil
+	self:refresh()
 end
 
 function Panel:setLoop(on)
@@ -800,11 +951,21 @@ function Panel:setLoop(on)
 	self.loopId = (self.loopId or 0) + 1
 	if on then
 		local id = self.loopId
+		local function running()
+			return self.loop and self.loopId == id and self.effect and self.effect.Parent
+		end
 		task.spawn(function()
-			while self.loop and self.loopId == id and self.effect and self.effect.Parent do
+			while running() do
 				self:play()
+				-- wait one play; time spent paused does not count, so Pause works while repeating
 				local ok, length = pcall(self.Editor.length, self.effect)
-				task.wait(((ok and length or 1) + 0.35) / self.speed)
+				local left = (ok and length or 1) + 0.35
+				while left > 0 and running() do
+					local dt = task.wait(0.05)
+					if not self.paused then
+						left -= dt * self.speed
+					end
+				end
 			end
 		end)
 	end
@@ -814,6 +975,10 @@ end
 function Panel:togglePause()
 	local h = self.handle
 	if not h or h.Done then
+		if self.paused then -- the preview is gone: the button must not stay on "Continue"
+			self.paused = false
+			self:refresh()
+		end
 		return
 	end
 	if self.paused then
@@ -828,6 +993,7 @@ end
 
 function Panel:destroy()
 	self.loop = false
+	self.loopId = (self.loopId or 0) + 1
 	if self.handle and not self.handle.Done then
 		self.handle:Destroy()
 	end
@@ -876,7 +1042,7 @@ function Panel:render(parent)
 			if ok then
 				self.effect, self.element = fx, nil
 			else
-				self.error = tostring(fx)
+				self.error = clean(fx)
 			end
 			self:refresh()
 		end, { width = 74, style = "primary" })
@@ -951,7 +1117,6 @@ function Panel:render(parent)
 
 	local play = UI.hstack(body, { height = 28 })
 	UI.button(play, "▶  Redă", function()
-		self.paused = false
 		self:play()
 	end, { style = "primary", bold = true, height = 28 })
 	UI.button(play, self.loop and "🔁 Repetă: DA" or "🔁 Repetă", function()
@@ -960,6 +1125,9 @@ function Panel:render(parent)
 	UI.button(play, self.paused and "▶ Continuă" or "⏸ Pauză", function()
 		self:togglePause()
 	end, { height = 28 })
+	UI.button(play, "⏹", function()
+		self:stopPreview()
+	end, { width = 32, height = 28, tip = "oprește și scoate previzualizarea din scenă" })
 	UI.segmented(UI.row(body, "Viteză"), {
 		{ value = 0.1, label = "×0.1" }, { value = 0.25, label = "×0.25" }, { value = 0.5, label = "×0.5" },
 		{ value = 1, label = "×1" },
@@ -1396,6 +1564,12 @@ end
 -- ---------------------------------------------------------------------------------------------
 -- rig + clips
 -- ---------------------------------------------------------------------------------------------
+-- the effect played on a marker is kept on the clip as an attribute; attribute names only take letters, digits
+-- and _ , so a marker called "Hit 1" or "Hit-1" would fail silently without this
+local function fxAttr(marker)
+	return "LC_FX_" .. (marker:gsub("[^%w_]", "_"))
+end
+
 local function animatorOf(rig)
 	local owner = rig:FindFirstChildOfClass("Humanoid") or rig:FindFirstChildOfClass("AnimationController")
 	if not owner then
@@ -1506,6 +1680,7 @@ end
 
 function Panel:load()
 	if not (self.rig and self.clip) then
+		self.error = not self.rig and "alege un rig (selecția sau un dummy)" or nil
 		return nil
 	end
 	local animator = animatorOf(self.rig)
@@ -1522,7 +1697,7 @@ function Panel:load()
 	-- effects on markers
 	self.markerConns = {}
 	for _, marker in self:markers() do
-		local fxName = self.clip:GetAttribute("LC_FX_" .. marker.name)
+		local fxName = self.clip:GetAttribute(fxAttr(marker.name))
 		if fxName then
 			table.insert(self.markerConns, track:GetMarkerReachedSignal(marker.name):Connect(function()
 				pcall(self.Editor.preview, fxName, { target = self.rig, speed = self.speed })
@@ -1565,6 +1740,7 @@ end
 function Panel:step(frames)
 	local track = self.track or self:load()
 	if not track then
+		self:refresh()
 		return
 	end
 	if not track.IsPlaying then
@@ -1845,10 +2021,11 @@ function Panel:render(parent)
 	end
 	for _, m in markers do
 		UI.dropdown(UI.row(body, string.format("◆ %s (%.2fs)", m.name, m.time), { labelWidth = 130 }), effectItems,
-			clip:GetAttribute("LC_FX_" .. m.name) or "", function(v)
-				record("efect " .. (v ~= "" and v or "-") .. " pe markerul " .. m.name, function()
-					clip:SetAttribute("LC_FX_" .. m.name, v ~= "" and v or nil)
+			clip:GetAttribute(fxAttr(m.name)) or "", function(v)
+				local done, err = record("efect " .. (v ~= "" and v or "-") .. " pe markerul " .. m.name, function()
+					clip:SetAttribute(fxAttr(m.name), v ~= "" and v or nil)
 				end)
+				self.error = not done and tostring(err) or nil
 				self:stop()
 				self:refresh()
 			end, { menuWidth = 180 })
@@ -2017,7 +2194,7 @@ local Selection = game:GetService("Selection")
 local VFX = require(script:FindFirstChild("VFX") or script.Parent:WaitForChild("VFX"))
 
 local Editor = {}
-Editor.VERSION = "1.5.0"
+Editor.VERSION = "1.6.0"
 
 local P = "rbxasset://textures/particles/"
 -- the ground crack streak (Textures/ground_crack_trail.png), uploaded as one asset
@@ -3174,7 +3351,8 @@ end
 -- where to show it: the selection (a part / a character), else on the floor in front of the camera
 function Editor.previewTarget()
 	local sel = Selection:Get()[1]
-	if sel then
+	-- only things in the world: an element picked with "Select in Explorer" lives in ReplicatedStorage (near the origin)
+	if sel and sel:IsDescendantOf(workspace) and not sel:IsDescendantOf(workspace.CurrentCamera) then
 		if sel:IsA("Model") and sel:FindFirstChildOfClass("Humanoid") then
 			return sel
 		elseif sel:IsA("BasePart") then
@@ -3230,7 +3408,7 @@ return Editor
 Plays the effects made with LostCube (the Studio plugin's VFX tab, or the Blender exporter).
 
 	local VFX = require(ReplicatedStorage.LostCube.VFX)
-	VFX.Library = ReplicatedStorage.LostCube.Effects     -- folder with the exported effects
+	VFX.Library = ReplicatedStorage.LostCube.Effects     -- optional: by default, the Effects folder next to this module
 
 	VFX.play("TeleportCast", character)                  -- on a character (uses the effect's "Prins de")
 	VFX.play("Boom", CFrame.new(0, 5, 0))                -- at a place
@@ -3265,6 +3443,11 @@ local TweenService = game:GetService("TweenService")
 
 local VFX = {}
 VFX.Library = nil :: Instance?
+
+-- where effects named by a string are looked up: VFX.Library, else ReplicatedStorage.LostCube.Effects (installed next to us)
+local function library(): Instance?
+	return VFX.Library or (script.Parent and script.Parent:FindFirstChild("Effects"))
+end
 
 local PARTS = {
 	ROOT = { "HumanoidRootPart" },
@@ -3376,6 +3559,8 @@ local function applyScale(model: Model, root: BasePart, k: number)
 			d.Size = scaleSequence(d.Size, k)
 			d.Speed = NumberRange.new(d.Speed.Min * k, d.Speed.Max * k)
 			d.Acceleration *= k
+		elseif d:IsA("PointLight") or d:IsA("SpotLight") or d:IsA("SurfaceLight") then
+			(d :: any).Range = math.min((d :: any).Range * k, 60) -- keyed lights are set again every frame (r * scale)
 		end
 	end
 end
@@ -3483,9 +3668,10 @@ local function newMesh(model, ignore)
 		if colorEnd then
 			goal.Color = colorEnd
 		end
-		tween(p, life, goal, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-		task.delay(life + 0.05, function()
-			if not self.paused then
+		-- removed when the fade has really ended: a paused preview keeps its pieces and they still go away afterwards
+		local tw = tween(p, life, goal, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		tw.Completed:Once(function(state)
+			if state == Enum.PlaybackState.Completed then
 				p:Destroy()
 			end
 		end)
@@ -3521,7 +3707,7 @@ local function newMesh(model, ignore)
 			local cf = e.ground and onGround(t.CFrame) or t.CFrame
 			local life = rnd(e.life0, e.life1) / e.speed
 			local jit = 1 + (math.random() * 2 - 1) * e.jitter
-			local base = e.base * k * jit
+			local base = e.base * jit -- e.base is the template size, already scaled by applyScale
 			if e.mode == "Ring" then
 				local count = math.max(3, e.count)
 				local r0, r1 = e.r0 * k, e.r1 * k
@@ -3582,14 +3768,14 @@ local function newMesh(model, ignore)
 				self.debris[p] = true
 				task.delay(life * 0.6, function()
 					if p.Parent then
-						tween(p, life * 0.4, { Transparency = e.a1, Size = base * e.g1 }, Enum.EasingStyle.Quad,
+						local tw = tween(p, life * 0.4, { Transparency = e.a1, Size = base * e.g1 }, Enum.EasingStyle.Quad,
 							Enum.EasingDirection.In)
-					end
-				end)
-				task.delay(life + 0.05, function()
-					if not self.paused then
-						self.debris[p] = nil
-						p:Destroy()
+						tw.Completed:Once(function(state)
+							if state == Enum.PlaybackState.Completed then
+								self.debris[p] = nil
+								p:Destroy()
+							end
+						end)
 					end
 				end)
 			end
@@ -3759,7 +3945,8 @@ export type Handle = {
 function VFX.play(effect: Instance | string, target: any, options: { [string]: any }?): Handle
 	local opts = options or {}
 	if type(effect) == "string" then
-		local found = VFX.Library and VFX.Library:FindFirstChild(effect)
+		local lib = library()
+		local found = lib and lib:FindFirstChild(effect)
 		assert(found, "LostCubeVFX: no effect named " .. effect)
 		effect = found
 	end
@@ -3800,6 +3987,7 @@ function VFX.play(effect: Instance | string, target: any, options: { [string]: a
 			d.TimeScale = speed
 		elseif d:IsA("Trail") then
 			d.Enabled = false
+			d.Lifetime = math.clamp(d.Lifetime / speed, 0.01, 20)
 		end
 	end
 	if follow then
@@ -3852,7 +4040,7 @@ function VFX.play(effect: Instance | string, target: any, options: { [string]: a
 					mesh.spawn(e, b[2] or 1)
 				end)
 			end
-			tail = math.max(tail, mesh.tail(e) / speed)
+			tail = math.max(tail, mesh.tail(e))
 		elseif d:IsA("ParticleEmitter") or d:IsA("Trail") then
 			local emitter = d
 			for _, w in parseList(d:GetAttribute("LC_On")) do
@@ -3872,7 +4060,7 @@ function VFX.play(effect: Instance | string, target: any, options: { [string]: a
 				end
 				tail = math.max(tail, d.Lifetime.Max)
 			else
-				tail = math.max(tail, (d :: Trail).Lifetime)
+				tail = math.max(tail, (d :: Trail).Lifetime * speed) -- back to effect time
 			end
 		elseif d:IsA("PointLight") then
 			local keys = parseList(d:GetAttribute("LC_Keys"))
@@ -3906,6 +4094,10 @@ function VFX.play(effect: Instance | string, target: any, options: { [string]: a
 	local function step()
 		if pausedAt then
 			return
+		end
+		if follow and not follow.Parent then
+			root.Anchored = true
+			follow = nil
 		end
 		for _, update in grounders do
 			update()
@@ -4000,7 +4192,11 @@ end
 -- loads the textures of a folder of effects before they are first played (avoids a blank first play)
 function VFX.preload(folder: Instance?)
 	local list = {}
-	for _, d in (folder or VFX.Library or Instance.new("Folder")):GetDescendants() do
+	local source = folder or library()
+	if not source then
+		return
+	end
+	for _, d in source:GetDescendants() do
 		if d:IsA("ParticleEmitter") or d:IsA("Trail") then
 			table.insert(list, d)
 		end

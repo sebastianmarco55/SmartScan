@@ -44,11 +44,16 @@ function Panel:refresh()
 	self.ctx.app:refresh()
 end
 
+-- "ReplicatedStorage.LostCube.Editor:123: LostCube: ..." -> "LostCube: ..."
+local function clean(err)
+	return (tostring(err):gsub("^.-:%d+: ", ""))
+end
+
 -- every edit goes through the Editor (one undo step each); errors show up in the panel instead of breaking it
 function Panel:try(fn, ...)
 	local ok, err = pcall(fn, ...)
 	if not ok then
-		self.error = tostring(err):gsub("^.-:%d+: ", "")
+		self.error = clean(err)
 		warn("LostCube:", err)
 	else
 		self.error = nil
@@ -70,13 +75,29 @@ function Panel:play()
 	if self.handle and not self.handle.Done then
 		self.handle:Destroy()
 	end
+	local wasPaused = self.paused
+	self.paused = false
 	local ok, h = pcall(self.Editor.preview, self.effect, { speed = self.speed })
 	if ok then
 		self.handle = h
 	else
-		self.error = tostring(h)
+		self.error = clean(h)
+	end
+	if wasPaused or not ok then
 		self:refresh()
 	end
+end
+
+-- removes the preview from the scene (a paused one would otherwise stay frozen there) and ends the loop
+function Panel:stopPreview()
+	self.loop = false
+	self.loopId = (self.loopId or 0) + 1
+	self.paused = false
+	if self.handle and not self.handle.Done then
+		self.handle:Destroy()
+	end
+	self.handle = nil
+	self:refresh()
 end
 
 function Panel:setLoop(on)
@@ -84,11 +105,21 @@ function Panel:setLoop(on)
 	self.loopId = (self.loopId or 0) + 1
 	if on then
 		local id = self.loopId
+		local function running()
+			return self.loop and self.loopId == id and self.effect and self.effect.Parent
+		end
 		task.spawn(function()
-			while self.loop and self.loopId == id and self.effect and self.effect.Parent do
+			while running() do
 				self:play()
+				-- wait one play; time spent paused does not count, so Pause works while repeating
 				local ok, length = pcall(self.Editor.length, self.effect)
-				task.wait(((ok and length or 1) + 0.35) / self.speed)
+				local left = (ok and length or 1) + 0.35
+				while left > 0 and running() do
+					local dt = task.wait(0.05)
+					if not self.paused then
+						left -= dt * self.speed
+					end
+				end
 			end
 		end)
 	end
@@ -98,6 +129,10 @@ end
 function Panel:togglePause()
 	local h = self.handle
 	if not h or h.Done then
+		if self.paused then -- the preview is gone: the button must not stay on "Continue"
+			self.paused = false
+			self:refresh()
+		end
 		return
 	end
 	if self.paused then
@@ -112,6 +147,7 @@ end
 
 function Panel:destroy()
 	self.loop = false
+	self.loopId = (self.loopId or 0) + 1
 	if self.handle and not self.handle.Done then
 		self.handle:Destroy()
 	end
@@ -160,7 +196,7 @@ function Panel:render(parent)
 			if ok then
 				self.effect, self.element = fx, nil
 			else
-				self.error = tostring(fx)
+				self.error = clean(fx)
 			end
 			self:refresh()
 		end, { width = 74, style = "primary" })
@@ -235,7 +271,6 @@ function Panel:render(parent)
 
 	local play = UI.hstack(body, { height = 28 })
 	UI.button(play, "▶  Redă", function()
-		self.paused = false
 		self:play()
 	end, { style = "primary", bold = true, height = 28 })
 	UI.button(play, self.loop and "🔁 Repetă: DA" or "🔁 Repetă", function()
@@ -244,6 +279,9 @@ function Panel:render(parent)
 	UI.button(play, self.paused and "▶ Continuă" or "⏸ Pauză", function()
 		self:togglePause()
 	end, { height = 28 })
+	UI.button(play, "⏹", function()
+		self:stopPreview()
+	end, { width = 32, height = 28, tip = "oprește și scoate previzualizarea din scenă" })
 	UI.segmented(UI.row(body, "Viteză"), {
 		{ value = 0.1, label = "×0.1" }, { value = 0.25, label = "×0.25" }, { value = 0.5, label = "×0.5" },
 		{ value = 1, label = "×1" },

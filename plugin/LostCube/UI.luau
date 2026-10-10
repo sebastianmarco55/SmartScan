@@ -27,7 +27,8 @@ UI.LABEL_W = 104
 
 local C = UI.C
 local order = 0
-local root, overlay
+local root, overlay, tipLabel
+local tipToken
 UI.collapsed = {} -- section title -> collapsed (survives re-renders)
 
 function UI.make(class, props, children)
@@ -84,9 +85,48 @@ function UI.setRoot(frame)
 	overlay.MouseButton1Click:Connect(function()
 		UI.closePopup()
 	end)
+	tipLabel = make("TextLabel", { Name = "Tooltip", Parent = frame, Visible = false, ZIndex = 60, Text = "", Font = UI.FONT,
+		TextSize = 12, TextColor3 = C.text, BackgroundColor3 = C.input, AutomaticSize = Enum.AutomaticSize.XY,
+		Size = UDim2.fromOffset(0, 0) }, { UI.corner(4), UI.stroke(C.accentDark), UI.pad(3, 6, 3, 6) })
+end
+
+-- a small hint under a control after hovering it for a moment (opts.tip of buttons and number boxes)
+function UI.tip(target, text)
+	target.MouseEnter:Connect(function()
+		local token = {}
+		tipToken = token
+		task.delay(0.4, function()
+			if tipToken ~= token or not tipLabel or not target.Parent then
+				return
+			end
+			local rootPos, rootSize = root.AbsolutePosition, root.AbsoluteSize
+			tipLabel.Text = text
+			local x = target.AbsolutePosition.X - rootPos.X
+			local y = target.AbsolutePosition.Y - rootPos.Y + target.AbsoluteSize.Y + 3
+			if y > rootSize.Y - 24 then
+				y = target.AbsolutePosition.Y - rootPos.Y - 24
+			end
+			tipLabel.Position = UDim2.fromOffset(math.max(4, x), y)
+			tipLabel.Visible = true
+			task.defer(function() -- keep it inside the panel once its width is known
+				local w = tipLabel.AbsoluteSize.X
+				tipLabel.Position = UDim2.fromOffset(math.clamp(x, 4, math.max(4, rootSize.X - w - 4)), y)
+			end)
+		end)
+	end)
+	target.MouseLeave:Connect(function()
+		tipToken = nil
+		if tipLabel then
+			tipLabel.Visible = false
+		end
+	end)
 end
 
 function UI.closePopup()
+	tipToken = nil
+	if tipLabel then
+		tipLabel.Visible = false
+	end
 	if not overlay then
 		return
 	end
@@ -157,7 +197,7 @@ function UI.button(parent, text, onClick, opts)
 		b.MouseButton1Click:Connect(onClick)
 	end
 	if opts.tip then
-		b:SetAttribute("Tip", opts.tip)
+		UI.tip(b, opts.tip)
 	end
 	return b
 end
@@ -185,6 +225,23 @@ function UI.row(parent, text, opts)
 	return area
 end
 
+local UserInputService = game:GetService("UserInputService")
+local CTRL_KEYS = { Enum.KeyCode.LeftControl, Enum.KeyCode.RightControl }
+local SHIFT_KEYS = { Enum.KeyCode.LeftShift, Enum.KeyCode.RightShift }
+
+local function modifierDown(input, modifier, keys)
+	local ok, down = pcall(input.IsModifierKeyDown, input, modifier)
+	if ok and down then
+		return true
+	end
+	for _, key in keys do
+		if UserInputService:IsKeyDown(key) then
+			return true
+		end
+	end
+	return false
+end
+
 local function fmt(v, decimals)
 	if decimals == 0 then
 		return tostring(math.floor(v + 0.5))
@@ -202,14 +259,20 @@ function UI.number(parent, value, onChange, opts)
 		Size = opts.width and UDim2.new(0, opts.width, 0, UI.H) or UDim2.new(1, 0, 0, UI.H) },
 		{ UI.corner(4), UI.stroke(C.border), UI.pad(0, 6, 0, 6) })
 	local current = value
-	local function commit(v)
+	local committed = value -- last value sent to onChange
+	local function clamp(v)
 		if opts.min then
 			v = math.max(opts.min, v)
 		end
 		if opts.max then
 			v = math.min(opts.max, v)
 		end
+		return v
+	end
+	local function commit(v)
+		v = clamp(v)
 		current = v
+		committed = v
 		box.Text = fmt(v, opts.decimals)
 		if onChange then
 			onChange(v)
@@ -223,17 +286,28 @@ function UI.number(parent, value, onChange, opts)
 			box.Text = fmt(current, opts.decimals)
 		end
 	end)
-	-- mouse wheel nudges the value (Shift = x10)
+	-- Ctrl + mouse wheel nudges the value (Shift = x10). A plain wheel only scrolls the panel: before, scrolling
+	-- the property list over a number box changed that value. The new value is applied once the wheel stops
+	-- (one Ctrl+Z per gesture and no redraw on every notch).
+	local wheelGen = 0
 	box.InputChanged:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseWheel and not box:IsFocused() then
-			local step = opts.step or 0.1
-			local shift = game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.LeftShift)
-			commit(current + (input.Position.Z > 0 and 1 or -1) * step * (shift and 10 or 1))
+		if input.UserInputType ~= Enum.UserInputType.MouseWheel or box:IsFocused()
+			or not modifierDown(input, Enum.ModifierKey.Ctrl, CTRL_KEYS) then
+			return
 		end
+		local step = (opts.step or 0.1) * (modifierDown(input, Enum.ModifierKey.Shift, SHIFT_KEYS) and 10 or 1)
+		current = clamp(current + (input.Position.Z > 0 and 1 or -1) * step)
+		box.Text = fmt(current, opts.decimals)
+		wheelGen += 1
+		local gen = wheelGen
+		task.delay(0.35, function()
+			if gen == wheelGen and current ~= committed then -- e.g. not when it was already at min / max
+				commit(current)
+			end
+		end)
 	end)
-	if opts.tip then
-		box:SetAttribute("Tip", opts.tip)
-	end
+	UI.tip(box, (opts.tip and (opts.tip .. "  ·  ") or "") .. "Ctrl + rotiță: ±" .. fmt(opts.step or 0.1, 3)
+		.. " (Shift ×10)")
 	return box
 end
 
@@ -392,6 +466,9 @@ function UI.section(parent, title, opts)
 		arrow.Text = collapsed and "►" or "▼"
 		head.BackgroundTransparency = collapsed and 1 or 0
 		body.Visible = not collapsed
+		if UI.onCollapse then
+			UI.onCollapse()
+		end
 		if opts.onToggle then
 			opts.onToggle(collapsed)
 		end

@@ -24,7 +24,7 @@ local Selection = game:GetService("Selection")
 local VFX = require(script:FindFirstChild("VFX") or script.Parent:WaitForChild("VFX"))
 
 local Editor = {}
-Editor.VERSION = "1.5.0"
+Editor.VERSION = "1.6.0"
 
 local P = "rbxasset://textures/particles/"
 -- the ground crack streak (Textures/ground_crack_trail.png), uploaded as one asset
@@ -1181,7 +1181,8 @@ end
 -- where to show it: the selection (a part / a character), else on the floor in front of the camera
 function Editor.previewTarget()
 	local sel = Selection:Get()[1]
-	if sel then
+	-- only things in the world: an element picked with "Select in Explorer" lives in ReplicatedStorage (near the origin)
+	if sel and sel:IsDescendantOf(workspace) and not sel:IsDescendantOf(workspace.CurrentCamera) then
 		if sel:IsA("Model") and sel:FindFirstChildOfClass("Humanoid") then
 			return sel
 		elseif sel:IsA("BasePart") then

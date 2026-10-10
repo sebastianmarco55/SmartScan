@@ -42,6 +42,12 @@ end
 -- ---------------------------------------------------------------------------------------------
 -- rig + clips
 -- ---------------------------------------------------------------------------------------------
+-- the effect played on a marker is kept on the clip as an attribute; attribute names only take letters, digits
+-- and _ , so a marker called "Hit 1" or "Hit-1" would fail silently without this
+local function fxAttr(marker)
+	return "LC_FX_" .. (marker:gsub("[^%w_]", "_"))
+end
+
 local function animatorOf(rig)
 	local owner = rig:FindFirstChildOfClass("Humanoid") or rig:FindFirstChildOfClass("AnimationController")
 	if not owner then
@@ -152,6 +158,7 @@ end
 
 function Panel:load()
 	if not (self.rig and self.clip) then
+		self.error = not self.rig and "alege un rig (selecția sau un dummy)" or nil
 		return nil
 	end
 	local animator = animatorOf(self.rig)
@@ -168,7 +175,7 @@ function Panel:load()
 	-- effects on markers
 	self.markerConns = {}
 	for _, marker in self:markers() do
-		local fxName = self.clip:GetAttribute("LC_FX_" .. marker.name)
+		local fxName = self.clip:GetAttribute(fxAttr(marker.name))
 		if fxName then
 			table.insert(self.markerConns, track:GetMarkerReachedSignal(marker.name):Connect(function()
 				pcall(self.Editor.preview, fxName, { target = self.rig, speed = self.speed })
@@ -211,6 +218,7 @@ end
 function Panel:step(frames)
 	local track = self.track or self:load()
 	if not track then
+		self:refresh()
 		return
 	end
 	if not track.IsPlaying then
@@ -491,10 +499,11 @@ function Panel:render(parent)
 	end
 	for _, m in markers do
 		UI.dropdown(UI.row(body, string.format("◆ %s (%.2fs)", m.name, m.time), { labelWidth = 130 }), effectItems,
-			clip:GetAttribute("LC_FX_" .. m.name) or "", function(v)
-				record("efect " .. (v ~= "" and v or "-") .. " pe markerul " .. m.name, function()
-					clip:SetAttribute("LC_FX_" .. m.name, v ~= "" and v or nil)
+			clip:GetAttribute(fxAttr(m.name)) or "", function(v)
+				local done, err = record("efect " .. (v ~= "" and v or "-") .. " pe markerul " .. m.name, function()
+					clip:SetAttribute(fxAttr(m.name), v ~= "" and v or nil)
 				end)
+				self.error = not done and tostring(err) or nil
 				self:stop()
 				self:refresh()
 			end, { menuWidth = 180 })

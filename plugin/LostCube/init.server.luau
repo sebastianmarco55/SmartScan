@@ -25,6 +25,22 @@ button.Click:Connect(function()
 	widget.Enabled = not widget.Enabled
 end)
 
+-- shortcuts for the VFX preview; a key is bound in Studio: File > Advanced > Customize Shortcuts > "LostCube"
+local playAction = plugin:CreatePluginAction("LostCube_PlayEffect", "LostCube: redă efectul",
+	"Redă efectul ales în tab-ul VFX", "rbxasset://textures/sparkle.png", true)
+local stopAction = plugin:CreatePluginAction("LostCube_StopPreview", "LostCube: oprește previzualizarea",
+	"Oprește și scoate previzualizarea din scenă", "rbxasset://textures/sparkle.png", true)
+playAction.Triggered:Connect(function()
+	if app then
+		app:panel("VFX"):play()
+	end
+end)
+stopAction.Triggered:Connect(function()
+	if app then
+		app:panel("VFX"):stopPreview()
+	end
+end)
+
 widget:GetPropertyChangedSignal("Enabled"):Connect(function()
 	button:SetActive(widget.Enabled)
 	if widget.Enabled then

@@ -18,6 +18,24 @@ function App.mount(container, ctx)
 	ctx.Editor = ctx.Editor or require(script.Parent.Editor)
 	local self = setmetatable({ ctx = ctx, tab = "VFX", conns = {}, panels = {} }, App)
 	ctx.app = self
+	-- remembered between Studio sessions: the open tab and the folded sections
+	local savedTab = self:setting("tab")
+	for _, t in TABS do
+		if t.key == savedTab then
+			self.tab = savedTab
+		end
+	end
+	local folded = self:setting("collapsed")
+	if type(folded) == "table" then
+		for key, value in folded do
+			if type(key) == "string" and type(value) == "boolean" then
+				UI.collapsed[key] = value
+			end
+		end
+	end
+	UI.onCollapse = function()
+		self:save("collapsed", UI.collapsed)
+	end
 
 	local root = UI.make("Frame", { Name = "LostCube", Parent = container, Size = UDim2.fromScale(1, 1), BackgroundColor3 = C.bg,
 		ClipsDescendants = true })
@@ -52,6 +70,23 @@ function App.mount(container, ctx)
 	return self
 end
 
+-- plugin settings (nothing is saved when the panels run outside a plugin, e.g. in a ScreenGui)
+function App:setting(key)
+	local plugin = self.ctx.plugin
+	if not plugin then
+		return nil
+	end
+	local ok, value = pcall(plugin.GetSetting, plugin, "LostCube." .. key)
+	return ok and value or nil
+end
+
+function App:save(key, value)
+	local plugin = self.ctx.plugin
+	if plugin then
+		pcall(plugin.SetSetting, plugin, "LostCube." .. key, value)
+	end
+end
+
 function App:panel(key)
 	if not self.panels[key] then
 		for _, t in TABS do
@@ -74,6 +109,7 @@ function App:render()
 		UI.button(self.tabBar, t.label, function()
 			if self.tab ~= t.key then
 				self.tab = t.key
+				self:save("tab", t.key)
 				self.scroll.CanvasPosition = Vector2.zero
 				self:render()
 			end
@@ -176,6 +212,7 @@ function App:watch()
 end
 
 function App:destroy()
+	UI.onCollapse = nil
 	for _, c in self.conns do
 		c:Disconnect()
 	end
