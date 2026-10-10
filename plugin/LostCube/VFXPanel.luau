@@ -21,8 +21,27 @@ local DIRECTIONS = {
 	{ value = "Top", label = "Sus" }, { value = "Bottom", label = "Jos" }, { value = "Front", label = "Față" },
 	{ value = "Back", label = "Spate" }, { value = "Left", label = "Stânga" }, { value = "Right", label = "Dreapta" },
 }
-local KIND_ICON = { PARTICLES = "★", LIGHT = "☀", TRAIL = "≈", MESH = "■" }
-local KIND_LABEL = { PARTICLES = "Particule", LIGHT = "Lumină", TRAIL = "Trail", MESH = "Mesh 3D" }
+local KIND_ICON = { PARTICLES = "★", LIGHT = "☀", TRAIL = "≈", MESH = "■", SOUND = "♪", CAMERA = "◎", BEAM = "⚡" }
+local KIND_LABEL = { PARTICLES = "Particule", LIGHT = "Lumină", TRAIL = "Trail", MESH = "Mesh 3D", SOUND = "Sunet", CAMERA = "Cameră",
+	BEAM = "Rază (Beam)" }
+local FLIPBOOK_LAYOUTS = {
+	{ value = "None", label = "Fără (o singură imagine)" }, { value = "Grid2x2", label = "Grilă 2×2 (4 cadre)" },
+	{ value = "Grid4x4", label = "Grilă 4×4 (16 cadre)" }, { value = "Grid8x8", label = "Grilă 8×8 (64 de cadre)" },
+}
+local FLIPBOOK_MODES = {
+	{ value = "Loop", label = "Buclă" }, { value = "OneShot", label = "O dată (pe viața particulei)" },
+	{ value = "PingPong", label = "Dus-întors" }, { value = "Random", label = "Cadre la întâmplare" },
+}
+local TEXTURE_MODES = { { value = "Stretch", label = "Întinsă" }, { value = "Wrap", label = "Repetată" }, { value = "Static", label = "Fixă" } }
+-- timeline wording per kind: the window row, what the window does, without a window, one burst row, the burst legend
+local TIMELINE_TEXT = {
+	PARTICLES = { "Emisie (s)", "emite continuu %s → %s s (Rată / s)", "fără emisie continuă (doar burst-uri)", "Burst", "timp (s) · câte particule", "+ Burst" },
+	MESH = { "Emisie (s)", "emite continuu %s → %s s (Rată / s)", "fără emisie continuă (doar burst-uri)", "Burst", "timp (s) · câte piese", "+ Burst" },
+	TRAIL = { "Activ (s)", "desenează %s → %s s", "inactiv (adaugă o fereastră)" },
+	SOUND = { "Buclă (s)", "se repetă în buclă %s → %s s", "fără buclă (doar redări)", "Redare", "timp (s) · câte suprapuse", "+ Redare" },
+	CAMERA = { "Cutremur (s)", "tremură continuu %s → %s s", "fără cutremur continuu (doar lovituri)", "Lovitură", "timp (s)", "+ Lovitură" },
+	BEAM = { "Vizibilă (s)", "vizibilă %s → %s s", "fără fereastră (doar flash-uri)", "Flash", "timp (s)", "+ Flash" },
+}
 local MESH_MODES = {
 	{ value = "Ring", label = "Inel (se lărgește)" }, { value = "Crack", label = "Crăpături (radial)" },
 	{ value = "Pulse", label = "Puls (crește și dispare)" }, { value = "Puff", label = "Fum 3D (bile)" },
@@ -398,10 +417,11 @@ function Panel:render(parent)
 		return KIND_ICON[p.kind] .. "  " .. p.label
 	end)
 	table.insert(addItems, { header = true, label = "Gol" })
-	table.insert(addItems, { value = "PARTICLES", label = "Particule (gol)" })
-	table.insert(addItems, { value = "LIGHT", label = "Lumină (goală)" })
-	table.insert(addItems, { value = "TRAIL", label = "Trail (gol)" })
-	table.insert(addItems, { value = "MESH", label = "Mesh 3D (gol)" })
+	for _, empty in { { "PARTICLES", "Particule (gol)" }, { "LIGHT", "Lumină (goală)" }, { "TRAIL", "Trail (gol)" },
+		{ "MESH", "Mesh 3D (gol)" }, { "SOUND", "Sunet (gol)" }, { "CAMERA", "Cameră: tremur / zoom / flash (gol)" },
+		{ "BEAM", "Rază între două puncte (goală)" } } do
+		table.insert(addItems, { value = empty[1], label = KIND_ICON[empty[1]] .. "  " .. empty[2] })
+	end
 	UI.dropdown(UI.hstack(body), addItems, nil, function(key)
 		self:try(function()
 			self.element = Editor.addElement(fx, key)
@@ -754,6 +774,9 @@ function Panel:renderElement(parent, element)
 		UI.dropdown(UI.row(body, "Direcție"), DIRECTIONS, data.EmissionDirection, function(v)
 			self:set(element, { EmissionDirection = v })
 		end)
+		if data.FlipbookLayout then
+			self:renderFlipbook(parent, element, data)
+		end
 		self:renderTimeline(parent, element, data)
 	elseif kind == "MESH" then
 		self:renderMesh(parent, element, data)
@@ -816,7 +839,156 @@ function Panel:renderElement(parent, element)
 			single(self, body, "Ridicare (studs)", data.lift, element, "lift", { min = 0, max = 0.3, step = 0.005, decimals = 3 })
 		end
 		self:renderTimeline(parent, element, data)
+	elseif kind == "SOUND" then
+		self:renderSound(parent, element, data)
+		self:renderTimeline(parent, element, data)
+	elseif kind == "CAMERA" then
+		self:renderCamera(parent, element, data)
+		self:renderTimeline(parent, element, data)
+	elseif kind == "BEAM" then
+		self:renderBeam(parent, element, data)
+		self:renderTimeline(parent, element, data)
 	end
+end
+
+-- flipbooks: a texture made of a grid of frames, played as an animation on each particle
+function Panel:renderFlipbook(parent, element, data)
+	local body = UI.section(parent, "Flipbook (textură animată)", { key = "vfx.flipbook", collapsed = data.FlipbookLayout == "None" })
+	local layouts = FLIPBOOK_LAYOUTS
+	if data.FlipbookLayout == "Custom" then -- set outside LostCube (e.g. an imported emitter): shown, kept
+		layouts = table.clone(FLIPBOOK_LAYOUTS)
+		table.insert(layouts, { value = "Custom", label = "Personalizată (din import)" })
+	end
+	UI.dropdown(UI.row(body, "Cadre"), layouts, data.FlipbookLayout, function(v)
+		self:set(element, { FlipbookLayout = v })
+	end, { menuWidth = 210 })
+	if data.FlipbookLayout ~= "None" then
+		UI.dropdown(UI.row(body, "Redare"), FLIPBOOK_MODES, data.FlipbookMode, function(v)
+			self:set(element, { FlipbookMode = v })
+		end, { menuWidth = 210 })
+		if data.FlipbookMode ~= "OneShot" then
+			pair(self, body, "Cadre / s", data.FlipbookFramerate, element, "FlipbookFramerate",
+				{ min = 0, step = 1, decimals = 1, tip = "câte cadre pe secundă (min, max)" })
+		end
+		UI.toggle(UI.hstack(body), data.FlipbookStartRandom, function(v)
+			self:set(element, { FlipbookStartRandom = v })
+		end, "Fiecare particulă începe de la alt cadru")
+	end
+	UI.label(body, "Textura trebuie să fie o grilă de cadre (2×2, 4×4 sau 8×8), ca o foaie de sprite-uri.",
+		{ dim = true, size = 11, wrap = true })
+end
+
+function Panel:renderSound(parent, element, data)
+	local Editor = self.Editor
+	local body = UI.section(parent, "Sunet", { key = "vfx.sound" })
+	local items = {}
+	for _, snd in Editor.SOUNDS or {} do
+		table.insert(items, { value = snd.key, label = snd.label })
+	end
+	table.insert(items, 1, { header = true, label = "Încorporate în Roblox (fără upload)" })
+	table.insert(items, { header = true, label = "Proprii" })
+	table.insert(items, { value = "CUSTOM", label = "ID propriu…" })
+	local row = UI.row(body, "Sunet")
+	UI.dropdown(row, items, data.sound, function(v)
+		if v == "CUSTOM" then -- shows the id box (like "ID propriu…" for textures)
+			self.customSound = true
+			self:refresh()
+		else
+			self.customSound = false
+			self:set(element, { soundId = v })
+		end
+	end, { menuWidth = 230 })
+	UI.button(row, "▶", function()
+		local ok, err = pcall(function()
+			game:GetService("SoundService"):PlayLocalSound(element)
+		end)
+		if not ok then
+			self.error = clean(err)
+			self:refresh()
+		end
+	end, { width = 28, tip = "ascultă sunetul (o dată, fără efect)" })
+	if data.sound == "CUSTOM" or self.customSound then
+		UI.textbox(UI.row(body, "ID sunet"), data.soundId, function(text)
+			local id = assetIdOf(text)
+			self:set(element, { soundId = id and ("rbxassetid://" .. id) or trim(text) })
+		end, { placeholder = "rbxassetid://123456 (din Creator Store → Audio)" })
+	end
+	single(self, body, "Volum", data.Volume, element, "Volume", { min = 0, max = 10, step = 0.1, decimals = 2 })
+	pair(self, body, "Ton (min, max)", data.pitch, element, "pitch",
+		{ min = 0.05, max = 4, step = 0.05, decimals = 2, tip = "viteza de redare, aleasă la întâmplare la fiecare redare (1 = normal)" })
+	single(self, body, "Se aude până la", data.RollOffMaxDistance, element, "RollOffMaxDistance",
+		{ min = 1, step = 10, decimals = 0, tip = "studs (RollOffMaxDistance): mai departe nu se mai aude" })
+	if data.window then
+		single(self, body, "Stingere (s)", data.fade, element, "fade", { min = 0, step = 0.05, decimals = 2, tip = "cât durează să se stingă bucla" })
+	end
+	UI.label(body, (data.length or 0) > 0 and string.format("Durata sunetului: %s s. Redările îl pornesc; o buclă îl repetă și îl stinge la final.",
+		UI.fmt(data.length)) or "Redările îl pornesc; o buclă îl repetă și îl stinge la final. Sunetul e poziționat în efect.",
+		{ dim = true, size = 11, wrap = true })
+end
+
+function Panel:renderCamera(parent, element, data)
+	local body = UI.section(parent, "Cameră", { key = "vfx.camera" })
+	single(self, body, "Tremur (grade)", data.shake, element, "shake",
+		{ min = 0, max = 10, step = 0.1, decimals = 2, tip = "cât de tare se scutură camera (0 = fără)" })
+	if data.shake > 0 then
+		single(self, body, "Frecvență (Hz)", data.frequency, element, "frequency", { min = 1, max = 40, step = 1, decimals = 0 })
+		single(self, body, "Durată tremur (s)", data.shakeTime, element, "shakeTime",
+			{ min = 0.02, step = 0.05, decimals = 2, tip = "la fiecare lovitură; scade spre 0 în timpul ăsta" })
+	end
+	single(self, body, "Zoom FOV (grade)", data.fov, element, "fov",
+		{ min = -40, max = 40, step = 1, decimals = 1, tip = "+ = zoom-out (impact), − = zoom-in, 0 = fără" })
+	if data.fov ~= 0 then
+		single(self, body, "Durată zoom (s)", data.fovTime, element, "fovTime", { min = 0.02, step = 0.05, decimals = 2 })
+	end
+	UI.toggle(UI.hstack(body), data.flash ~= nil, function(v)
+		self:set(element, { flash = v and Color3.new(1, 1, 1) or false })
+	end, "Flash pe ecran")
+	if data.flash then
+		UI.color(UI.row(body, "Culoare flash"), data.flash, function(c)
+			self:set(element, { flash = c })
+		end)
+		single(self, body, "Intensitate", data.flashAlpha, element, "flashAlpha", { min = 0.05, max = 1, step = 0.05, decimals = 2 })
+		single(self, body, "Durată flash (s)", data.flashTime, element, "flashTime", { min = 0.02, step = 0.05, decimals = 2 })
+	end
+	single(self, body, "Rază (studs)", data.radius, element, "radius",
+		{ min = 1, step = 5, decimals = 0, tip = "mai departe de atât camera nu simte nimic; întreg în primele 30%" })
+	UI.toggle(UI.hstack(body), data.studio, function(v)
+		self:set(element, { studio = v })
+	end, "Aplică și în previzualizarea din Studio")
+	UI.label(body, "În joc: doar pe client, pe camera jucătorului din apropiere. În Studio camera revine exact unde era.",
+		{ dim = true, size = 11, wrap = true })
+end
+
+function Panel:renderBeam(parent, element, data)
+	local body = UI.section(parent, "Rază (Beam)", { key = "vfx.beam" })
+	vector(self, body, "Început", data.start, element, "start", { step = 0.25, decimals = 2 })
+	vector(self, body, "Sfârșit", data.finish, element, "finish", { step = 0.25, decimals = 2 })
+	pair(self, body, "Lățime (început, sfârșit)", data.width, element, "width", { min = 0, step = 0.1, decimals = 2 })
+	pair(self, body, "Curbură", data.curve, element, "curve", { step = 0.5, decimals = 2, tip = "îndoaie raza la capete (CurveSize0 / 1)" })
+	single(self, body, "Segmente", data.Segments, element, "Segments", { min = 1, max = 100, step = 1, decimals = 0 })
+	self:textureRow(body, data, element)
+	if data.texture ~= "NONE" then
+		UI.segmented(UI.row(body, "Textură"), TEXTURE_MODES, data.TextureMode, function(v)
+			self:set(element, { TextureMode = v })
+		end)
+		single(self, body, "Lungime textură", data.TextureLength, element, "TextureLength", { min = 0.01, step = 0.5, decimals = 2 })
+		single(self, body, "Curgere textură", data.TextureSpeed, element, "TextureSpeed", { step = 0.5, decimals = 2 })
+	end
+	self:colorRow(body, data, element)
+	pair(self, body, "Transparență", { data.transparency[1], data.transparency[3] }, element, "transparency",
+		{ min = 0, max = 1, step = 0.05, decimals = 2 })
+	single(self, body, "Strălucire", data.LightEmission, element, "LightEmission", { min = 0, max = 1, step = 0.1, decimals = 2 })
+	single(self, body, "Luminozitate", data.Brightness, element, "Brightness", { min = 0, step = 0.25, decimals = 2 })
+	UI.toggle(UI.hstack(body), data.FaceCamera, function(v)
+		self:set(element, { FaceCamera = v })
+	end, "Întoarsă spre cameră")
+
+	body = UI.section(parent, "Apariție", { key = "vfx.beamTiming" })
+	single(self, body, "Flash (s)", data.flashTime, element, "flashTime",
+		{ min = 0.02, step = 0.02, decimals = 2, tip = "cât stă aprinsă la fiecare flash din timeline" })
+	single(self, body, "Apare / se stinge (s)", data.fade, element, "fade", { min = 0, step = 0.02, decimals = 2 })
+	single(self, body, "Variație la flash (studs)", data.jitter, element, "jitter",
+		{ min = 0, step = 0.25, decimals = 2, tip = "capătul și curbura se mută la întâmplare la fiecare flash (fulger)" })
 end
 
 function Panel:renderMesh(parent, element, data)
@@ -870,8 +1042,9 @@ end
 
 function Panel:renderTimeline(parent, element, data)
 	local body = UI.section(parent, "Timeline", { key = "vfx.timeline" })
+	local text = TIMELINE_TEXT[data.kind] or TIMELINE_TEXT.PARTICLES
 	local w = data.window
-	local area = UI.row(body, data.kind == "TRAIL" and "Activ (s)" or "Emisie (s)")
+	local area = UI.row(body, text[1])
 	UI.number(area, w and w[1] or 0, function(v)
 		self:set(element, { window = { v, math.max(v + 0.01, w and w[2] or v + 0.3) } })
 	end, { min = 0, step = 0.05, decimals = 2, tip = "de la" })
@@ -881,24 +1054,26 @@ function Panel:renderTimeline(parent, element, data)
 	UI.button(area, "×", function()
 		self:set(element, { window = false })
 	end, { width = 24, style = "ghost" })
-	UI.label(body, w and string.format("emite continuu %s → %s s (Rată / s)", UI.fmt(w[1]), UI.fmt(w[2]))
-		or "fără emisie continuă (doar burst-uri)", { dim = true, size = 11 })
-	if data.kind ~= "PARTICLES" and data.kind ~= "MESH" then
+	UI.label(body, w and string.format(text[2], UI.fmt(w[1]), UI.fmt(w[2])) or text[3], { dim = true, size = 11 })
+	if not text[4] or not data.bursts then
 		return
 	end
+	local counted = data.kind ~= "CAMERA" and data.kind ~= "BEAM" -- a kick / flash has no count
 	local bursts = data.bursts
 	for i, b in bursts do
-		local row = UI.row(body, "Burst " .. i, { labelWidth = 52 })
+		local row = UI.row(body, text[4] .. " " .. i, { labelWidth = 64 })
 		UI.number(row, b[1], function(v)
 			local copy = table.clone(bursts)
 			copy[i] = { v, b[2] }
 			self:set(element, { bursts = copy })
 		end, { min = 0, step = 0.05, decimals = 2, tip = "timp (s)" })
-		UI.number(row, b[2], function(v)
-			local copy = table.clone(bursts)
-			copy[i] = { b[1], math.max(1, math.floor(v)) }
-			self:set(element, { bursts = copy })
-		end, { min = 1, step = 1, decimals = 0, tip = "câte particule" })
+		if counted then
+			UI.number(row, b[2], function(v)
+				local copy = table.clone(bursts)
+				copy[i] = { b[1], math.max(1, math.floor(v)) }
+				self:set(element, { bursts = copy })
+			end, { min = 1, step = 1, decimals = 0, tip = data.kind == "SOUND" and "câte redări suprapuse" or "câte particule" })
+		end
 		UI.button(row, "×", function()
 			local copy = table.clone(bursts)
 			table.remove(copy, i)
@@ -906,12 +1081,12 @@ function Panel:renderTimeline(parent, element, data)
 		end, { width = 24, style = "ghost" })
 	end
 	if #bursts > 0 then
-		UI.label(body, "timp (s) · câte particule", { dim = true, size = 11 })
+		UI.label(body, text[5], { dim = true, size = 11 })
 	end
-	UI.button(UI.hstack(body), "+ Burst", function()
+	UI.button(UI.hstack(body), text[6], function()
 		local copy = table.clone(bursts)
 		local last = bursts[#bursts]
-		table.insert(copy, { last and last[1] + 0.1 or 0, last and last[2] or 20 })
+		table.insert(copy, { last and last[1] + 0.1 or 0, last and last[2] or (counted and data.kind ~= "SOUND" and 20 or 1) })
 		self:set(element, { bursts = copy })
 	end)
 end

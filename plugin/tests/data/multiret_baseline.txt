@@ -1,0 +1,4 @@
+# find() / gsub() calls that end an argument list, a table or a return list: their extra return values spill into
+# following parameters. These were reviewed: the callee ignores the extra values (checked at the time of writing).
+# Rewrite with: python3 plugin/tests/run.py --only multiret --update-baselines   (review the diff first!)
+

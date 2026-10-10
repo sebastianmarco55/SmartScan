@@ -1,0 +1,23 @@
+# Known findings of checks/apicheck.py that were reviewed and accepted: the checker follows variables line by line, so a
+# variable reused for another class shows up as `no-member`. One line per finding (file, kind, message; no line numbers).
+# Rewrite with: python3 plugin/tests/run.py --only api-usage --update-baselines   (review the diff first!)
+# Deprecated-API uses are not listed here: the step prints them as notes.
+
+Analyzer.luau: [no-member] Instance.Source inst.Source
+Analyzer.luau: [no-member] StringValue.Max v.Max
+Analyzer.luau: [no-member] StringValue.Min v.Min
+Analyzer.luau: [no-member] StringValue.Position v.Position
+Analyzer.luau: [no-member] StringValue.ToHex v:ToHex
+Analyzer.luau: [no-member] StringValue.X v.X
+Analyzer.luau: [no-member] StringValue.X v.X
+Analyzer.luau: [no-member] StringValue.Y v.Y
+Analyzer.luau: [no-member] StringValue.Y v.Y
+Analyzer.luau: [no-member] StringValue.Z v.Z
+AnimPanel.luau: [no-member] Model.Humanoid model.Humanoid
+Editor/init.luau: [no-member] Model.Position holder.Position
+Editor/init.luau: [no-member] Part.X p.X
+Editor/init.luau: [no-member] Part.X p.X
+Editor/init.luau: [no-member] Part.Y p.Y
+Editor/init.luau: [no-member] Part.Y p.Y
+Editor/init.luau: [no-member] Part.Z p.Z
+Editor/init.luau: [no-member] Part.Z p.Z

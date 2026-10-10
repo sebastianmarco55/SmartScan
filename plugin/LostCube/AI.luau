@@ -798,6 +798,19 @@ local function presetList(): string
 	return (ok and type(list) == "string" and list ~= "") and list or STATIC_PRESETS
 end
 
+-- the built-in sounds (Editor.SOUNDS), if this build has them
+local function soundList(): string
+	local ok, list = pcall(function()
+		local Editor = require(script.Parent.Editor)
+		local keys = {}
+		for _, s in Editor.SOUNDS or {} do
+			table.insert(keys, s.key)
+		end
+		return table.concat(keys, ", ")
+	end)
+	return (ok and type(list) == "string" and list ~= "") and list or "HIT, EXPLOSION, WIND, JUMP, SPLASH"
+end
+
 -- the effect templates (Editor.TEMPLATES) and the generated animations (AnimGen.LIST), if this build has them
 local function templateList(): string
 	local ok, list = pcall(function()
@@ -844,7 +857,7 @@ Editor.setProps(s, { color = { Color3.new(1, 1, 1), Color3.fromRGB(158, 92, 255)
 Editor.preview(fx)   -- plays it in Studio on the selected character/part, or in front of the camera
 ```
 - Editor.newEffect(name, { duration, attach, replace }) -> Model
-- Editor.addElement(effect | name, PRESET_KEY | "PARTICLES" | "LIGHT" | "TRAIL" | "MESH", props?) -> element (props.name names it)
+- Editor.addElement(effect | name, PRESET_KEY | "PARTICLES" | "LIGHT" | "TRAIL" | "MESH" | "SOUND" | "CAMERA" | "BEAM", props?) -> element (props.name names it)
 - Editor.setProps(element, props) · Editor.applyPreset(element, PRESET_KEY) · Editor.addBurst(element, t, n)
 - Editor.setEffect(effect, { duration, attach, name }) · Editor.renameEffect(effect, name) · Editor.duplicateEffect(effect, name?) · Editor.removeEffect(effect)
 - Editor.retime(effect, k) - stretches the whole timeline (k > 1 slower, k < 1 faster)
@@ -853,6 +866,10 @@ Editor.preview(fx)   -- plays it in Studio on the selected character/part, or in
 Props: position (Vector3, relative to the effect root); texture = SPARKLES | GLOW | RING | CIRCLE | SMOKE | SMOKE_SOFT | FIRE | EXPLOSION | SQUARE | GROUND_CRACK | NONE | "rbxassetid://…"; color = Color3 | "hex" | { c0, c1 } | { c0, c1, c2, mid = 0.3 } | { { t, Color3 }, … }; size / transparency / squash = number | { a, b } | { a, b, c, mid = 0.3 } | { { t, v }, … }; lifetime / speed / rotation / rotSpeed = number | { min, max }; spread = { x, y }; acceleration = Vector3; shape = Point | Box | Sphere | Cylinder | Disc (+ partSize = Vector3); window = { t0, t1 } (continuous emission); bursts = { { t, count }, … }; keys = { { t, brightness, range }, … } (lights); muted = bool; plus any ParticleEmitter / PointLight / Trail property by its Roblox name (Rate, Drag, LightEmission, LightInfluence, Brightness, Range, Orientation = "VelocityPerpendicular", ZOffset, LockedToPart, ShapeStyle…).
 Trail props: height, widthHead, widthEnd, ground = true (ribbon lying on the floor), lift, flow, TextureMode.
 MESH (3D pieces) props: mode = Ring | Crack | Pulse | Puff | Trail | Debris; shape = Block | Ball | Cylinder | Wedge; material (Neon, ForceField, Slate…); color; colorEnd; size = Vector3; grow = { g0, g1 }; transparency = { a0, a1 }; lifetime = { min, max }; count; radius = { r0, r1 }; speed; spread; direction; rise; spin; jitter; Rate; ground.
+SOUND props: soundId = a key of Editor.SOUNDS (built-in client sounds: ]] .. soundList() .. [[) or "rbxassetid://…"; Volume; pitch = { min, max } (random per play); RollOffMaxDistance; fade; bursts = play at t (count = overlapping copies); window = loop between t0 and t1.
+CAMERA props (juice for the local player near the effect): shake (degrees), frequency, shakeTime, fov (FOV punch, degrees), fovTime, flash = Color3, flashAlpha, flashTime, radius (studs), studio = false keeps it out of Studio previews; bursts = kicks, window = steady rumble.
+BEAM props: start / finish = Vector3 (ends, relative to the root), Width0, Width1, curve, Segments, texture, TextureSpeed, TextureLength, color, transparency, LightEmission, FaceCamera, flashTime, fade, jitter (the end moves on each flash); window = visible with fades, bursts = flashes (lightning).
+Particles also take flipbooks by their Roblox names: FlipbookLayout, FlipbookMode, FlipbookFramerate, FlipbookStartRandom.
 attach = GROUND | GROUND_FOLLOW | ROOT | TORSO | HEAD | RIGHT_HAND | LEFT_HAND | RIGHT_FOOT | LEFT_FOOT | WORLD.
 Presets: ]] .. presetList() .. [[
 
@@ -872,7 +889,8 @@ VFX.play("Slash", character, { scale = 1.5, speed = 1, attach = "RIGHT_HAND", fa
 h:Stop()  h:Pause()  h:Resume()
 VFX.bindMarkers(animationTrack, character, { Hit = "Boom" })   -- plays effects on animation markers
 ```
-For effects every player must see, fire a RemoteEvent from the server and call VFX.play on each client.]]
+For effects every player must see, fire a RemoteEvent from the server and call VFX.play on each client.
+Player settings (client): VFX.Quality (0..1, follows the player's graphics level unless set; scales emission and piece counts), VFX.MaxDistance (default 300 studs: farther effects are skipped), VFX.MaxActive (default 60 live effects), VFX.stats() -> live counters. One shared Heartbeat drives all effects; templates are compiled once.]]
 	return cheatSheet
 end
 

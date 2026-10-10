@@ -316,3 +316,11 @@ Lăsat deliberat pe dinafară. Fiecare poate fi adăugat după ce se verifică c
 - Efectele nu au fost rulate în Roblox Studio (nu există aici); temporizarea și mărimile sunt calculate din proprietățile verificate. Verifică-le cu „▶ Redă” și ajustează.
 - Faptul că fiecare ID din secțiunea 4 e Open Use pentru **orice** experiență (verificat doar indirect, prin faptul că tutorialele îl dau tuturor).
 - Termenii de utilizare Roblox pentru conținutul `rbxasset://` și pentru active Roblox în afara platformei.
+
+## Sunete incluse în client (adăugate în 2.1.0)
+Sursă: `rbxManifest.txt` din MaximumADHD/Roblox-Client-Tracker (versiunea 0.742.0.7421053), secțiunea `content\sounds`.
+Sunt fișiere ale clientului Roblox (`rbxasset://sounds/...`): nu se încarcă și nu au proprietar, deci merg în orice joc.
+`Editor.SOUNDS`: action_jump_land.mp3 (HIT), impact_explosion_03.mp3 (EXPLOSION), action_falling.ogg (WIND),
+action_jump.mp3 (JUMP), impact_water.mp3 (SPLASH), action_swim.mp3 (SWIM), action_get_up.mp3 (GET_UP),
+action_footsteps_plastic.mp3 (STEPS), oof.ogg (OOF), ouch.ogg (OUCH), volume_slider.ogg (TICK).
+Clientul nu are un sunet „magic”; pentru efecte magice folosește un ID propriu (`rbxassetid://…`).

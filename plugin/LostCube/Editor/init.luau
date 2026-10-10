@@ -15,9 +15,16 @@ Format (the same the Blender exporter writes; LostCube.VFX plays it in the game)
 	  Part Root
 	    Attachment <element> > ParticleEmitter / PointLight      (point emitters, lights)
 	    Attachment <element>_Top / _Bottom + Trail <element>      (trails)
+	    Attachment <element> > Sound                              (sounds: LC_Pitch "min,max", LC_Fade)
+	    Attachment <element> > Configuration, LC_Kind = "CAMERA"  (camera: LC_Shake, LC_Freq, LC_ShakeTime, LC_FOV,
+	                                                               LC_FovTime, LC_Flash, LC_FlashAlpha, LC_FlashTime, LC_Radius, LC_Studio)
+	    Attachment <element>_Start / _End + Beam <element>        (beams: LC_FlashTime, LC_Fade, LC_Jitter)
 	  Part <element> > ParticleEmitter                            (shape emitters: the Part is the shape)
+	  Part <element>, LC_Mode = Ring | Crack | ...                (3D mesh pieces)
 Timeline attributes (seconds) on elements: LC_On "t0,t1", LC_Bursts "t:n;t:n", LC_Keys "t,b,r;..." (lights),
-LC_Muted (skipped by the player).
+LC_Muted (skipped by the player). Sounds: bursts play them (n overlapping), a window loops them. Camera: bursts are kicks
+(shake + FOV punch + flash), a window is a steady rumble. Beams: a window shows them, bursts flash them. VFX.luau's header
+has the details.
 ]]
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
@@ -27,7 +34,7 @@ local Selection = game:GetService("Selection")
 local VFX = require(script:FindFirstChild("VFX") or script.Parent:WaitForChild("VFX"))
 
 local Editor = {}
-Editor.VERSION = "2.0.0"
+Editor.VERSION = "2.1.0"
 
 local P = "rbxasset://textures/particles/"
 -- the ground crack streak (Textures/ground_crack_trail.png), uploaded as one asset
@@ -87,6 +94,28 @@ for _, t in Editor.TEXTURES do
 	if t.url ~= "" then
 		TEXTURE_KEY[t.url] = t.key
 	end
+end
+
+-- Sounds that ship with every Roblox client (content/sounds, checked in the client file manifest of the
+-- MaximumADHD/Roblox-Client-Tracker mirror): no upload, no ownership. Any rbxassetid:// sound id works too.
+local SND = "rbxasset://sounds/"
+Editor.SOUNDS = {
+	{ key = "HIT", label = "Bufnitură (aterizare)", url = SND .. "action_jump_land.mp3" },
+	{ key = "EXPLOSION", label = "Explozie", url = SND .. "impact_explosion_03.mp3" },
+	{ key = "WIND", label = "Vânt (cădere) – pentru whoosh", url = SND .. "action_falling.ogg" },
+	{ key = "JUMP", label = "Săritură", url = SND .. "action_jump.mp3" },
+	{ key = "SPLASH", label = "Plescăit în apă", url = SND .. "impact_water.mp3" },
+	{ key = "SWIM", label = "Înot (stropi)", url = SND .. "action_swim.mp3" },
+	{ key = "GET_UP", label = "Ridicare de jos", url = SND .. "action_get_up.mp3" },
+	{ key = "STEPS", label = "Pași", url = SND .. "action_footsteps_plastic.mp3" },
+	{ key = "OOF", label = "Oof (clasic)", url = SND .. "oof.ogg" },
+	{ key = "OUCH", label = "Ouch", url = SND .. "ouch.ogg" },
+	{ key = "TICK", label = "Tic scurt (UI)", url = SND .. "volume_slider.ogg" },
+}
+local SOUND_URL, SOUND_KEY = {}, {}
+for _, s in Editor.SOUNDS do
+	SOUND_URL[s.key] = s.url
+	SOUND_KEY[s.url] = s.key
 end
 
 Editor.ATTACH = {
@@ -428,6 +457,57 @@ do
 			mode = "Pulse", shape = "Ball", material = "ForceField", color = Color3.fromRGB(100, 200, 255),
 			colorEnd = Color3.fromRGB(60, 130, 255), size = Vector3.new(1, 1, 1), grow = { 6.4, 7.2 }, transparency = { 0.35, 1 },
 			lifetime = 1.6, position = Vector3.new(0, 3, 0), bursts = { { 0, 1 } } } },
+		-- camera (applied on the client to the local camera, within `radius` studs) --------------------------------------
+		{ key = "SHAKE_LIGHT", group = "Cameră", label = "Tremur ușor (lovitură)", kind = "CAMERA", props = {
+			shake = 0.6, frequency = 18, shakeTime = 0.25, radius = 50, bursts = { { 0, 1 } } } },
+		{ key = "SHAKE_HEAVY", group = "Cameră", label = "Tremur puternic (impact greu)", kind = "CAMERA", props = {
+			shake = 2.2, frequency = 14, shakeTime = 0.55, radius = 90, bursts = { { 0, 1 } } } },
+		{ key = "RUMBLE", group = "Cameră", label = "Cutremur (continuu)", kind = "CAMERA", props = {
+			shake = 0.45, frequency = 10, radius = 80, window = { 0, 1 } } },
+		{ key = "FOV_PUNCH", group = "Cameră", label = "Zoom-out rapid (FOV)", kind = "CAMERA", props = {
+			fov = 8, fovTime = 0.3, radius = 60, bursts = { { 0, 1 } } } },
+		{ key = "FOV_ZOOM_IN", group = "Cameră", label = "Zoom-in rapid (FOV)", kind = "CAMERA", props = {
+			fov = -6, fovTime = 0.35, radius = 60, bursts = { { 0, 1 } } } },
+		{ key = "WHITE_FLASH", group = "Cameră", label = "Flash alb pe ecran", kind = "CAMERA", props = {
+			flash = WHITE, flashAlpha = 0.45, flashTime = 0.2, radius = 80, bursts = { { 0, 1 } } } },
+		{ key = "IMPACT_CAMERA", group = "Cameră", label = "Impact (tremur + zoom)", kind = "CAMERA", props = {
+			shake = 1.2, frequency = 16, shakeTime = 0.3, fov = 5, fovTime = 0.25, radius = 60, bursts = { { 0, 1 } } } },
+		-- sounds (built into every Roblox client; pitch = random range per play) ---------------------------------------
+		{ key = "SOUND_HIT", group = "Sunet", label = "Lovitură (bufnitură)", kind = "SOUND", props = {
+			soundId = "HIT", Volume = 0.8, pitch = { 0.85, 1.05 }, RollOffMaxDistance = 120, bursts = { { 0, 1 } } } },
+		{ key = "SOUND_HEAVY", group = "Sunet", label = "Lovitură grea (bufnitură joasă)", kind = "SOUND", props = {
+			soundId = "HIT", Volume = 1, pitch = { 0.5, 0.6 }, RollOffMaxDistance = 180, bursts = { { 0, 2 } } } },
+		{ key = "SOUND_WHOOSH", group = "Sunet", label = "Whoosh (vânt scurt)", kind = "SOUND", props = {
+			soundId = "WIND", Volume = 0.6, pitch = { 1.5, 1.8 }, fade = 0.12, RollOffMaxDistance = 80, window = { 0, 0.3 } } },
+		{ key = "SOUND_EXPLOSION", group = "Sunet", label = "Explozie", kind = "SOUND", props = {
+			soundId = "EXPLOSION", Volume = 0.9, pitch = { 0.9, 1.1 }, RollOffMaxDistance = 250, bursts = { { 0, 1 } } } },
+		{ key = "SOUND_THUNDER", group = "Sunet", label = "Tunet (explozie joasă)", kind = "SOUND", props = {
+			soundId = "EXPLOSION", Volume = 1, pitch = { 0.55, 0.7 }, RollOffMaxDistance = 400, bursts = { { 0, 1 } } } },
+		{ key = "SOUND_JUMP", group = "Sunet", label = "Săritură", kind = "SOUND", props = {
+			soundId = "JUMP", Volume = 0.7, pitch = { 0.95, 1.1 }, RollOffMaxDistance = 80, bursts = { { 0, 1 } } } },
+		{ key = "SOUND_SPLASH", group = "Sunet", label = "Plescăit în apă", kind = "SOUND", props = {
+			soundId = "SPLASH", Volume = 0.8, pitch = { 0.9, 1.1 }, RollOffMaxDistance = 120, bursts = { { 0, 1 } } } },
+		-- the client has no "magic" sound: three quick high ticks read as a sparkle (or paste your own sound id)
+		{ key = "SOUND_SPARKLE", group = "Sunet", label = "Sclipire (tic-uri acute)", kind = "SOUND", props = {
+			soundId = "TICK", Volume = 0.5, pitch = { 1.6, 2 }, RollOffMaxDistance = 60,
+			bursts = { { 0, 1 }, { 0.08, 1 }, { 0.16, 1 } } } },
+		-- beams (between two points of the effect: start / finish) ----------------------------------------------------
+		{ key = "LIGHTNING_BEAM", group = "Raze (Beam)", label = "Fulger (rază care se schimbă)", kind = "BEAM", props = {
+			texture = "NONE", start = Vector3.new(0, 30, 0), finish = Vector3.new(0, 0, 0), width = { 0.6, 0.3 }, Segments = 16,
+			color = { WHITE, ELECTRIC }, transparency = 0, LightEmission = 1, Brightness = 3, FaceCamera = true, jitter = 2.5,
+			flashTime = 0.09, bursts = { { 0, 1 }, { 0.07, 1 }, { 0.15, 1 } } } },
+		{ key = "LASER", group = "Raze (Beam)", label = "Laser", kind = "BEAM", props = {
+			texture = "NONE", start = Vector3.new(0, 1.5, 0), finish = Vector3.new(0, 1.5, -20), width = { 0.35, 0.35 }, Segments = 1,
+			color = { Color3.fromRGB(255, 235, 235), Color3.fromRGB(255, 50, 60) }, transparency = { 0, 0, 0.2 },
+			LightEmission = 1, Brightness = 2, FaceCamera = true, fade = 0.06, window = { 0, 0.6 } } },
+		{ key = "ENERGY_BEAM", group = "Raze (Beam)", label = "Rază de energie (curge)", kind = "BEAM", props = {
+			texture = "SPARKLES", TextureMode = "Wrap", TextureLength = 2, TextureSpeed = 3, start = Vector3.new(0, 2, 0),
+			finish = Vector3.new(0, 2, -18), width = { 1.6, 1.2 }, Segments = 10, color = { WHITE, VIOLET },
+			transparency = { 0.1, 0.2, 0.5 }, LightEmission = 1, Brightness = 2, FaceCamera = true, fade = 0.12, window = { 0, 0.8 } } },
+		{ key = "ELECTRIC_ARC_BEAM", group = "Raze (Beam)", label = "Arc electric (pâlpâie)", kind = "BEAM", props = {
+			texture = "NONE", start = Vector3.new(-2, 2, 0), finish = Vector3.new(2, 2, 0), width = { 0.25, 0.25 }, Segments = 12,
+			color = { WHITE, ELECTRIC }, transparency = 0, LightEmission = 1, Brightness = 2.5, FaceCamera = true, jitter = 0.8,
+			flashTime = 0.07, bursts = { { 0, 1 }, { 0.06, 1 }, { 0.12, 1 }, { 0.2, 1 }, { 0.3, 1 } } } },
 	}
 	local GROUPS = {
 		SPARKLES = "Magie și energie", RISING = "Magie și energie", MAGIC_CIRCLE = "Magie și energie", STAR_FLASH = "Magie și energie",
@@ -468,7 +548,7 @@ do
 
 	local list = {
 		{ key = "PUNCH", label = "Lovitură de pumn", category = "Luptă", duration = 0.5, attach = "TORSO", main = C(255, 176, 80),
-			desc = "Impact scurt pe trunchiul țintei: flash, stea, scântei, undă și puțin fum. Pune-l pe un marker de animație.",
+			desc = "Impact scurt pe trunchiul țintei: flash, stea, scântei, undă, puțin fum, o bufnitură și un tremur scurt al camerei. Pune-l pe un marker de animație.",
 			elements = {
 				el("FLASH", { name = "Flash", color = { C(255, 242, 214), C(255, 160, 70) }, size = { 2, 6, 7, mid = 0.3 }, lifetime = 0.18,
 					position = HIT }),
@@ -481,9 +561,11 @@ do
 					speed = { 2, 5 }, bursts = { { 0.02, 5 } }, position = HIT }),
 				el("FLASH_LIGHT", { name = "Lumină impact", Color = C(255, 170, 80), position = V(0, 0.5, -1.4),
 					keys = { { 0, 0, 10 }, { 0.03, 5, 14 }, { 0.2, 0, 8 } } }),
+				el("SOUND_HIT", { name = "Sunet lovitură", position = HIT }),
+				el("SHAKE_LIGHT", { name = "Tremur cameră" }),
 			} },
 		{ key = "SLASH", label = "Tăietură de sabie", category = "Luptă", duration = 0.6, attach = "TORSO", main = C(150, 210, 255),
-			desc = "Două tăieturi încrucișate pe țintă, cu scântei și o sclipire. Pentru dâra din mâna atacatorului vezi „Dâră de sabie”.",
+			desc = "Două tăieturi încrucișate pe țintă, cu scântei, o sclipire și un whoosh. Pentru dâra din mâna atacatorului vezi „Dâră de sabie”.",
 			elements = {
 				el("SLASH_MARK", { name = "Tăietură 1", rotation = { -20, -10 }, position = HIT }),
 				el("SLASH_MARK", { name = "Tăietură 2", rotation = { 70, 80 }, size = { 3, 9, 10, mid = 0.18 }, position = HIT,
@@ -494,6 +576,7 @@ do
 					position = HIT, bursts = { { 0.02, 1 } } }),
 				el("FLASH_LIGHT", { name = "Lumină", Color = C(150, 210, 255), position = V(0, 0.5, -1.4),
 					keys = { { 0, 0, 10 }, { 0.03, 4, 14 }, { 0.12, 0, 8 }, { 0.14, 4, 14 }, { 0.3, 0, 8 } } }),
+				el("SOUND_WHOOSH", { name = "Whoosh", window = { 0, 0.22 }, position = HIT }),
 			} },
 		{ key = "SWORD_TRAIL", label = "Dâră de sabie", category = "Luptă", duration = 0.7, attach = "RIGHT_HAND", main = C(150, 210, 255),
 			desc = "Dâră luminoasă prinsă de mâna dreaptă: se vede cât timp mâna se mișcă (pune-o pe animația loviturii). Mută „Poziție” pe lamă.",
@@ -504,7 +587,7 @@ do
 					lifetime = { 0.3, 0.6 }, shape = "Box", partSize = V(0.6, 4, 0.6), window = { 0, 0.55 } }),
 			} },
 		{ key = "GROUND_SLAM", label = "Ground Slam", category = "Luptă", duration = 1.1, attach = "GROUND", main = C(255, 150, 60),
-			desc = "Lovitură în sol: undă, inel 3D, crăpături, pietre, praf, raze și un dom de energie.",
+			desc = "Lovitură în sol: undă, inel 3D, crăpături, pietre, praf, raze, un dom de energie, o bufnitură grea și camera care tremură.",
 			elements = {
 				el("SHOCKWAVE", { name = "Undă pe sol", color = { WHITE, C(255, 160, 70) } }),
 				el("RING3D", { name = "Inel 3D", color = C(255, 170, 70), colorEnd = C(150, 60, 20) }),
@@ -517,9 +600,11 @@ do
 				el("DOME3D", { name = "Dom de energie", color = C(255, 150, 50), colorEnd = C(120, 40, 10), grow = { 1.5, 9 },
 					transparency = { 0.2, 1 }, lifetime = 0.3 }),
 				el("FLASH_LIGHT", { name = "Lumină", Color = C(255, 160, 70), keys = { { 0, 0, 12 }, { 0.04, 6, 18 }, { 0.4, 0, 12 } } }),
+				el("SOUND_HEAVY", { name = "Bufnitură grea" }),
+				el("SHAKE_HEAVY", { name = "Cameră (tremur + zoom)", fov = 5, fovTime = 0.3 }),
 			} },
 		{ key = "LIGHTNING", label = "Fulger", category = "Elemente", duration = 1, attach = "GROUND", main = C(125, 210, 255),
-			desc = "Trăznet care lovește solul: fulgere în stroboscop, arcuri, scântei, undă, fum și lumină electrică.",
+			desc = "Trăznet care lovește solul: fulgere în stroboscop (și o rază din cer), arcuri, scântei, undă, fum, lumină electrică, tunet și un flash pe ecran.",
 			elements = {
 				el("LIGHTNING_BOLT", { name = "Trăznet", bursts = { { 0, 1 }, { 0.07, 1 }, { 0.15, 1 }, { 0.3, 1 } } }),
 				el("FLASH", { name = "Flash cer", color = { WHITE, C(140, 215, 255) }, size = { 4, 16, 20, mid = 0.3 }, lifetime = 0.25,
@@ -531,9 +616,13 @@ do
 					bursts = { { 0.05, 6 } }, position = V(0, 0.3, 0) }),
 				el("CRACK3D", { name = "Urmă arsă", count = 6, radius = { 1, 2.4 } }),
 				el("ELECTRIC_LIGHT", { name = "Lumină" }),
+				el("LIGHTNING_BEAM", { name = "Rază din cer", bursts = { { 0, 1 }, { 0.07, 1 }, { 0.15, 1 }, { 0.3, 1 } } }),
+				el("SOUND_THUNDER", { name = "Tunet" }),
+				el("SHAKE_LIGHT", { name = "Cameră (tremur + flash)", shake = 1, flash = WHITE, flashAlpha = 0.4, flashTime = 0.18,
+					radius = 80, bursts = { { 0, 1 }, { 0.3, 1 } } }),
 			} },
 		{ key = "FIRE_EXPLOSION", label = "Explozie de foc", category = "Elemente", duration = 1.3, attach = "GROUND", main = C(255, 140, 40),
-			desc = "Minge de foc cu flash, undă, jar, fum negru, pietre, dom de foc și lumină care se stinge.",
+			desc = "Minge de foc cu flash, undă, jar, fum negru, pietre, dom de foc, lumină care se stinge, bubuitură și camera care tremură.",
 			elements = {
 				el("FIREBALL", { name = "Minge de foc", bursts = { { 0, 7 }, { 0.08, 5 } } }),
 				el("FLASH", { name = "Flash", color = { C(255, 245, 215), C(255, 160, 60) }, size = { 3, 12, 14, mid = 0.3 },
@@ -548,6 +637,8 @@ do
 				el("DOME3D", { name = "Dom de foc", color = C(255, 150, 50), colorEnd = C(140, 50, 10), grow = { 1.5, 10 },
 					transparency = { 0.25, 1 }, lifetime = 0.35 }),
 				el("FIRE_LIGHT", { name = "Lumină" }),
+				el("SOUND_EXPLOSION", { name = "Bubuitură" }),
+				el("SHAKE_HEAVY", { name = "Cameră (tremur + flash)", flash = C(255, 190, 120), flashAlpha = 0.35, flashTime = 0.25 }),
 			} },
 		{ key = "HEAL", label = "Vindecare", category = "Suport", duration = 1.8, attach = "GROUND_FOLLOW", main = C(110, 255, 150),
 			desc = "Cerc pe sol, inele care urcă, sclipiri verzi și o lumină blândă. Urmărește personajul.",
@@ -572,6 +663,7 @@ do
 				el("SPARKLES", { name = "Scântei", position = V(0, 2.5, 0), bursts = { { 0.75, 26 } } }),
 				el("FLASH_LIGHT", { name = "Lumină", position = V(0, 2, 0),
 					keys = { { 0, 0, 8 }, { 0.3, 3, 14 }, { 0.7, 4, 16 }, { 0.78, 8, 20 }, { 1.1, 0, 10 } } }),
+				el("FOV_PUNCH", { name = "Zoom la plecare", bursts = { { 0.75, 1 } } }),
 			} },
 		{ key = "DASH", label = "Dash", category = "Mișcare", duration = 0.6, attach = "ROOT", main = C(190, 230, 255),
 			desc = "Linii de viteză și vânt în spate, un inel de aer la start, dâră și praf la picioare. Pune-l pe personaj, în direcția mișcării.",
@@ -581,6 +673,7 @@ do
 				el("DASH_WIND", { name = "Vânt" }),
 				el("DASH_TRAIL", { name = "Dâră" }),
 				el("LAND_DUST", { name = "Praf la picioare", size = { 1, 2.4, 3.2 }, position = V(0, -2.9, 0), bursts = { { 0, 14 } } }),
+				el("SOUND_WHOOSH", { name = "Whoosh" }),
 			} },
 		{ key = "POWER_AURA", label = "Aură de putere (loop)", category = "Suport", duration = 3, attach = "GROUND_FOLLOW", main = C(255, 190, 60),
 			desc = "Aură continuă de 3 s: raze, flăcări, scântei și un puls pe sol în fiecare secundă. În joc o repeți din cod (VFX.play la fiecare ~2,8 s); aici, cu 🔁 Repetă.",
@@ -652,6 +745,8 @@ do
 				el("CRACK3D", { name = "Crăpături mici", count = 6, radius = { 1, 2.2 } }),
 				el("DEBRIS3D", { name = "Pietricele", size = V(0.2, 0.18, 0.2), speed = { 5, 10 }, bursts = { { 0, 5 } }, window = { 0, 0.1 } }),
 				el("PUFF3D", { name = "Bile de praf", bursts = { { 0, 6 } } }),
+				el("SOUND_HIT", { name = "Bufnitură", pitch = { 0.7, 0.8 } }),
+				el("SHAKE_LIGHT", { name = "Tremur mic", shake = 0.35, radius = 30 }),
 			} },
 		{ key = "WATER_SPLASH", label = "Splash de apă", category = "Elemente", duration = 1.2, attach = "GROUND", main = C(120, 190, 255),
 			desc = "Ondulații, stropi denși, picături fine și picături 3D care cad cu fizică, plus puțină ceață.",
@@ -662,6 +757,7 @@ do
 				el("WATER_DROPS3D", { name = "Picături 3D" }),
 				el("FROST_MIST", { name = "Ceață de stropi", color = { C(235, 246, 255), C(190, 225, 255) }, partSize = V(2.5, 0.2, 2.5),
 					lifetime = { 0.6, 1 }, window = { 0, 0.5 } }),
+				el("SOUND_SPLASH", { name = "Plescăit" }),
 			} },
 		{ key = "COINS", label = "Monede (recompensă)", category = "Evenimente", duration = 1.8, attach = "GROUND_FOLLOW", main = C(255, 205, 50),
 			desc = "Monede aurii aruncate în sus, cu o stea, scântei și o lumină caldă.",
@@ -819,6 +915,18 @@ local function numberRange(v)
 	return NumberRange.new(math.min(v[1], v[2]), math.max(v[1], v[2]))
 end
 
+-- a number, { a, b }, NumberRange or Vector2 -> a, b
+local function pairOf(v)
+	if type(v) == "number" then
+		return v, v
+	elseif typeof(v) == "NumberRange" then
+		return v.Min, v.Max
+	elseif typeof(v) == "Vector2" then
+		return v.X, v.Y
+	end
+	return v[1], v[2] or v[1]
+end
+
 local function enumItem(enumType, v)
 	if typeof(v) == "EnumItem" then
 		return v
@@ -875,13 +983,17 @@ function Editor.log(text)
 	folder:SetAttribute("Log", HttpService:JSONEncode(list))
 end
 
+-- read-only: the panels call it while drawing (outside any undo recording), so it never creates the session folder
 function Editor.history()
-	local folder = session()
+	local ok, storage = pcall(function()
+		return game:GetService("ServerStorage")
+	end)
+	local folder = ok and storage and storage:FindFirstChild("LostCubeSession")
 	if not folder then
 		return {}
 	end
-	local ok, list = pcall(HttpService.JSONDecode, HttpService, folder:GetAttribute("Log") or "[]")
-	return ok and list or {}
+	local okList, list = pcall(HttpService.JSONDecode, HttpService, folder:GetAttribute("Log") or "[]")
+	return okList and list or {}
 end
 
 local function record(name, fn, ...)
@@ -1057,6 +1169,12 @@ function Editor.kindOf(inst)
 		return "LIGHT"
 	elseif inst:IsA("Trail") then
 		return "TRAIL"
+	elseif inst:IsA("Sound") then
+		return "SOUND"
+	elseif inst:IsA("Beam") then
+		return "BEAM"
+	elseif inst:IsA("Configuration") and inst:GetAttribute("LC_Kind") == "CAMERA" then
+		return "CAMERA"
 	end
 	return nil
 end
@@ -1106,6 +1224,9 @@ function Editor.position(element)
 	elseif element:IsA("Trail") then
 		local a, b = trailAttachments(element)
 		return (a and b) and (a.Position + b.Position) / 2 or Vector3.zero
+	elseif element:IsA("Beam") then -- its start
+		local a = element.Attachment0
+		return a and a.Position or Vector3.zero
 	elseif parent and parent:IsA("Attachment") then
 		return parent.Position
 	elseif parent and parent:IsA("BasePart") then
@@ -1130,6 +1251,15 @@ local function setPosition(element, pos)
 		if b then
 			b.Position = pos - Vector3.new(0, h / 2, 0)
 		end
+	elseif element:IsA("Beam") then -- both ends move (the beam keeps its length and direction)
+		local a, b = trailAttachments(element)
+		local delta = pos - (a and a.Position or Vector3.zero)
+		if a then
+			a.Position += delta
+		end
+		if b then
+			b.Position += delta
+		end
 	elseif parent:IsA("Attachment") then
 		parent.Position = pos
 	elseif parent:IsA("BasePart") then
@@ -1140,6 +1270,8 @@ local function setPosition(element, pos)
 end
 
 local SHAPES = { Point = true, Box = true, Sphere = true, Cylinder = true, Disc = true }
+local FLIPBOOK = { "FlipbookLayout", "FlipbookMode", "FlipbookFramerate", "FlipbookStartRandom", "FlipbookSizeX", "FlipbookSizeY",
+	"FlipbookBlendFrames" }
 
 function Editor.shapeOf(emitter)
 	if emitter.Parent and emitter.Parent:IsA("BasePart") then
@@ -1222,6 +1354,14 @@ local function setOne(element, key, value)
 			if b then
 				b.Name = value .. "_Bottom"
 			end
+		elseif element:IsA("Beam") then
+			local a, b = trailAttachments(element)
+			if a then
+				a.Name = value .. "_Start"
+			end
+			if b then
+				b.Name = value .. "_End"
+			end
 		elseif parent and not parent:IsA("Model") and parent.Name == element.Name then
 			parent.Name = value
 		end
@@ -1266,7 +1406,7 @@ local function setOne(element, key, value)
 		element.Acceleration = vec3(value)
 	elseif key == "window" or key == "bursts" or key == "keys" then
 		setTimeline(element, key, value)
-	elseif key == "height" or key == "width" then
+	elseif key == "height" or (key == "width" and not element:IsA("Beam")) then -- trails: the distance between their attachments
 		local a, b = trailAttachments(element)
 		local center = Editor.position(element)
 		if a then
@@ -1291,6 +1431,30 @@ local function setOne(element, key, value)
 		element:SetAttribute("LC_Flow", value and value > 0 and value or nil)
 	elseif key == "muted" then
 		element:SetAttribute("LC_Muted", value and true or nil)
+	elseif key == "soundId" then -- a key of Editor.SOUNDS, an asset id (number) or a url
+		local id = SOUND_URL[value] or ((type(value) == "number" or tostring(value):match("^%d+$")) and ("rbxassetid://" .. value)) or value
+		element.SoundId = id
+	elseif key == "pitch" then -- random PlaybackSpeed range per play
+		local a, b = pairOf(value)
+		element:SetAttribute("LC_Pitch", string.format("%s,%s", round(math.max(0.01, tonumber(a) or 1)), round(math.max(0.01, tonumber(b) or 1))))
+	elseif key == "fade" then
+		element:SetAttribute("LC_Fade", value)
+	elseif key == "start" or key == "finish" then -- beam ends, relative to the effect's root
+		local a, b = trailAttachments(element)
+		local att = key == "start" and a or b
+		if att then
+			att.Position = vec3(value)
+		end
+	elseif key == "width" then
+		local a, b = pairOf(value)
+		element.Width0, element.Width1 = a, b
+	elseif key == "curve" then
+		local a, b = pairOf(value)
+		element.CurveSize0, element.CurveSize1 = a, b
+	elseif key == "flashTime" then
+		element:SetAttribute("LC_FlashTime", value)
+	elseif key == "jitter" then
+		element:SetAttribute("LC_Jitter", value ~= 0 and value or nil)
 	elseif key == "preset" then
 		-- handled by applyPreset
 	else
@@ -1326,16 +1490,7 @@ local function setMesh(part, key, value)
 	if MESH_ATTR[key] then
 		part:SetAttribute(MESH_ATTR[key], typeof(value) == "EnumItem" and value.Name or value)
 	elseif MESH_PAIR[key] then
-		local a, b
-		if type(value) == "number" then
-			a, b = value, value
-		elseif typeof(value) == "NumberRange" then
-			a, b = value.Min, value.Max
-		elseif typeof(value) == "Vector2" then
-			a, b = value.X, value.Y
-		else
-			a, b = value[1], value[2] or value[1]
-		end
+		local a, b = pairOf(value)
 		part:SetAttribute(MESH_PAIR[key], string.format("%s,%s", round(a), round(b)))
 	elseif key == "shape" then
 		part.Shape = enumItem(Enum.PartType, value)
@@ -1353,12 +1508,32 @@ local function setMesh(part, key, value)
 	return true
 end
 
+-- camera elements (a Configuration) keep everything in attributes; returns true when the key was handled
+local CAMERA_ATTR = { shake = "LC_Shake", frequency = "LC_Freq", shakeTime = "LC_ShakeTime", fov = "LC_FOV", fovTime = "LC_FovTime",
+	flashAlpha = "LC_FlashAlpha", flashTime = "LC_FlashTime", radius = "LC_Radius" }
+
+local function setCamera(cfg, key, value)
+	if CAMERA_ATTR[key] then
+		assert(type(value) == "number", "LostCube: " .. key .. " trebuie să fie un număr")
+		cfg:SetAttribute(CAMERA_ATTR[key], (value ~= 0 or (key ~= "shake" and key ~= "fov")) and value or nil)
+	elseif key == "flash" then -- Color3 (or hex / RGB triplet), false = no flash
+		cfg:SetAttribute("LC_Flash", value and toColor(value) or nil)
+	elseif key == "studio" then -- false: not applied to the Studio camera in previews
+		cfg:SetAttribute("LC_Studio", if value == false then false else nil)
+	else
+		return false
+	end
+	return true
+end
+
 local ORDER = { "shape", "partSize", "position", "height" } -- shape first (it moves the emitter)
 
 local function applyProps(element, props)
-	if Editor.kindOf(element) == "MESH" then
+	local kind = Editor.kindOf(element)
+	if kind == "MESH" or kind == "CAMERA" then
+		local special = kind == "MESH" and setMesh or setCamera
 		for key, value in props do
-			if not setMesh(element, key, value) then
+			if not special(element, key, value) then
 				setOne(element, key, value)
 			end
 		end
@@ -1436,9 +1611,68 @@ local function create(effect, kind, name)
 		t.Lifetime = 0.25
 		t.Parent = root
 		return t
+	elseif kind == "SOUND" then -- positional: under an Attachment of the root
+		local att = Instance.new("Attachment")
+		att.Name = name
+		att.Position = Vector3.new(0, 1, 0)
+		att.Parent = root
+		local snd = Instance.new("Sound")
+		snd.Name = name
+		snd.SoundId = SOUND_URL.HIT
+		snd.Volume = 0.7
+		snd.RollOffMinDistance = 8
+		snd.RollOffMaxDistance = 120
+		snd:SetAttribute("LC_Pitch", "0.95,1.05")
+		snd.Parent = att
+		return snd
+	elseif kind == "CAMERA" then
+		local att = Instance.new("Attachment")
+		att.Name = name
+		att.Parent = root
+		local cfg = Instance.new("Configuration")
+		cfg.Name = name
+		cfg:SetAttribute("LC_Kind", "CAMERA")
+		cfg:SetAttribute("LC_Shake", 0.8)
+		cfg:SetAttribute("LC_Freq", 16)
+		cfg:SetAttribute("LC_ShakeTime", 0.3)
+		cfg:SetAttribute("LC_Radius", 60)
+		cfg.Parent = att
+		return cfg
+	elseif kind == "BEAM" then -- from Attachment0 (start) to Attachment1 (end)
+		local a = Instance.new("Attachment")
+		a.Name = name .. "_Start"
+		a.Position = Vector3.new(0, 1.5, 0)
+		a.Parent = root
+		local b = Instance.new("Attachment")
+		b.Name = name .. "_End"
+		b.Position = Vector3.new(0, 1.5, -10)
+		b.Parent = root
+		local beam = Instance.new("Beam")
+		beam.Name = name
+		beam.Attachment0, beam.Attachment1 = a, b
+		beam.Enabled = false
+		beam.FaceCamera = true
+		beam.LightEmission = 1
+		beam.Width0, beam.Width1 = 0.6, 0.6
+		beam.Segments = 10
+		beam.Color = ColorSequence.new(WHITE, VIOLET)
+		beam.Transparency = NumberSequence.new(0.1)
+		beam.Parent = root
+		return beam
 	end
 	error("LostCube: tip necunoscut " .. tostring(kind))
 end
+
+-- the timeline an element added empty (no preset) starts with
+local EMPTY_TIMELINE = { SOUND = { bursts = { { 0, 1 } } }, CAMERA = { bursts = { { 0, 1 } } }, BEAM = { window = { 0, 0.5 } } }
+-- attributes a preset replaces besides the timeline (LC_Studio is the user's choice and stays)
+local PRESET_RESET = {
+	SOUND = { "LC_Pitch", "LC_Fade" },
+	BEAM = { "LC_FlashTime", "LC_Fade", "LC_Jitter" },
+	CAMERA = { "LC_Shake", "LC_Freq", "LC_ShakeTime", "LC_FOV", "LC_FovTime", "LC_Flash", "LC_FlashAlpha", "LC_FlashTime", "LC_Radius" },
+}
+local KIND_NAME = { PARTICLES = "Particule", LIGHT = "Lumină", TRAIL = "Trail", MESH = "Mesh 3D", SOUND = "Sunet", CAMERA = "Cameră",
+	BEAM = "Rază" }
 
 --- addElement(effect, presetKey | "PARTICLES" | "LIGHT" | "TRAIL", props?) -> the emitter / light / trail
 function Editor.addElement(effect, what, props)
@@ -1447,12 +1681,13 @@ function Editor.addElement(effect, what, props)
 	local preset = PRESET_BY_KEY[what]
 	local kind = preset and preset.kind or what
 	return record("adăugat " .. (preset and preset.label or kind) .. " în " .. effect.Name, function()
-		local name = uniqueName(effect, props.name or (preset and preset.label)
-			or ({ PARTICLES = "Particule", LIGHT = "Lumină", TRAIL = "Trail", MESH = "Mesh 3D" })[kind])
+		local name = uniqueName(effect, props.name or (preset and preset.label) or KIND_NAME[kind] or tostring(kind))
 		local element = create(effect, kind, name)
 		if preset then
 			applyProps(element, preset.props)
 			element:SetAttribute("LC_Preset", preset.key)
+		elseif EMPTY_TIMELINE[kind] then
+			applyProps(element, EMPTY_TIMELINE[kind])
 		end
 		local rest = table.clone(props)
 		rest.name = nil
@@ -1475,6 +1710,9 @@ function Editor.applyPreset(element, key)
 		element:SetAttribute("LC_On", nil)
 		element:SetAttribute("LC_Bursts", nil)
 		element:SetAttribute("LC_Keys", nil)
+		for _, attr in PRESET_RESET[preset.kind] or {} do
+			element:SetAttribute(attr, nil)
+		end
 		applyProps(element, preset.props)
 		element:SetAttribute("LC_Preset", preset.key)
 		return element
@@ -1484,7 +1722,7 @@ end
 function Editor.remove(element)
 	return record("șters " .. element.Name, function()
 		local parent = element.Parent
-		if element:IsA("Trail") then
+		if element:IsA("Trail") or element:IsA("Beam") then
 			local a, b = trailAttachments(element)
 			if a then
 				a:Destroy()
@@ -1508,10 +1746,42 @@ function Editor.duplicate(element)
 	return record("duplicat " .. element.Name, function()
 		local effect = Editor.effectOf(element)
 		local name = uniqueName(effect, element.Name)
-		if Editor.kindOf(element) == "MESH" then
+		local kind = Editor.kindOf(element)
+		if kind == "MESH" then
 			local copy = element:Clone()
 			copy.Name = name
 			copy.Parent = effect
+			return copy
+		elseif kind == "SOUND" or kind == "CAMERA" then -- a copy in its own Attachment, at the same place
+			local copy = element:Clone()
+			copy.Name = name
+			local holder = element.Parent
+			if holder and holder:IsA("Attachment") then
+				local att = Instance.new("Attachment")
+				att.Name = name
+				att.CFrame = holder.CFrame
+				att.Parent = holder.Parent
+				copy.Parent = att
+			else
+				copy.Parent = holder
+			end
+			return copy
+		elseif kind == "BEAM" then -- a copy with its own two ends (a clone would share the original's attachments)
+			local copy = element:Clone()
+			copy.Name = name
+			local function twin(att, suffix)
+				if not att then
+					return nil
+				end
+				local a = Instance.new("Attachment")
+				a.Name = name .. suffix
+				a.CFrame = att.CFrame
+				a.Parent = att.Parent
+				return a
+			end
+			local a, b = trailAttachments(element)
+			copy.Attachment0, copy.Attachment1 = twin(a, "_Start"), twin(b, "_End")
+			copy.Parent = element.Parent
 			return copy
 		end
 		local data = Editor.read(element)
@@ -1525,6 +1795,11 @@ function Editor.duplicate(element)
 			for _, prop in { "Size", "Squash", "Lifetime", "Rate", "Speed", "SpreadAngle", "Acceleration", "Drag", "Rotation",
 				"RotSpeed", "Orientation", "ZOffset", "LockedToPart", "EmissionDirection", "ShapeStyle", "ShapeInOut" } do
 				copy[prop] = element[prop]
+			end
+			for _, prop in FLIPBOOK do
+				pcall(function()
+					copy[prop] = element[prop]
+				end)
 			end
 			setShape(copy, data.shape, data.partSize)
 		elseif copy:IsA("PointLight") then
@@ -1568,6 +1843,8 @@ function Editor.lightKeys(element)
 	return parseList(element:GetAttribute("LC_Keys"))
 end
 
+local RETIMED = { SOUND = { "LC_Fade" }, BEAM = { "LC_FlashTime", "LC_Fade" }, CAMERA = { "LC_ShakeTime", "LC_FovTime", "LC_FlashTime" } }
+
 --- stretches (k > 1) or squeezes (k < 1) the whole effect in time: duration, emission windows, bursts,
 --- light keys and lifetimes; speeds stay, so particles travel further when it is slower
 function Editor.retime(effect, k)
@@ -1603,6 +1880,13 @@ function Editor.retime(effect, k)
 				local life = parseList(e:GetAttribute("LC_Life"))[1]
 				if life then
 					e:SetAttribute("LC_Life", string.format("%s,%s", round(life[1] * k), round((life[2] or life[1]) * k)))
+				end
+			else -- sounds / beams / camera: their fades, flashes and shakes
+				for _, attr in RETIMED[Editor.kindOf(e)] or {} do
+					local v = e:GetAttribute(attr)
+					if type(v) == "number" then
+						e:SetAttribute(attr, round(v * k))
+					end
 				end
 			end
 		end
@@ -1659,6 +1943,11 @@ function Editor.read(element)
 		for _, prop in { "Orientation", "EmissionDirection", "ShapeStyle", "ShapeInOut" } do
 			data[prop] = e[prop].Name
 		end
+		-- flipbooks (a texture made of 2x2 / 4x4 / 8x8 frames)
+		data.FlipbookLayout = e.FlipbookLayout.Name
+		data.FlipbookMode = e.FlipbookMode.Name
+		data.FlipbookFramerate = { e.FlipbookFramerate.Min, e.FlipbookFramerate.Max }
+		data.FlipbookStartRandom = e.FlipbookStartRandom
 		data.window = Editor.window(e)
 		data.bursts = Editor.bursts(e)
 	elseif kind == "MESH" then
@@ -1708,6 +1997,54 @@ function Editor.read(element)
 		local a, b = trailAttachments(t)
 		data.height = (a and b) and (a.Position - b.Position).Magnitude or 3
 		data.window = Editor.window(t)
+	elseif kind == "SOUND" then
+		local snd = element
+		data.soundId = snd.SoundId
+		data.sound = SOUND_KEY[snd.SoundId] or "CUSTOM"
+		data.Volume = snd.Volume
+		data.RollOffMaxDistance = snd.RollOffMaxDistance
+		data.RollOffMinDistance = snd.RollOffMinDistance
+		local p = parseList(snd:GetAttribute("LC_Pitch"))[1]
+		data.pitch = { p and p[1] or snd.PlaybackSpeed, p and (p[2] or p[1]) or snd.PlaybackSpeed }
+		data.fade = snd:GetAttribute("LC_Fade") or 0.15
+		data.length = snd.TimeLength -- 0 until Studio has loaded it
+		data.window = Editor.window(snd)
+		data.bursts = Editor.bursts(snd)
+	elseif kind == "CAMERA" then
+		local c = element
+		data.shake = c:GetAttribute("LC_Shake") or 0
+		data.frequency = c:GetAttribute("LC_Freq") or 12
+		data.shakeTime = c:GetAttribute("LC_ShakeTime") or 0.4
+		data.fov = c:GetAttribute("LC_FOV") or 0
+		data.fovTime = c:GetAttribute("LC_FovTime") or 0.35
+		local flash = c:GetAttribute("LC_Flash")
+		data.flash = typeof(flash) == "Color3" and flash or nil
+		data.flashAlpha = c:GetAttribute("LC_FlashAlpha") or 0.5
+		data.flashTime = c:GetAttribute("LC_FlashTime") or 0.25
+		data.radius = c:GetAttribute("LC_Radius") or 60
+		data.studio = c:GetAttribute("LC_Studio") ~= false
+		data.window = Editor.window(c)
+		data.bursts = Editor.bursts(c)
+	elseif kind == "BEAM" then
+		local beam = element
+		local a0, a1 = trailAttachments(beam)
+		data.start = a0 and a0.Position or Vector3.zero
+		data.finish = a1 and a1.Position or Vector3.zero
+		data.width = { beam.Width0, beam.Width1 }
+		data.curve = { beam.CurveSize0, beam.CurveSize1 }
+		data.texture = TEXTURE_KEY[beam.Texture] or (beam.Texture == "" and "NONE" or "CUSTOM")
+		data.textureId = beam.Texture
+		data.color = colors3(beam.Color)
+		data.transparency = seq3(beam.Transparency)
+		for _, prop in { "Segments", "TextureSpeed", "TextureLength", "LightEmission", "LightInfluence", "Brightness", "FaceCamera", "ZOffset" } do
+			data[prop] = beam[prop]
+		end
+		data.TextureMode = beam.TextureMode.Name
+		data.flashTime = beam:GetAttribute("LC_FlashTime") or 0.12
+		data.fade = beam:GetAttribute("LC_Fade") or 0.08
+		data.jitter = beam:GetAttribute("LC_Jitter") or 0
+		data.window = Editor.window(beam)
+		data.bursts = Editor.bursts(beam)
 	end
 	return data
 end
@@ -1756,12 +2093,17 @@ function Editor.preview(effect, opts)
 	effect = Editor.effect(effect)
 	opts = opts or {}
 	local target = opts.target or Editor.previewTarget()
+	if VFX.invalidate then -- the player compiles each effect once: a preview must show the latest edit
+		VFX.invalidate(effect)
+	end
 	return VFX.play(effect, target, {
 		speed = opts.speed or 1,
 		scale = opts.scale or 1,
 		parent = opts.parent or workspace.CurrentCamera,
 		attach = opts.attach,
 		facing = opts.facing,
+		quality = opts.quality or 1, -- the whole effect, whatever the graphics level of Studio
+		camera = opts.camera,
 	})
 end
 
@@ -1777,6 +2119,14 @@ function Editor.length(effect)
 		elseif Editor.kindOf(e) == "MESH" then
 			local life = parseList(e:GetAttribute("LC_Life"))[1]
 			tail = math.max(tail, life and (life[2] or life[1]) or 0.5)
+		elseif e:IsA("Beam") then
+			tail = math.max(tail, e:GetAttribute("LC_FlashTime") or 0.12, e:GetAttribute("LC_Fade") or 0.08)
+		elseif Editor.kindOf(e) == "CAMERA" then
+			local shake, fov = e:GetAttribute("LC_Shake") or 0, e:GetAttribute("LC_FOV") or 0
+			tail = math.max(tail, shake > 0 and (e:GetAttribute("LC_ShakeTime") or 0.4) or 0,
+				fov ~= 0 and (e:GetAttribute("LC_FovTime") or 0.35) or 0, e:GetAttribute("LC_Flash") and (e:GetAttribute("LC_FlashTime") or 0.25) or 0)
+		elseif e:IsA("Sound") and e:GetAttribute("LC_On") then -- one-shot sounds may ring on after the effect: not counted
+			tail = math.max(tail, e:GetAttribute("LC_Fade") or 0.15)
 		end
 	end
 	return (effect:GetAttribute("LC_Duration") or 1) + tail
@@ -1852,7 +2202,7 @@ local function mapColors(v, fn)
 	return v -- hex strings and RGB triplets are left as they are
 end
 
-local COLOR_KEYS = { "color", "Color", "colorEnd" }
+local COLOR_KEYS = { "color", "Color", "colorEnd", "flash" }
 
 local function recolorProps(props, from, to)
 	local fn = function(c)
@@ -1923,6 +2273,14 @@ local function scaleProps(kind, props, k)
 		mul("radius")
 		mul("speed")
 		mul("rise")
+	elseif kind == "BEAM" then
+		mul("start")
+		mul("finish")
+		mul("width")
+		mul("curve")
+		mul("jitter")
+	elseif kind == "CAMERA" then
+		mul("radius")
 	end
 end
 

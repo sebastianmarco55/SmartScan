@@ -1,0 +1,5 @@
+# LostCube test runner: downloaded Luau tools, Roblox API dump, generated suites
+plugin/tests/.cache/
+plugin/tests/**/__pycache__/
+__pycache__/
+*.pyc

@@ -1,0 +1,33 @@
+name: LostCube
+
+# Teste pentru pluginul Roblox Studio din plugin/ (Luau, rulate cu CLI-ul Luau; fără Roblox Studio).
+# Același lucru local: python3 plugin/tests/run.py   (vezi plugin/tests/README.md)
+on:
+  push:
+    paths:
+      - "plugin/**"
+      - ".github/workflows/lostcube.yml"
+  pull_request:
+    paths:
+      - "plugin/**"
+      - ".github/workflows/lostcube.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      # run.py descarcă singur ultima versiune Luau (luau-ubuntu.zip) și API-Dump.json în plugin/tests/.cache/.
+      # Ca să fixezi versiunea: adaugă env LUAU_VERSION: "0.xxx" (tag-ul release-ului de pe GitHub) la pasul de mai jos.
+      - name: Teste LostCube
+        run: python3 plugin/tests/run.py
