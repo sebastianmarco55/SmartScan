@@ -26,14 +26,18 @@ function Panel.new(ctx)
 end
 
 function Panel:refresh()
-	self.ctx.app:refresh()
+	if not self.dead then
+		self.ctx.app:refresh()
+	end
 end
 
+-- fn must not yield: the recording stays open meanwhile (and every edit of the user lands in it)
 local function record(name, fn)
 	local ok, id = pcall(ChangeHistoryService.TryBeginRecording, ChangeHistoryService, "LostCube: " .. name)
 	local done, err = pcall(fn)
 	if ok and id then
-		ChangeHistoryService:FinishRecording(id, done and Enum.FinishRecordingOperation.Commit or Enum.FinishRecordingOperation.Cancel)
+		pcall(ChangeHistoryService.FinishRecording, ChangeHistoryService, id,
+			done and Enum.FinishRecordingOperation.Commit or Enum.FinishRecordingOperation.Cancel)
 	end
 	if done then
 		pcall(function()
@@ -52,17 +56,19 @@ local function fxAttr(marker)
 	return "LC_FX_" .. (marker:gsub("[^%w_]", "_"))
 end
 
+-- the Animator of the rig; made when missing (the second value is true then: Panel:stop takes it away again)
 local function animatorOf(rig)
 	local owner = rig:FindFirstChildOfClass("Humanoid") or rig:FindFirstChildOfClass("AnimationController")
 	if not owner then
 		return nil
 	end
 	local animator = owner:FindFirstChildOfClass("Animator")
-	if not animator then
-		animator = Instance.new("Animator")
-		animator.Parent = owner
+	if animator then
+		return animator, false
 	end
-	return animator
+	animator = Instance.new("Animator")
+	animator.Parent = owner
+	return animator, true
 end
 
 local function rigType(rig)
@@ -73,54 +79,140 @@ local function rigType(rig)
 	return rig and (rig:FindFirstChild("UpperTorso") and "R15" or "R6") or "-"
 end
 
-function Panel:findClips()
+-- Every KeyframeSequence in the game. Walking a big game takes a while: with `slice` (a function that gives the frame
+-- back when its time is used up) one child of a service is walked at a time, so Studio stays responsive.
+function Panel:findClips(slice)
 	local list = {}
 	for _, name in SEARCH do
 		local ok, service = pcall(game.GetService, game, name)
 		if ok and service then
-			for _, d in service:GetDescendants() do
-				if d:IsA("KeyframeSequence") then
-					table.insert(list, d)
+			local parts = slice and service:GetChildren() or { service }
+			for _, part in parts do
+				if part ~= service and part.ClassName == "KeyframeSequence" then
+					table.insert(list, part)
+				end
+				for _, d in part:GetDescendants() do
+					if d.ClassName == "KeyframeSequence" then -- (no subclasses; cheaper than IsA on every descendant)
+						table.insert(list, d)
+					end
+				end
+				if slice then
+					slice()
 				end
 			end
 		end
 	end
-	table.sort(list, function(a, b)
-		local pa, pb = a.Parent and a.Parent:GetFullName() or "", b.Parent and b.Parent:GetFullName() or ""
-		if pa ~= pb then
-			return pa < pb
+	-- sort keys and what the list shows are computed once per clip (not in every comparison / on every redraw)
+	local keys, info = {}, {}
+	for i, clip in list do
+		local parent = clip.Parent
+		local path = parent and parent:GetFullName() or ""
+		keys[clip] = { path, clip.Name:lower() }
+		info[clip] = { group = (path:gsub("^Workspace%.", ""):gsub("^ReplicatedStorage%.", "")), length = self:clipLength(clip) }
+		if slice and i % 100 == 0 then
+			slice()
 		end
-		return a.Name:lower() < b.Name:lower()
+	end
+	table.sort(list, function(a, b)
+		local ka, kb = keys[a], keys[b]
+		if ka[1] ~= kb[1] then
+			return ka[1] < kb[1]
+		end
+		return ka[2] < kb[2]
 	end)
-	self.clips = list
+	self.clips, self.clipInfo = list, info
 	return list
 end
 
-function Panel:makeDummy(kind)
-	self:stop()
-	local done, err = record("dummy " .. kind, function()
-		local model
-		local desc = Instance.new("HumanoidDescription")
-		local light, dark = Color3.fromRGB(214, 216, 226), Color3.fromRGB(40, 40, 48)
-		desc.HeadColor, desc.LeftArmColor, desc.RightArmColor = light, light, light
-		desc.LeftLegColor, desc.RightLegColor, desc.TorsoColor = dark, dark, dark
-		local ok, result = pcall(Players.CreateHumanoidModelFromDescription, Players, desc, Enum.HumanoidRigType[kind])
-		if ok and result then
-			model = result
-		else
-			error("nu am putut crea dummy-ul: " .. tostring(result))
+-- the first list of the clips is made in the background (the tab shows at once); the 🔁 button makes it again
+function Panel:scanClips()
+	if self.scanning then
+		return
+	end
+	self.scanning = true
+	local started = os.clock()
+	task.spawn(function()
+		local ok, err = pcall(self.findClips, self, function()
+			if self.dead then
+				error("stop", 0)
+			elseif os.clock() - started > 0.008 then
+				task.wait()
+				started = os.clock()
+			end
+		end)
+		self.scanning = false
+		if not ok and not self.dead then
+			warn("LostCube:", err)
+			self.clips, self.clipInfo = self.clips or {}, self.clipInfo or {}
 		end
-		model.Name = "LostCube Dummy " .. kind
-		local spot = self.Editor.previewTarget()
-		local cf = typeof(spot) == "CFrame" and spot or CFrame.new(0, 0, 0)
-		local root = model:FindFirstChild("HumanoidRootPart")
-		local drop = kind == "R15" and (model.Humanoid.HipHeight + root.Size.Y / 2) or 3
-		model:PivotTo(cf * CFrame.new(0, drop, 0))
-		root.Anchored = true
-		model.Parent = workspace
-		self.rig = model
+		self:refresh()
 	end)
-	if not done then
+end
+
+function Panel:clipLength(clip)
+	local length = 0
+	for _, kf in clip:GetKeyframes() do
+		length = math.max(length, kf.Time)
+	end
+	return length
+end
+
+-- A dummy rig, not in the place yet. Making it waits for the web (it yields), so it is built BEFORE anything is
+-- recorded: a recording kept open across a yield would swallow whatever the user edits meanwhile.
+function Panel:buildDummy(kind)
+	local desc = Instance.new("HumanoidDescription")
+	local light, dark = Color3.fromRGB(214, 216, 226), Color3.fromRGB(40, 40, 48)
+	desc.HeadColor, desc.LeftArmColor, desc.RightArmColor = light, light, light
+	desc.LeftLegColor, desc.RightLegColor, desc.TorsoColor = dark, dark, dark
+	-- CreateHumanoidModelFromDescriptionAsync replaces the deprecated name
+	local okMethod, method = pcall(function()
+		return Players.CreateHumanoidModelFromDescriptionAsync
+	end)
+	local ok, result
+	if okMethod and method then
+		ok, result = pcall(method, Players, desc, Enum.HumanoidRigType[kind])
+	else
+		ok, result = pcall(Players.CreateHumanoidModelFromDescription, Players, desc, Enum.HumanoidRigType[kind])
+	end
+	desc:Destroy()
+	if not (ok and result) then
+		error("nu am putut crea dummy-ul: " .. tostring(result), 0)
+	end
+	local model = result
+	model.Name = "LostCube Dummy " .. kind
+	local spot = self.Editor.previewTarget()
+	local cf = typeof(spot) == "CFrame" and spot or CFrame.new(0, 0, 0)
+	local root = model:FindFirstChild("HumanoidRootPart")
+	local drop = kind == "R15" and (model.Humanoid.HipHeight + root.Size.Y / 2) or 3
+	model:PivotTo(cf * CFrame.new(0, drop, 0))
+	root.Anchored = true
+	return model
+end
+
+function Panel:makeDummy(kind)
+	if self.making then
+		return -- one is already on its way
+	end
+	self:stop()
+	self.making = true
+	local built, model = pcall(self.buildDummy, self, kind)
+	self.making = false
+	if built and self.dead then
+		model:Destroy()
+		return
+	end
+	if not built then
+		self.error = tostring(model)
+		self:refresh()
+		return
+	end
+	local done, err = record("dummy " .. kind, function()
+		model.Parent = workspace -- only this goes into the undo step
+	end)
+	if done then
+		self.rig = model
+	else
+		model:Destroy()
 		self.error = tostring(err)
 	end
 	self:refresh()
@@ -157,6 +249,10 @@ function Panel:stop()
 		end)
 		self.track = nil
 	end
+	if self.ownAnimator then -- the rig did not have one: leave it as it was
+		pcall(self.ownAnimator.Destroy, self.ownAnimator)
+		self.ownAnimator = nil
+	end
 	self:resetPose()
 end
 
@@ -165,12 +261,13 @@ function Panel:load()
 		self.error = not self.rig and "alege un rig (selecția sau un dummy)" or nil
 		return nil
 	end
-	local animator = animatorOf(self.rig)
+	self:stop() -- (also takes away an Animator this panel made for the previous preview)
+	local animator, created = animatorOf(self.rig)
 	if not animator then
 		self.error = "rig-ul nu are Humanoid sau AnimationController"
 		return nil
 	end
-	self:stop()
+	self.ownAnimator = created and animator or nil
 	-- a broken clip (or a rig it does not fit) shows a message in the panel instead of only an error in Output
 	local okLoad, track = pcall(function()
 		local anim = Instance.new("Animation")
@@ -179,6 +276,7 @@ function Panel:load()
 	end)
 	if not okLoad or not track then
 		self.error = "nu am putut încărca animația: " .. tostring(track):gsub("^.-:%d+: ", "")
+		self:stop()
 		return nil
 	end
 	track.Looped = self.loop
@@ -195,7 +293,12 @@ function Panel:load()
 	end
 	self.conn = RunService.Heartbeat:Connect(function(dt)
 		if self.track then
-			self.animator:StepAnimations(dt)
+			-- the rig was deleted (undo) or the animator no longer works: stop instead of failing on every frame
+			if not (self.rig and self.rig.Parent) or not pcall(self.animator.StepAnimations, self.animator, dt) then
+				self:stop()
+				self:refresh()
+				return
+			end
 			if self.timeLabel and self.timeLabel.Parent then
 				self.timeLabel.Text = string.format("%.2f / %.2f s", self.track.TimePosition, self.track.Length)
 			end
@@ -243,7 +346,8 @@ function Panel:step(frames)
 end
 
 function Panel:destroy()
-	self:stop()
+	self.dead = true
+	self:stop() -- Heartbeat connection, marker connections, track, pose, the Animator made for the preview
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -423,9 +527,9 @@ function Panel:keyframes()
 	return list
 end
 
-function Panel:markers()
+function Panel:markers(kfs)
 	local out = {}
-	for _, kf in self:keyframes() do
+	for _, kf in kfs or self:keyframes() do
 		for _, m in kf:GetMarkers() do
 			table.insert(out, { name = m.Name, time = kf.Time, marker = m })
 		end
@@ -617,8 +721,12 @@ function Panel:render(parent)
 	self:renderGenerator(parent)
 
 	-- clips
-	local clips = self.clips or self:findClips()
-	body = UI.section(parent, "Animații  (" .. #clips .. ")", { key = "anim.clips", right = function(r)
+	local clips = self.clips
+	if not clips then
+		self:scanClips()
+		clips = {}
+	end
+	body = UI.section(parent, "Animații  (" .. (self.scanning and "…" or #clips) .. ")", { key = "anim.clips", right = function(r)
 		UI.button(r, "🔁", function()
 			self:findClips()
 			self:refresh()
@@ -628,16 +736,14 @@ function Panel:render(parent)
 	local lastGroup
 	for _, clip in clips do
 		if clip.Parent then
-			local group = clip.Parent:GetFullName():gsub("^Workspace%.", ""):gsub("^ReplicatedStorage%.", "")
+			-- group and length were read when the list was made (🔁 reads them again); the chosen clip is always fresh
+			local info = self.clipInfo and self.clipInfo[clip]
+			local group = info and info.group or clip.Parent:GetFullName()
 			if group ~= lastGroup then
 				UI.label(list, group, { dim = true, size = 11, height = 18 })
 				lastGroup = group
 			end
-			local kfs = clip:GetKeyframes()
-			local length = 0
-			for _, kf in kfs do
-				length = math.max(length, kf.Time)
-			end
+			local length = (info and clip ~= self.clip) and info.length or self:clipLength(clip)
 			UI.item(list, clip.Name, { icon = "►", selected = clip == self.clip, note = string.format("%.2fs", length),
 				onClick = function()
 					self:stop()
@@ -647,7 +753,9 @@ function Panel:render(parent)
 				end })
 		end
 	end
-	if #clips == 0 then
+	if self.scanning then
+		UI.note(body, "Caut animațiile din joc…")
+	elseif #clips == 0 then
 		UI.note(body, "Nicio animație (KeyframeSequence) în joc.")
 	end
 	if not self.clip then
@@ -757,7 +865,7 @@ function Panel:render(parent)
 	for _, fx in self.Editor.effects() do
 		table.insert(effectItems, { value = fx.Name, label = fx.Name })
 	end
-	local markers = self:markers()
+	local markers = self:markers(kfs)
 	if #markers == 0 then
 		UI.label(body, "Animația nu are markere.", { dim = true, size = 12 })
 	end
@@ -774,8 +882,13 @@ function Panel:render(parent)
 	end
 	local add = UI.hstack(body)
 	local box = UI.textbox(add, "", nil, { placeholder = "nume marker (ex. Hit)" })
+	box.Text = self.markerDraft or "" -- what was typed survives a redraw
+	box:GetPropertyChangedSignal("Text"):Connect(function()
+		self.markerDraft = box.Text
+	end)
 	UI.button(add, "+ Marker aici", function()
 		if box.Text ~= "" then
+			self.markerDraft = nil
 			self:addMarker(box.Text)
 		end
 	end, { width = 110 })

@@ -107,8 +107,12 @@ function App:panel(key)
 	return self.panels[key]
 end
 
-function App:render()
-	local scrollY = self.scroll.CanvasPosition.Y
+-- the tab bar only changes when the tab does (not on every refresh)
+function App:renderTabs()
+	if self.barTab == self.tab then
+		return
+	end
+	self.barTab = self.tab
 	for _, child in self.tabBar:GetChildren() do
 		if child:IsA("GuiObject") then
 			child:Destroy()
@@ -124,6 +128,14 @@ function App:render()
 			end
 		end, { selected = self.tab == t.key, height = 24, bold = self.tab == t.key, textSize = 12 }) -- 5 tabs in ~360 px
 	end
+end
+
+function App:render()
+	-- a redraw that was still waiting (for a text box, or for its turn) is not needed any more
+	self.renderGen = (self.renderGen or 0) + 1
+	self.pending, self.held = false, false
+	local scrollY = self.scroll.CanvasPosition.Y
+	self:renderTabs()
 	for _, child in self.content:GetChildren() do
 		if child:IsA("GuiObject") then
 			child:Destroy()
@@ -144,23 +156,56 @@ function App:render()
 	end)
 end
 
+-- the text box of the current tab that the user is typing in, if any
+function App:typingBox()
+	for _, d in self.content:GetDescendants() do
+		if d.ClassName == "TextBox" and d:IsFocused() then
+			return d
+		end
+	end
+	return nil
+end
+
 -- coalesces many changes into one redraw
 function App:refresh()
-	if self.pending then
+	if self.pending or self.dead then
 		return
 	end
 	self.pending = true
+	local gen = self.renderGen
 	task.defer(function()
+		self:flush(gen)
+	end)
+end
+
+-- A redraw rebuilds every text box, so it would wipe what the user is typing and take the focus away: it waits until
+-- the box is let go, plus one more beat (a click on a button took the focus; the button must still be there to be clicked).
+function App:flush(gen)
+	if self.dead or gen ~= self.renderGen then
+		return
+	end
+	if self:typingBox() then
+		self.held = true
+	elseif self.held then
+		self.held = false
+	else
 		self.pending = false
 		if self.root.Parent then
 			self:render()
 		end
+		return
+	end
+	task.delay(0.3, function()
+		self:flush(gen)
 	end)
 end
 
 -- redraw when effects change from anywhere (other windows, Claude, undo)
 function App:watch()
 	local function hook()
+		if self.dead then
+			return
+		end
 		for _, c in self.watchConns or {} do
 			c:Disconnect()
 		end
@@ -199,11 +244,15 @@ function App:watch()
 	if ok then
 		local function hookLog(folder)
 			if folder.Name == "LostCubeSession" then
-				table.insert(self.conns, folder:GetAttributeChangedSignal("Log"):Connect(function()
+				-- the folder is recreated now and then: keep exactly one connection (to the live one)
+				if self.logConn then
+					self.logConn:Disconnect()
+				end
+				self.logConn = folder:GetAttributeChangedSignal("Log"):Connect(function()
 					if self.tab == "Claude" then
 						self:refresh()
 					end
-				end))
+				end)
 			end
 		end
 		local existing = storage:FindFirstChild("LostCubeSession")
@@ -221,16 +270,26 @@ function App:watch()
 end
 
 function App:destroy()
+	self.dead = true -- no more redraws, no more re-hooking
 	UI.onCollapse = nil
 	for _, c in self.conns do
 		c:Disconnect()
 	end
+	if self.logConn then
+		self.logConn:Disconnect()
+		self.logConn = nil
+	end
 	for _, c in self.watchConns or {} do
 		c:Disconnect()
 	end
+	self.watchConns = nil
 	for _, p in self.panels do
 		if p.destroy then
-			p:destroy()
+			-- one panel failing to clean up must not leave the others running (Heartbeat loops, tasks)
+			local ok, err = pcall(p.destroy, p)
+			if not ok then
+				warn("LostCube:", err)
+			end
 		end
 	end
 	self.root:Destroy()

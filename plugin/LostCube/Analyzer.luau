@@ -11,6 +11,9 @@ ServerStorage.LostCubeAnalysis (saved with the place, never replicated to player
 	local report = Analyzer.load() or Analyzer.run(function(fraction, label) print(fraction, label) end)
 	print(Analyzer.context(report))                              -- Markdown, most important first (~15000 chars)
 	local findings = Analyzer.scanInstance(workspace.FreeModel)  -- backdoors, obfuscation, hidden purchases...
+Analyzer.load() decodes the stored JSON once and hands out the same table until the stored analysis changes (a new
+analysis, Ctrl+Z, the folder deleted...): treat it as READ-ONLY, or table.clone it first. Analyzer.context(loadedReport)
+is kept too. Analyzer.isStale never walks the game itself; it counts in the background (see there).
 
 A finding / issue: { severity = "high" | "medium" | "low", kind = "security.require", path = "Workspace.X.Script",
 line = 12?, message = "..." }. Everything is a heuristic over names, properties and source text (nothing is run).
@@ -208,13 +211,32 @@ local function blank(s)
 	return (string.gsub(s, "[^\n]", " "))
 end
 
+local SPACES = {}
+for i = 1, 200 do
+	SPACES[i] = string.rep(" ", i)
+end
+
 local function stripComments(src)
-	if not string.find(src, "--", 1, true) then
+	local at = string.find(src, "--", 1, true)
+	if not at then
 		return src
 	end
-	src = string.gsub(src, "(%-%-%[(=*)%[.-%]%2%])", blank)
-	src = string.gsub(src, "%-%-[^\n]*", blank)
-	return src
+	if string.find(src, "--[", 1, true) then -- a long comment starts with "--[" (plain find: most scripts have none)
+		src = string.gsub(src, "(%-%-%[(=*)%[.-%]%2%])", blank)
+		at = string.find(src, "--", 1, true)
+	end
+	-- a line comment (up to the newline) becomes as many spaces; the rest of the text is copied as it is
+	local out, n, pos = {}, 0, 1
+	while at do
+		local stop = string.find(src, "\n", at, true) or (#src + 1)
+		out[n + 1] = string.sub(src, pos, at - 1)
+		out[n + 2] = SPACES[stop - at] or string.rep(" ", stop - at)
+		n += 2
+		pos = stop
+		at = string.find(src, "--", pos, true)
+	end
+	out[n + 1] = string.sub(src, pos)
+	return table.concat(out)
 end
 
 -- line start offsets (+ the longest line, a sign of obfuscated / minified code)
@@ -278,11 +300,98 @@ local function blockText(text, starts, first, maxLines)
 	return table.concat(out, "\n")
 end
 
+-- The plain text a pattern starts with (after an optional leading %f[%w_] and one-character class): "wait%s*%(" ->
+-- "wait", "Knit%.CreateService" -> "Knit.CreateService", "[Hh]umanoid" -> "umanoid" (lead = 1 character before it).
+-- Looking for that text first (a plain find) and trying the pattern only there gives exactly the same matches much
+-- faster: a pattern would be tried at every single character of the script.
+local startCache = {}
+local function startsWith(pattern)
+	local info = startCache[pattern]
+	if info == nil then
+		info = false
+		local body = pattern
+		if string.sub(body, 1, 7) == "%f[%w_]" then
+			body = string.sub(body, 8)
+		end
+		local lead = 0
+		local close = string.find(body, "]", 2, true)
+		if string.sub(body, 1, 1) == "[" and close and close > 2 and string.sub(body, 2, 2) ~= "^"
+			and string.sub(body, close - 1, close - 1) ~= "%" and not string.find(string.sub(body, close + 1, close + 1), "[%*%?%-%+]") then
+			lead, body = 1, string.sub(body, close + 1) -- the class matches one character, right before the text
+		end
+		local chars, i = {}, 1
+		while i <= #body do
+			local ch, step = string.sub(body, i, i), 1
+			if ch == "%" then
+				ch, step = string.sub(body, i + 1, i + 1), 2
+				if ch == "" or string.find(ch, "%w") then -- %s, %a, %f, %1…: a class, not text
+					break
+				end
+			elseif string.find(ch, "[%^%$%(%)%.%[%]%*%+%-%?]") then
+				break
+			end
+			local quantifier = string.sub(body, i + step, i + step) -- it makes the character optional / repeated
+			if quantifier == "*" or quantifier == "?" or quantifier == "-" then
+				break
+			end
+			table.insert(chars, ch)
+			if quantifier == "+" then
+				break
+			end
+			i += step
+		end
+		if #chars >= 3 then
+			info = { lit = table.concat(chars), anchored = "^" .. pattern, lead = lead }
+		end
+		startCache[pattern] = info
+	end
+	return info
+end
+
+-- string.find(code, pattern, init) for patterns with at most one capture
+local function findPattern(code, pattern, init)
+	local info = startsWith(pattern)
+	if not info then
+		local p, e, capture = string.find(code, pattern, init)
+		return p, e, capture
+	end
+	init = init or 1
+	local lead = info.lead
+	while true do
+		local at = string.find(code, info.lit, init + lead, true)
+		if not at then
+			return nil
+		end
+		local p, e, capture = string.find(code, info.anchored, at - lead)
+		if p then
+			return p, e, capture
+		end
+		init = at - lead + 1
+	end
+end
+
+-- string.gmatch(code, pattern) for patterns with one capture (the whole match when there is none)
+local function gmatchPattern(code, pattern)
+	local info = startsWith(pattern)
+	if not info then
+		return string.gmatch(code, pattern)
+	end
+	local init = 1
+	return function()
+		local p, e, capture = findPattern(code, pattern, init)
+		if not p then
+			return nil
+		end
+		init = math.max(e, p) + 1
+		return capture or string.sub(code, p, e)
+	end
+end
+
 -- how many times a pattern matches (and where first); member = skip "x.wait(" / "x:wait(" (task.wait is fine)
 local function countMatches(code, pattern, member)
 	local n, first, init = 0, nil, 1
 	while true do
-		local p, e = string.find(code, pattern, init)
+		local p, e = findPattern(code, pattern, init)
 		if not p then
 			break
 		end
@@ -363,6 +472,12 @@ end
 
 local EXPLOIT_APIS = { "getgenv", "getrenv", "getrawmetatable", "hookfunction", "hookmetamethod", "setreadonly",
 	"getconnections", "firetouchinterest", "fireclickdetector", "getnamecallmethod", "checkcaller", "newcclosure", "setclipboard" }
+local EXPLOIT_PATTERN = {}
+for _, name in EXPLOIT_APIS do
+	EXPLOIT_PATTERN[name] = "%f[%w_]" .. name .. "%f[^%w_]"
+end
+local REMOTE_HANDLERS = { "OnServerEvent%s*:%s*Connect%s*%(", "OnServerInvoke%s*=%f[^=]" }
+local ENDLESS_LOOPS = { "%f[%w_]while%s+true%s+do%f[^%w_]", "%f[%w_]while%s+1%s+do%f[^%w_]" }
 local PASTE_HOSTS = { "pastebin.com", "raw.githubusercontent.com", "gist.githubusercontent.com", "hastebin.com", "paste.ee",
 	"rentry.co", "rentry.org", "controlc.com", "ghostbin.com", "glot.io", "githack.com", "pastefy.app", "paste.gg" }
 local TRUSTED_HOSTS = { "roblox.com", "rbxcdn.com", "robloxlabs.com", "gameanalytics.com" }
@@ -467,6 +582,36 @@ local function pathHas(path, list)
 	return false
 end
 
+local function isDigit(byte)
+	return byte ~= nil and byte >= 48 and byte <= 57
+end
+
+-- string.gmatch(code, "()https?://([%w%.%-]+)") (position, host), but looking for "://" first: the pattern would be
+-- tried at every character, and "rbxassetid://" makes "://" common while real URLs are rare
+local function eachUrl(code)
+	local from, lastEnd = 1, 0
+	return function()
+		while true do
+			local q = string.find(code, "://", from, true)
+			if not q then
+				return nil
+			end
+			from = q + 1
+			local start = (q >= 6 and string.sub(code, q - 5, q - 1) == "https" and q - 5)
+				or (q >= 5 and string.sub(code, q - 4, q - 1) == "http" and q - 4) or nil
+			if start and start > lastEnd then -- not inside the previous match
+				local _, stop = string.find(code, "^[%w%.%-]+", q + 3)
+				if stop then
+					lastEnd, from = stop, stop + 1
+					return start, string.sub(code, q + 3, stop)
+				end
+			end
+		end
+	end
+end
+
+local BLOB = string.rep("[%w%+/=]", 160) -- 160 base64 / hex characters in a row
+
 -- ---------------------------------------------------------------------------------------------
 -- one script: security signatures, risky / deprecated code and (with `facts`) statistics for the report
 -- meta = { path, name, class, server, client, workspace }; returns the number of lines
@@ -488,45 +633,45 @@ local function scanSource(meta, src, out, facts)
 	-- backdoors / viruses ---------------------------------------------------------------------
 	local loadsCode = false
 	if has("require") then
-		local pos, _, id = string.find(code, "require%s*%(%s*(%d%d%d%d%d+)%s*%)")
+		local pos, _, id = findPattern(code, "require%s*%(%s*(%d%d%d%d%d+)%s*%)")
 		if pos then
 			local admin = pathHas(meta.path, ADMIN_WORDS)
 			add(admin and "medium" or "high", "security.require", "require(" .. id .. ") încarcă un modul de pe site — "
 				.. (admin and "pare loader-ul unui sistem de admin; verifică ID-ul" or "semnătura clasică de backdoor din free models"), pos)
 			loadsCode = true
 		else
-			pos = string.find(code, "require%s*%(%s*0[xX]%x") or string.find(code, "require%s*%(%s*tonumber%s*%(")
-				or string.find(code, "require%s*%(%s*%d+%s*[%+%-%*/%%%^]") or string.find(code, "require%s*%(%s*[\"']%d")
+			pos = findPattern(code, "require%s*%(%s*0[xX]%x") or findPattern(code, "require%s*%(%s*tonumber%s*%(")
+				or findPattern(code, "require%s*%(%s*%d+%s*[%+%-%*/%%%^]") or findPattern(code, "require%s*%(%s*[\"']%d")
 			if pos then
 				add("high", "security.require", "require() cu un ID ascuns (hex, calcul sau text) — aproape sigur un backdoor", pos)
 				loadsCode = true
 			end
 		end
-		local mainModule = string.find(code, "require%s*%([^%)\n]-MainModule")
+		local mainModule = findPattern(code, "require%s*%([^%)\n]-MainModule")
 		if mainModule then
 			add("medium", "security.require", "require(…MainModule) — încarcă un modul public; verifică de unde vine", mainModule)
 		end
 	end
-	local p = string.find(code, "%f[%w_]loadstring%s*%(")
+	local p = findPattern(code, "%f[%w_]loadstring%s*%(")
 	if p then
 		loadsCode = true
 		local remote = has("HttpGet") or has("GetAsync") or has("RequestAsync")
 		add("high", "security.loadstring", "loadstring() rulează cod din text" .. (remote and " descărcat de pe internet" or "")
 			.. " — folosit de backdoor-uri și de cod ofuscat", p)
 	end
-	p = string.find(code, "%f[%w_]getfenv%s*%(") or string.find(code, "%f[%w_]setfenv%s*%(")
+	p = findPattern(code, "%f[%w_]getfenv%s*%(") or findPattern(code, "%f[%w_]setfenv%s*%(")
 	if p then
 		add(loadsCode and "high" or "medium", "security.fenv",
 			"getfenv/setfenv — des folosite ca să ascundă cod (și opresc optimizările Luau)", p)
 	end
 	for _, name in EXPLOIT_APIS do
-		p = string.find(code, "%f[%w_]" .. name .. "%f[^%w_]")
+		p = findPattern(code, EXPLOIT_PATTERN[name])
 		if p then
 			add("high", "security.exploit", name .. " e o funcție de executor (exploit) — codul ăsta nu e scris pentru joc", p)
 			break
 		end
 	end
-	p = string.find(code, ":HttpGet%s*%(") or string.find(code, ":HttpGetAsync%s*%(") or string.find(code, ":GetObjects%s*%(")
+	p = findPattern(code, ":HttpGet%s*%(") or findPattern(code, ":HttpGetAsync%s*%(") or findPattern(code, ":GetObjects%s*%(")
 	if p then
 		add("high", "security.exploit", "game:HttpGet / GetObjects merg doar în executoare de exploit-uri — cod suspect", p)
 	end
@@ -534,33 +679,57 @@ local function scanSource(meta, src, out, facts)
 	-- obfuscation
 	local obfuscated = false
 	if has("\\") then
-		local _, hexes = string.gsub(code, "\\[xX]%x%x", "")
-		local _, decimals = string.gsub(code, "\\%d%d?%d?", "")
+		-- escapes like \x41 and \065 (obfuscated code has hundreds); only the backslashes are visited
+		local hexes, decimals, at = 0, 0, string.find(code, "\\", 1, true)
+		while at do
+			local nextByte = string.byte(code, at + 1) -- 120 = x, 88 = X
+			if (nextByte == 120 or nextByte == 88) and string.find(code, "^%x%x", at + 2) then
+				hexes += 1
+				at += 4
+			elseif isDigit(nextByte) then
+				decimals += 1
+				at += isDigit(string.byte(code, at + 2)) and (isDigit(string.byte(code, at + 3)) and 4 or 3) or 2
+			else
+				at += 1
+			end
+			at = string.find(code, "\\", at, true)
+		end
 		if hexes >= 24 or decimals >= 40 then
 			obfuscated = true
 			add("high", "security.obfuscated", int(hexes + decimals)
-				.. " caractere ascunse prin coduri escape (\\x.. / \\ddd) — cod ofuscat", string.find(code, "\\[xX%d]"))
+				.. " caractere ascunse prin coduri escape (\\x.. / \\ddd) — cod ofuscat", (string.find(code, "\\[xX%d]")))
 		end
 	end
 	if not obfuscated and has(".char") then
-		for args in string.gmatch(code, "%.char%s*%(([%d%s,]+)%)") do
+		for args in gmatchPattern(code, "%.char%s*%(([%d%s,]+)%)") do
 			local _, commas = string.gsub(args, ",", "")
 			if commas >= 15 then
 				obfuscated = true
 				add("high", "security.obfuscated", "string.char cu " .. int(commas + 1) .. " coduri — text ascuns (cod ofuscat)",
-					string.find(code, "%.char%s*%("))
+					findPattern(code, "%.char%s*%("))
 				break
 			end
 		end
 	end
-	if not obfuscated and string.find(code, "[%.:]reverse%s*%(") and (has("require") or has("getfenv") or loadsCode) then
+	if not obfuscated and has("reverse") and findPattern(code, "[%.:]reverse%s*%(") and (has("require") or has("getfenv") or loadsCode) then
 		add("medium", "security.obfuscated", "string.reverse lângă require/getfenv — truc des folosit ca să ascundă ID-uri",
-			string.find(code, "[%.:]reverse%s*%("))
+			findPattern(code, "[%.:]reverse%s*%("))
 	end
 	if longest > 2000 then
 		addAt("medium", "security.longLine", "o linie de " .. int(longest) .. " caractere — cod ofuscat sau minificat", longestLine)
 	elseif longest > 300 then
-		local blob = string.find(code, string.rep("[%w%+/=]", 160))
+		local blob -- a run cannot cross a line: only the lines that are long enough are searched
+		for i = 1, #starts do
+			local from = starts[i]
+			local to = starts[i + 1] and starts[i + 1] - 2 or #code
+			if to - from >= 159 then
+				local found = string.find(string.sub(code, from, to), BLOB)
+				if found then
+					blob = from + found - 1
+					break
+				end
+			end
+		end
 		if blob then
 			add("medium", "security.blob", "un șir codificat foarte lung (base64 / hex) — poate ascunde cod", blob)
 		end
@@ -570,8 +739,8 @@ local function scanSource(meta, src, out, facts)
 	if has("://") then
 		local seen = {}
 		local posting = has("PostAsync") or has("RequestAsync")
-		for pos, host in string.gmatch(code, "()https?://([%w%.%-]+)") do
-			host = string.lower(host)
+		for pos, host in eachUrl(code) do
+			host = string.lower(host :: string)
 			if not seen[host] then
 				seen[host] = true
 				if facts then
@@ -590,7 +759,7 @@ local function scanSource(meta, src, out, facts)
 	end
 
 	-- purchases where nobody expects them (classic free-model scam)
-	p = string.find(code, "Prompt%a*Purchase%s*%(")
+	p = findPattern(code, "Prompt%a*Purchase%s*%(")
 	if p then
 		if facts then
 			facts.market.prompts += countMatches(code, "Prompt%a*Purchase%s*%(")
@@ -601,17 +770,17 @@ local function scanSource(meta, src, out, facts)
 				.. (sneaky and " (la intrare / atingere)" or "") .. " — escrocherie tipică din free models; verifică ID-ul", p)
 		end
 	end
-	p = string.find(code, ":LoadAsset%s*%(")
+	p = findPattern(code, ":LoadAsset%s*%(")
 	if p then
 		add("medium", "security.insert", "InsertService:LoadAsset încarcă modele în timpul jocului — verifică ce ID-uri se încarcă", p)
 	end
 
 	-- remotes: what does the server do with what clients send?
 	if has("OnServerEvent") or has("OnServerInvoke") then
-		for _, pattern in { "OnServerEvent%s*:%s*Connect%s*%(", "OnServerInvoke%s*=%f[^=]" } do
+		for _, pattern in REMOTE_HANDLERS do
 			local init = 1
 			while true do
-				local p1, e1 = string.find(code, pattern, init)
+				local p1, e1 = findPattern(code, pattern, init)
 				if not p1 then
 					break
 				end
@@ -667,15 +836,15 @@ local function scanSource(meta, src, out, facts)
 	end
 	if meta.server and has(":InvokeClient") then
 		add("medium", "remote.invokeClient", "InvokeClient: serverul așteaptă răspunsul clientului — un exploiter îl poate bloca la nesfârșit",
-			string.find(code, ":InvokeClient", 1, true))
+			(string.find(code, ":InvokeClient", 1, true)))
 	end
 
 	-- loops that never yield freeze the server / the client
 	if has("while") then
-		for _, pattern in { "%f[%w_]while%s+true%s+do%f[^%w_]", "%f[%w_]while%s+1%s+do%f[^%w_]" } do
+		for _, pattern in ENDLESS_LOOPS do
 			local init = 1
 			while true do
-				local p1, e1 = string.find(code, pattern, init)
+				local p1, e1 = findPattern(code, pattern, init)
 				if not p1 then
 					break
 				end
@@ -699,25 +868,25 @@ local function scanSource(meta, src, out, facts)
 	end
 
 	-- common mistakes
-	if meta.server and string.find(code, "%.LocalPlayer%f[^%w_]") then
+	if meta.server and findPattern(code, "%.LocalPlayer%f[^%w_]") then
 		add("medium", "code.localPlayerServer", "LocalPlayer într-un Script de server — acolo e mereu nil",
-			string.find(code, ".LocalPlayer", 1, true))
+			(string.find(code, ".LocalPlayer", 1, true)))
 	end
 	if (has(":GetAsync") or has(":SetAsync") or has(":UpdateAsync")) and has("DataStore") and not has("pcall")
 		and not has("Promise") then
 		add("medium", "data.noPcall", "DataStore fără pcall — o eroare de rețea oprește scriptul și se pot pierde date",
-			string.find(code, ":%a+Async%s*%("))
+			(string.find(code, ":%a+Async%s*%(")))
 		if facts then
 			facts.datastore.noPcall += 1
 		end
 	end
-	if meta.client and has("leaderstats") and string.find(code, "%.Value%s*[%+%-]?=%f[^=]") then
+	if meta.client and has("leaderstats") and findPattern(code, "%.Value%s*[%+%-]?=%f[^=]") then
 		add("low", "code.clientStats", "LocalScript care schimbă leaderstats — schimbarea nu ajunge pe server (nu se vede, nu se salvează)",
-			string.find(code, "leaderstats", 1, true))
+			(string.find(code, "leaderstats", 1, true)))
 	end
 	if meta.client and has("ProcessReceipt") then
 		add("medium", "market.clientReceipt", "ProcessReceipt într-un LocalScript — merge doar pe server, cumpărăturile nu se livrează",
-			string.find(code, "ProcessReceipt", 1, true))
+			(string.find(code, "ProcessReceipt", 1, true)))
 	end
 
 	-- deprecated APIs (one finding per kind and script; Analyzer.run sums them up for the whole game)
@@ -750,12 +919,12 @@ local function scanSource(meta, src, out, facts)
 	-- statistics for the report ---------------------------------------------------------------
 	if facts then
 		if has("GetService") then
-			for name in string.gmatch(code, "GetService%s*%(%s*[\"']([%w_]+)[\"']") do
+			for name in gmatchPattern(code, "GetService%s*%(%s*[\"']([%w_]+)[\"']") do
 				bump(facts.services, name)
 			end
 		end
 		if has("game.") then
-			for name in string.gmatch(code, "%f[%w_]game%.(%u[%w_]*)") do
+			for name in gmatchPattern(code, "%f[%w_]game%.(%u[%w_]*)") do
 				if KNOWN_SERVICES[name] then
 					bump(facts.services, name)
 				end
@@ -764,7 +933,7 @@ local function scanSource(meta, src, out, facts)
 		for _, fw in FRAMEWORKS do
 			if fw.code and not facts.frameworks[fw.name] then
 				for _, pattern in fw.code do
-					if string.find(code, pattern) then
+					if findPattern(code, pattern) then
 						facts.frameworks[fw.name] = meta.path
 						break
 					end
@@ -791,16 +960,16 @@ local function scanSource(meta, src, out, facts)
 		end
 		local m = facts.market
 		if has("GamePass") then
-			for id in string.gmatch(code, "UserOwnsGamePassAsync%s*%([^,%)]+,%s*(%d+)") do
+			for id in gmatchPattern(code, "UserOwnsGamePassAsync%s*%([^,%)]+,%s*(%d+)") do
 				m.gamepasses[id] = true
 			end
-			for id in string.gmatch(code, "PromptGamePassPurchase%s*%([^,%)]+,%s*(%d+)") do
+			for id in gmatchPattern(code, "PromptGamePassPurchase%s*%([^,%)]+,%s*(%d+)") do
 				m.gamepasses[id] = true
 			end
 		end
 		if has("PromptProductPurchase") then
 			m.productPrompts += 1
-			for id in string.gmatch(code, "PromptProductPurchase%s*%([^,%)]+,%s*(%d+)") do
+			for id in gmatchPattern(code, "PromptProductPurchase%s*%([^,%)]+,%s*(%d+)") do
 				m.products[id] = true
 			end
 		end
@@ -932,7 +1101,7 @@ local function newState()
 		total = 0, errors = 0, services = {}, classes = {}, names = {}, nameCount = 0, scripts = {}, structure = {},
 		kinds = {}, frameworks = {}, findings = {},
 		part = { count = 0, workspace = 0, unanchored = 0, loose = 0, meshes = 0, meshIds = {}, uniqueMeshes = 0, precise = 0,
-			unions = 0, invisibleColliders = 0, area = 0, colors = {}, materials = {} },
+			unions = 0, invisibleColliders = 0, area = 0, colors = {}, materials = {}, humanoidModels = {} },
 		vfx = { counts = {}, textures = {}, colors = {}, examples = {}, rate = 0, heavy = 0 },
 		lights = { count = 0, shadows = 0 },
 		sounds = { count = 0, looped = 0, playing = 0, ids = {}, music = {}, musicCount = 0, groups = 0 },
@@ -1046,8 +1215,9 @@ end
 
 local function visitDecal(S, d)
 	S.decals.count += 1
-	if d.Texture ~= "" then
-		S.decals.ids[d.Texture] = true
+	local texture = d.Texture
+	if texture ~= "" then
+		S.decals.ids[texture] = true
 	end
 end
 
@@ -1079,8 +1249,9 @@ end
 function VISIT.ParticleEmitter(S, e)
 	local V = S.vfx
 	if e.Enabled then
-		V.rate += e.Rate
-		if e.Rate * e.Lifetime.Max > 400 then -- particles alive at once
+		local rate = e.Rate
+		V.rate += rate
+		if rate * e.Lifetime.Max > 400 then -- particles alive at once
 			V.heavy += 1
 		end
 	end
@@ -1112,8 +1283,9 @@ end
 function VISIT.Sound(S, s)
 	local A = S.sounds
 	A.count += 1
-	if s.SoundId ~= "" then
-		A.ids[s.SoundId] = true
+	local soundId = s.SoundId
+	if soundId ~= "" then
+		A.ids[soundId] = true
 	end
 	if s.Playing then
 		A.playing += 1
@@ -1259,7 +1431,15 @@ local function visitPart(S, p, inWorkspace)
 	if not p.Anchored then
 		P.unanchored += 1
 		local model = p:FindFirstAncestorOfClass("Model")
-		if not (model and model:FindFirstChildOfClass("Humanoid")) then -- characters are meant to move
+		local character = false -- characters are meant to move (asked once per model: a model can have thousands of parts)
+		if model then
+			character = P.humanoidModels[model]
+			if character == nil then
+				character = model:FindFirstChildOfClass("Humanoid") ~= nil
+				P.humanoidModels[model] = character
+			end
+		end
+		if not character then
 			P.loose += 1
 		end
 	end
@@ -1393,13 +1573,23 @@ end
 -- ---------------------------------------------------------------------------------------------
 -- from the collected state to the report
 -- ---------------------------------------------------------------------------------------------
+-- MarketplaceService:GetProductInfoAsync; the deprecated GetProductInfo in a Studio that does not have it yet
+local function productInfo(assetId)
+	local market = game:GetService("MarketplaceService")
+	local okMethod, method = pcall(function()
+		return market.GetProductInfoAsync
+	end)
+	if okMethod and method then
+		return method(market, assetId)
+	end
+	return market:GetProductInfo(assetId)
+end
+
 local function placeInfo()
 	local info = { name = prop(game, "Name") or "?", placeId = prop(game, "PlaceId") or 0, gameId = prop(game, "GameId") or 0,
 		creatorType = enumName(prop(game, "CreatorType")), creatorId = prop(game, "CreatorId"), placeVersion = prop(game, "PlaceVersion") }
 	if type(info.placeId) == "number" and info.placeId > 0 then
-		local ok, product = pcall(function() -- yields (web request)
-			return game:GetService("MarketplaceService"):GetProductInfo(info.placeId)
-		end)
+		local ok, product = pcall(productInfo, info.placeId) -- yields (web request)
 		if ok and type(product) == "table" then
 			info.title = type(product.Name) == "string" and product.Name or nil
 			local description = type(product.Description) == "string" and product.Description or nil
@@ -2178,28 +2368,74 @@ function Analyzer.save(report)
 	end)
 end
 
+-- The decoded report of the last load(): decoding the JSON of a big game takes a good while and the panels ask on every
+-- redraw. The stored text is compared on every call instead of listening for changes, so whatever changes it (a new
+-- analysis, Ctrl+Z, the folder deleted or replaced, someone editing the StringValue) is noticed, with no connections.
+-- { folder =, parts = { the Report chunks }, report = table | false (unreadable), ai = what report.ai was made from }
+local loaded
+local published = setmetatable({}, { __mode = "k" }) -- the tables load() handed out (safe keys of the context cache)
+local contexts = setmetatable({}, { __mode = "k" }) -- report -> { [maxChars] = Markdown }
+
+local function sameAI(a, b)
+	if a == nil or b == nil then
+		return a == b
+	end
+	return a.text == b.text and a.model == b.model and a.at == b.at
+end
+
+-- Analyzer.load() hands out the same table until the stored analysis changes: treat it as READ-ONLY (copy it with
+-- table.clone, or build a new table, before changing anything). Analyzer itself never changes a table it handed out.
 function Analyzer.load()
 	local f = folder(false)
 	if not f then
+		loaded = nil
 		return nil
 	end
 	local first = f:FindFirstChild("Report")
 	if not first or not first:IsA("StringValue") or first.Value == "" then
+		loaded = nil
 		return nil
 	end
 	local parts = { first.Value }
 	for i = 2, tonumber(f:GetAttribute("Chunks")) or 1 do
 		local v = f:FindFirstChild("Report" .. i)
 		if not v or not v:IsA("StringValue") then
+			loaded = nil
 			return nil
 		end
 		table.insert(parts, v.Value)
 	end
+	local ai = readAI(f)
+	local cache = loaded
+	if cache and cache.folder == f and #cache.parts == #parts then
+		local same = true
+		for i, part in parts do
+			if cache.parts[i] ~= part then
+				same = false
+				break
+			end
+		end
+		if same then
+			if not cache.report then
+				return nil
+			end
+			if not (cache.report.ai == cache.ai and sameAI(cache.ai, ai)) then -- Claude's analysis changed: a new table
+				local report = table.clone(cache.report)
+				report.ai = ai
+				cache.report, cache.ai = report, ai
+			end
+			published[cache.report] = true
+			return cache.report
+		end
+	end
 	local ok, report = pcall(HttpService.JSONDecode, HttpService, table.concat(parts))
 	if not ok or type(report) ~= "table" then
+		loaded = { folder = f, parts = parts, report = false }
 		return nil
 	end
-	report.ai = readAI(f)
+	report.ai = ai
+	loaded = { folder = f, parts = parts, report = report, ai = ai }
+	published[report] = true
 	return report
 end
 
@@ -2251,12 +2487,15 @@ function Analyzer.resolve(path)
 	return walk(game, path, 0)
 end
 
--- instance / script counts right now (cached for a while: the panel asks on every redraw)
-local countCache
-local function quickCounts()
-	if countCache and os.clock() - countCache.t < 30 then
-		return countCache
-	end
+-- Instance / script counts of the game right now. Counting walks every instance, so it never runs inside a redraw (the
+-- panel asks on every one): isStale() uses the last numbers and asks for fresh ones in the background, at most once
+-- every COUNT_EVERY seconds, yielding like the scan does.
+local COUNT_EVERY = 180
+local countCache -- { t = os.time(), instances =, scripts = } (numbers are nil when counting failed)
+local counting = false
+local countWaiters = {} -- functions to call (once) when a background count finishes
+
+local function countGame()
 	local instances, scripts = 0, 0
 	for _, name in SERVICES do
 		local service = findService(name)
@@ -2268,29 +2507,70 @@ local function quickCounts()
 					if SCRIPT_CLASSES[child.ClassName] then
 						scripts += 1
 					end
-					for _, d in descendants do
+					for i, d in descendants do
 						if SCRIPT_CLASSES[d.ClassName] then
 							scripts += 1
 						end
+						if i % 5000 == 0 then
+							breathe()
+						end
 					end
 				end
+				breathe()
 			end
 		end
 	end
-	countCache = { t = os.clock(), instances = instances, scripts = scripts }
-	return countCache
+	return instances, scripts
 end
 
--- older than 7 days, made by another version of the analyzer, or the game changed a lot since
-function Analyzer.isStale(report)
+local function requestCounts(onReady)
+	if onReady then
+		countWaiters[onReady] = true
+	end
+	if counting or Analyzer.running then
+		return
+	end
+	counting = true
+	task.defer(function() -- after the current redraw, not inside it
+		local startedAt = os.time()
+		lastYield = os.clock()
+		local ok, instances, scripts = pcall(countGame)
+		counting = false
+		if countCache and countCache.t >= startedAt then
+			-- a scan finished meanwhile: its numbers are newer
+		elseif ok then
+			countCache = { t = os.time(), instances = instances, scripts = scripts }
+		elseif countCache then
+			countCache.t = os.time() -- counting failed: keep the last numbers, try again later
+		else
+			countCache = { t = os.time() }
+		end
+		local waiters = countWaiters
+		countWaiters = {}
+		for fn in waiters do
+			pcall(fn)
+		end
+	end)
+end
+
+-- Older than 7 days, made by another version of the analyzer, or the game changed a lot since. The "changed a lot" part
+-- needs the instance counts: when they are not known yet (or old) they are counted in the background and the answer
+-- meanwhile only looks at the age; `onReady` (optional) is called once the new counts are there (ask again then).
+function Analyzer.isStale(report, onReady)
 	if type(report) ~= "table" or report.version ~= Analyzer.VERSION then
 		return true
 	end
 	if os.time() - (tonumber(report.at) or 0) > STALE_AFTER then
 		return true
 	end
+	local now = countCache
+	if not now or os.time() - now.t >= COUNT_EVERY then
+		requestCounts(onReady)
+	end
+	if not (now and now.instances and now.scripts) then
+		return false
+	end
 	local totals = report.totals or {}
-	local now = quickCounts()
 	local function changed(current, before, relative, absolute)
 		before = tonumber(before) or 0
 		local diff = math.abs(current - before)
@@ -2424,7 +2704,7 @@ local function scan(onProgress)
 		warn("LostCube: analiza nu s-a putut salva:", err)
 	end
 	report.ai = readAI(folder(false))
-	countCache = { t = os.clock(), instances = report.totals.instances, scripts = report.totals.scripts }
+	countCache = { t = os.time(), instances = report.totals.instances, scripts = report.totals.scripts }
 	progress(1, "Gata", true)
 	return report
 end
@@ -2469,14 +2749,7 @@ local function where(path, line)
 	return " — `" .. path .. (line and (":" .. int(line)) or "") .. "`"
 end
 
-function Analyzer.context(report, maxChars)
-	if report == nil then
-		report = Analyzer.load()
-	end
-	maxChars = maxChars or 15000
-	if type(report) ~= "table" then
-		return "# Joc Roblox\n\n_LostCube nu a analizat încă jocul (Analyzer.run())._"
-	end
+local function buildContext(report, maxChars)
 	local r = report
 	local place, totals, genre, avatar = r.place or {}, r.totals or {}, r.genre or {}, r.avatar or {}
 	local code, perf, vfx, anim = r.code or {}, r.performance or {}, r.vfx or {}, r.animations or {}
@@ -2722,6 +2995,32 @@ function Analyzer.context(report, maxChars)
 		end
 	end
 	return table.concat(out, "\n\n")
+end
+
+-- The Markdown of a report. The text of a report that load() handed out is kept (the Claude tab asks on every redraw);
+-- any other table is converted every time, because its owner may have changed it since.
+function Analyzer.context(report, maxChars)
+	if report == nil then
+		report = Analyzer.load()
+	end
+	maxChars = maxChars or 15000
+	if type(report) ~= "table" then
+		return "# Joc Roblox\n\n_LostCube nu a analizat încă jocul (Analyzer.run())._"
+	end
+	if not published[report] then
+		return buildContext(report, maxChars)
+	end
+	local texts = contexts[report]
+	if not texts then
+		texts = {}
+		contexts[report] = texts
+	end
+	local text = texts[maxChars]
+	if not text then
+		text = buildContext(report, maxChars)
+		texts[maxChars] = text
+	end
+	return text
 end
 
 -- the internals, for tests

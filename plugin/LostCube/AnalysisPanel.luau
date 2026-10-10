@@ -165,12 +165,48 @@ local function safe(parent, fn, ...)
 	end
 end
 
+-- A section that starts folded is not built until it is opened: the whole tab is redrawn on every refresh, and most of
+-- these sections are long lists nobody is looking at (the context box alone is 15000 characters of text layout).
+local function lazySection(parent, title, opts, build)
+	local body
+	local built = false
+	local function fill()
+		if not built then
+			built = true
+			safe(body, build, body)
+		end
+	end
+	opts.onToggle = function(collapsed)
+		if not collapsed then
+			fill()
+		end
+	end
+	body = UI.section(parent, title, opts)
+	if not UI.collapsed[opts.key or title] then
+		fill()
+	end
+	return body
+end
+
 -- ---------------------------------------------------------------------------------------------
 -- state + actions
 -- ---------------------------------------------------------------------------------------------
 function Panel.new(ctx)
-	return setmetatable({ ctx = ctx, report = nil, loaded = false, running = false, fraction = 0, label = "",
+	local self = setmetatable({ ctx = ctx, report = nil, loaded = false, running = false, fraction = 0, label = "",
 		filter = "all", showAll = false, aiRunning = false }, Panel)
+	-- the instance count that decides "the game changed a lot" runs in the background (Analyzer.isStale): when it is
+	-- done, redraw only if the answer changed and this tab is the one on screen
+	self.onCounts = function()
+		local app = self.ctx.app
+		if self.dead or self.running or not self.report or (app and app.tab ~= "Game") then
+			return
+		end
+		local ok, stale = pcall(Analyzer.isStale, self.report)
+		if ok and (stale == true) ~= (self.staleShown == true) then
+			self:refresh()
+		end
+	end
+	return self
 end
 
 function Panel:refresh()
@@ -259,8 +295,7 @@ function Panel:askClaude()
 	end
 	self.aiRunning, self.aiError, self.aiStatus = true, nil, nil
 	self.aiStarted = os.clock()
-	local report = self.report
-	local context = self:context(report)
+	local context = self:context(self.report)
 	self:refresh()
 	task.spawn(function()
 		local ok, success, text, info = pcall(AI.analyzeGame, self.ctx.plugin, context, {
@@ -279,7 +314,15 @@ function Panel:askClaude()
 				model = okModel and id or nil
 			end
 			model = tostring(model or "Claude")
-			report.ai = { text = text, model = model, at = os.time() }
+			local current = self.report -- the report may be the table Analyzer.load() shares: a copy gets the answer
+			if current then
+				local updated = table.clone(current)
+				updated.ai = { text = text, model = model, at = os.time() }
+				if self.contextFor == current then
+					self.contextFor = updated -- the Markdown for Claude does not include its own answer
+				end
+				self.report = updated
+			end
 			local saved, err = pcall(Analyzer.setAI, text, model)
 			if not saved then
 				self.aiError = "Analiza lui Claude nu s-a putut salva în joc: " .. clean(err)
@@ -378,7 +421,8 @@ function Panel:renderOverview(parent, r)
 		stat(body, "PlaceId", tostring(place.placeId) .. (place.creator and ("  ·  " .. tostring(place.creator)) or ""))
 	end
 	stat(body, "Analizat", string.format("%s  (%s s)", date(r.at), tostring(r.duration or "?")))
-	local okStale, stale = pcall(Analyzer.isStale, r)
+	local okStale, stale = pcall(Analyzer.isStale, r, self.onCounts)
+	self.staleShown = okStale and stale or false
 	if okStale and stale and not self.running then
 		UI.note(body, "Analiza e veche sau jocul s-a schimbat mult de atunci — apasă <b>Reanalizează</b>.", C.warn)
 	end
@@ -538,8 +582,13 @@ function Panel:renderSecurity(parent, r)
 end
 
 function Panel:renderPerformance(parent, r)
+	lazySection(parent, "⚡ Performanță", { key = "game.perf", collapsed = true }, function(body)
+		self:fillPerformance(body, r)
+	end)
+end
+
+function Panel:fillPerformance(body, r)
 	local p = r.performance or {}
-	local body = UI.section(parent, "⚡ Performanță", { key = "game.perf", collapsed = true })
 	local function warnIf(cond)
 		return cond and C.warn or nil
 	end
@@ -564,8 +613,13 @@ function Panel:renderPerformance(parent, r)
 end
 
 function Panel:renderCode(parent, r)
+	lazySection(parent, "📜 Cod", { key = "game.code", collapsed = true }, function(body)
+		self:fillCode(body, r)
+	end)
+end
+
+function Panel:fillCode(body, r)
 	local code = r.code or {}
-	local body = UI.section(parent, "📜 Cod", { key = "game.code", collapsed = true })
 	stat(body, "Scripturi", string.format("%s Script · %s Local · %s Module", num(code.scripts), num(code.localScripts),
 		num(code.modules)))
 	stat(body, "Linii", num(code.lines) .. ((code.disabled or 0) > 0 and ("  ·  " .. num(code.disabled) .. " dezactivate") or ""))
@@ -621,8 +675,13 @@ function Panel:renderCode(parent, r)
 end
 
 function Panel:renderAvatar(parent, r)
+	lazySection(parent, "🧍 Avatar și personaje", { key = "game.avatar", collapsed = true }, function(body)
+		self:fillAvatar(body, r)
+	end)
+end
+
+function Panel:fillAvatar(body, r)
 	local a = r.avatar or {}
-	local body = UI.section(parent, "🧍 Avatar și personaje", { key = "game.avatar", collapsed = true })
 	stat(body, "Rig", tostring(a.rigType or "necunoscut") .. (a.rigSource and ("  (" .. a.rigSource .. ")") or ""))
 	stat(body, "WalkSpeed", tostring(a.walkSpeed or "?"))
 	stat(body, "Săritură", a.useJumpPower == false and ("JumpHeight " .. tostring(a.jumpHeight))
@@ -641,8 +700,13 @@ function Panel:renderAvatar(parent, r)
 end
 
 function Panel:renderVFX(parent, r)
+	lazySection(parent, "✨ Efecte și animații existente", { key = "game.vfx", collapsed = true }, function(body)
+		self:fillVFX(body, r)
+	end)
+end
+
+function Panel:fillVFX(body, r)
 	local vfx, anim = r.vfx or {}, r.animations or {}
-	local body = UI.section(parent, "✨ Efecte și animații existente", { key = "game.vfx", collapsed = true })
 	local counts = {}
 	for class, n in vfx.counts or {} do
 		table.insert(counts, class .. " " .. num(n))
@@ -690,9 +754,14 @@ function Panel:renderVFX(parent, r)
 end
 
 function Panel:renderStyle(parent, r)
+	lazySection(parent, "🎨 Stil vizual", { key = "game.style", collapsed = true }, function(body)
+		self:fillStyle(body, r)
+	end)
+end
+
+function Panel:fillStyle(body, r)
 	local style = r.style or {}
 	local l = style.lighting or {}
-	local body = UI.section(parent, "🎨 Stil vizual", { key = "game.style", collapsed = true })
 	if #(style.colors or {}) > 0 then
 		UI.label(body, "Culori dominante (după suprafață)", { dim = true, size = 11 })
 		swatches(body, style.colors)
@@ -728,8 +797,13 @@ function Panel:renderStyle(parent, r)
 end
 
 function Panel:renderInterface(parent, r)
+	lazySection(parent, "🖥 UI și audio", { key = "game.ui", collapsed = true }, function(body)
+		self:fillInterface(body, r)
+	end)
+end
+
+function Panel:fillInterface(body, r)
 	local ui, audio = r.ui or {}, r.audio or {}
-	local body = UI.section(parent, "🖥 UI și audio", { key = "game.ui", collapsed = true })
 	stat(body, "ScreenGui", num(ui.screenGuis) .. "  ·  " .. num(ui.guiObjects) .. " elemente")
 	if #(ui.names or {}) > 0 then
 		UI.label(body, list(ui.names, 20), { dim = true, size = 11, wrap = true })
@@ -744,7 +818,12 @@ function Panel:renderInterface(parent, r)
 end
 
 function Panel:renderContext(parent, r)
-	local body = UI.section(parent, "📋 Copiază contextul pentru Claude", { key = "game.context", collapsed = true })
+	lazySection(parent, "📋 Copiază contextul pentru Claude", { key = "game.context", collapsed = true }, function(body)
+		self:fillContext(body, r)
+	end)
+end
+
+function Panel:fillContext(body, r)
 	local text = self:context(r)
 	UI.label(body, "Descrierea jocului pentru Claude (" .. num(#text) .. " caractere). Clic în casetă, Ctrl+A, Ctrl+C și "
 		.. "lipește-o oriunde. Claude (prin Studio MCP) o citește direct din ServerStorage.LostCubeAnalysis.Context.",

@@ -53,14 +53,18 @@ function Panel.new(ctx)
 end
 
 function Panel:refresh()
-	self.ctx.app:refresh()
+	if not self.dead then
+		self.ctx.app:refresh()
+	end
 end
 
+-- fn must not yield: the recording stays open meanwhile (and every edit of the user lands in it)
 local function record(name, fn)
 	local ok, id = pcall(ChangeHistoryService.TryBeginRecording, ChangeHistoryService, "LostCube: " .. name)
 	local done, err = pcall(fn)
 	if ok and id then
-		ChangeHistoryService:FinishRecording(id, done and Enum.FinishRecordingOperation.Commit or Enum.FinishRecordingOperation.Cancel)
+		pcall(ChangeHistoryService.FinishRecording, ChangeHistoryService, id,
+			done and Enum.FinishRecordingOperation.Commit or Enum.FinishRecordingOperation.Cancel)
 	end
 	if done then
 		pcall(function()
@@ -101,17 +105,19 @@ end
 -- ---------------------------------------------------------------------------------------------
 -- rig
 -- ---------------------------------------------------------------------------------------------
+-- the Animator of the rig; made when missing (the second value is true then: Panel:stop takes it away again)
 local function animatorOf(rig)
 	local owner = rig:FindFirstChildOfClass("Humanoid") or rig:FindFirstChildOfClass("AnimationController")
 	if not owner then
 		return nil
 	end
 	local animator = owner:FindFirstChildOfClass("Animator")
-	if not animator then
-		animator = Instance.new("Animator")
-		animator.Parent = owner
+	if animator then
+		return animator, false
 	end
-	return animator
+	animator = Instance.new("Animator")
+	animator.Parent = owner
+	return animator, true
 end
 
 local function rigType(rig)
@@ -151,25 +157,56 @@ function Panel:makeDummy(kind)
 		self:refresh()
 		return
 	end
-	local done, err = record("dummy " .. kind, function()
+	if self.making then
+		return -- one is already on its way
+	end
+	-- The model is built first: it waits for the web (it yields), and a recording kept open across a yield would
+	-- swallow whatever the user edits meanwhile. Only putting it into the place is recorded.
+	self.making = true
+	local built, model = pcall(function()
 		local desc = Instance.new("HumanoidDescription")
 		local light, dark = Color3.fromRGB(214, 216, 226), Color3.fromRGB(40, 40, 48)
 		desc.HeadColor, desc.LeftArmColor, desc.RightArmColor = light, light, light
 		desc.LeftLegColor, desc.RightLegColor, desc.TorsoColor = dark, dark, dark
-		local ok, model = pcall(Players.CreateHumanoidModelFromDescription, Players, desc, Enum.HumanoidRigType[kind])
-		if not (ok and model) then
-			error("nu am putut crea dummy-ul: " .. friendly(model))
+		-- CreateHumanoidModelFromDescriptionAsync replaces the deprecated name
+		local okMethod, method = pcall(function()
+			return Players.CreateHumanoidModelFromDescriptionAsync
+		end)
+		local ok, result
+		if okMethod and method then
+			ok, result = pcall(method, Players, desc, Enum.HumanoidRigType[kind])
+		else
+			ok, result = pcall(Players.CreateHumanoidModelFromDescription, Players, desc, Enum.HumanoidRigType[kind])
 		end
-		model.Name = name
+		desc:Destroy()
+		if not (ok and result) then
+			error("nu am putut crea dummy-ul: " .. friendly(result), 0)
+		end
+		result.Name = name
 		local okSpot, spot = pcall(self.Editor.previewTarget)
 		local cf = okSpot and typeof(spot) == "CFrame" and spot or CFrame.new(0, 0, 0)
-		local root = model:FindFirstChild("HumanoidRootPart")
-		local drop = kind == "R15" and (model.Humanoid.HipHeight + root.Size.Y / 2) or 3
-		model:PivotTo(cf * CFrame.new(0, drop, 0))
+		local root = result:FindFirstChild("HumanoidRootPart")
+		local drop = kind == "R15" and (result.Humanoid.HipHeight + root.Size.Y / 2) or 3
+		result:PivotTo(cf * CFrame.new(0, drop, 0))
 		root.Anchored = true
-		model.Parent = workspace
-		self.rig = model
+		return result
 	end)
+	self.making = false
+	if built and self.dead then
+		model:Destroy()
+		return
+	end
+	local done, err = built, model
+	if built then
+		done, err = record("dummy " .. kind, function()
+			model.Parent = workspace -- only this goes into the undo step
+		end)
+		if done then
+			self.rig = model
+		else
+			model:Destroy()
+		end
+	end
 	if not done then
 		self:notify("⚠ " .. friendly(err))
 	end
@@ -207,6 +244,10 @@ function Panel:stop()
 	if self.seq then
 		pcall(self.seq.Destroy, self.seq)
 		self.seq = nil
+	end
+	if self.ownAnimator then -- the rig did not have one: leave it as it was
+		pcall(self.ownAnimator.Destroy, self.ownAnimator)
+		self.ownAnimator = nil
 	end
 	self.playing, self.loading = false, false
 	self:resetPose()
@@ -266,13 +307,14 @@ function Panel:play()
 		return
 	end
 	local rig = self.rig
-	local animator = animatorOf(rig)
+	self:stop() -- (also takes away an Animator this panel made for the previous preview)
+	local animator, created = animatorOf(rig)
 	if not animator then
 		self:notify("⚠ Rig-ul nu are Humanoid sau AnimationController.")
 		self:refresh()
 		return
 	end
-	self:stop()
+	self.ownAnimator = created and animator or nil
 	local gen = self.gen
 	self.loading = true
 	if rigType(rig) ~= entry.rig and entry.rig ~= "Both" then
@@ -290,6 +332,7 @@ function Panel:play()
 		end
 		self.loading = false
 		if not track then
+			self:stop() -- (the Animator made for the attempt goes away too)
 			self:notify(string.format("⚠ Nu am putut încărca animația %s (%s). Verifică conexiunea, că ID-ul e deținut de Roblox "
 				.. "(butonul „Verifică proprietarul”) și că rig-ul (%s) se potrivește cu animația (%s).", tostring(entry.id),
 				tostring(why or "?"), rigType(rig), entry.rig))
@@ -311,7 +354,12 @@ function Panel:play()
 					self:stop() -- the tab was left: do not keep animating the rig behind another tab
 					return
 				end
-				self.animator:StepAnimations(dt)
+				-- the rig was deleted (undo) or the animator no longer works: stop instead of failing on every frame
+				if not (self.rig and self.rig.Parent) or not pcall(self.animator.StepAnimations, self.animator, dt) then
+					self:stop()
+					self:refresh()
+					return
+				end
 				if self.timeLabel and self.timeLabel.Parent then
 					self.timeLabel.Text = string.format("%.2f / %.2f s", self.track.TimePosition, self.track.Length)
 				end
@@ -376,9 +424,15 @@ function Panel:setCustom(text)
 		verified = "custom" })
 end
 
+local haystacks = setmetatable({}, { __mode = "k" }) -- entry -> the text a search looks in (made once)
 local function haystack(entry, group)
-	return (group.label .. " " .. entry.key .. " " .. entry.short .. " " .. entry.state .. " " .. entry.rig .. " " .. entry.id
-		.. " " .. (group.kind == "pack" and "pachet" or "emote")):lower()
+	local text = haystacks[entry]
+	if not text then
+		text = (group.label .. " " .. entry.key .. " " .. entry.short .. " " .. entry.state .. " " .. entry.rig .. " " .. entry.id
+			.. " " .. (group.kind == "pack" and "pachet" or "emote")):lower()
+		haystacks[entry] = text
+	end
+	return text
 end
 
 -- groups that pass the kind / rig filters and the search; returns { { group, entries } }, searching
@@ -440,7 +494,16 @@ function Panel:fetchOwner(id)
 	if cached then
 		return cached
 	end
-	local ok, info = pcall(MarketplaceService.GetProductInfo, MarketplaceService, id, Enum.InfoType.Asset)
+	-- GetProductInfoAsync replaces the deprecated GetProductInfo
+	local okMethod, method = pcall(function()
+		return MarketplaceService.GetProductInfoAsync
+	end)
+	local ok, info
+	if okMethod and method then
+		ok, info = pcall(method, MarketplaceService, id, Enum.InfoType.Asset)
+	else
+		ok, info = pcall(MarketplaceService.GetProductInfo, MarketplaceService, id, Enum.InfoType.Asset)
+	end
 	local result
 	if ok and type(info) == "table" then
 		local creator = info.Creator or {}
@@ -473,6 +536,9 @@ function Panel:checkGroup(group)
 	task.spawn(function()
 		local total, good, other, failed = #group.entries, 0, {}, 0
 		for i, entry in group.entries do
+			if self.dead then
+				return -- the plugin was unloaded: no more requests
+			end
 			self.checking = string.format("%s %d/%d", group.label, i, total)
 			self:refresh()
 			self.owner[entry.id] = nil
@@ -643,14 +709,22 @@ function Panel:renderList(parent)
 	local body = UI.section(parent, string.format("Bibliotecă  (%d pachete · %d emote)", packs, emotes), { key = "lib.list" })
 
 	local bar = UI.hstack(body)
-	UI.textbox(bar, self.query, function(text)
+	local searchBox = UI.textbox(bar, self.query, function(text)
 		self.query = text
+		self.queryDraft = nil
 		self.listY = 0
 		self:refresh()
 	end, { placeholder = "caută: ninja, walk, wave, 656118852…" })
+	if self.queryDraft then -- typed, not applied yet: a redraw must not wipe it (it is applied when the box loses focus)
+		searchBox.Text = self.queryDraft
+	end
+	searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+		self.queryDraft = searchBox.Text
+	end)
 	if self.query ~= "" then
 		UI.button(bar, "✕", function()
 			self.query = ""
+			self.queryDraft = nil
 			self.listY = 0
 			self:refresh()
 		end, { width = 26 })
@@ -842,13 +916,19 @@ function Panel:render(parent)
 	local body = UI.section(parent, "ID personalizat", { key = "lib.custom", collapsed = true })
 	local row = UI.hstack(body)
 	local box = UI.textbox(row, "", nil, { placeholder = "ID sau rbxassetid://…" })
+	box.Text = self.customDraft or "" -- what was typed survives a redraw
+	box:GetPropertyChangedSignal("Text"):Connect(function()
+		self.customDraft = box.Text
+	end)
 	UI.button(row, "Alege", function()
+		self.customDraft = nil
 		self:setCustom(box.Text)
 	end, { width = 60 })
 	UI.label(body, "Încearcă orice animație (și vezi cine o deține) înainte s-o folosești.", { dim = true, size = 11, wrap = true })
 end
 
 function Panel:destroy()
+	self.dead = true -- the ownership check loop and a dummy on its way stop
 	self:stop()
 end
 

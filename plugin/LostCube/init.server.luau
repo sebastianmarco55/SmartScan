@@ -7,7 +7,12 @@ local button = toolbar:CreateButton("LostCube", "LostCube: VFX + animații (și 
 button.ClickableWhenViewportHidden = true
 
 local info = DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right, false, false, 360, 760, 300, 360)
-local widget = plugin:CreateDockWidgetPluginGui("LostCubeMain", info)
+-- CreateDockWidgetPluginGuiAsync replaces the deprecated CreateDockWidgetPluginGui (both wait for Studio); the old call
+-- stays as the fallback for a Studio that does not have the new one
+local okAsync, created = pcall(function()
+	return plugin:CreateDockWidgetPluginGuiAsync("LostCubeMain", info)
+end)
+local widget = okAsync and created or plugin:CreateDockWidgetPluginGui("LostCubeMain", info)
 widget.Title = "LostCube"
 widget.Name = "LostCube"
 widget.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
