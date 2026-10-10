@@ -171,9 +171,16 @@ function Panel:load()
 		return nil
 	end
 	self:stop()
-	local anim = Instance.new("Animation")
-	anim.AnimationId = KeyframeSequenceProvider:RegisterKeyframeSequence(self.clip) -- picks up the latest edits
-	local track = animator:LoadAnimation(anim)
+	-- a broken clip (or a rig it does not fit) shows a message in the panel instead of only an error in Output
+	local okLoad, track = pcall(function()
+		local anim = Instance.new("Animation")
+		anim.AnimationId = KeyframeSequenceProvider:RegisterKeyframeSequence(self.clip) -- picks up the latest edits
+		return animator:LoadAnimation(anim)
+	end)
+	if not okLoad or not track then
+		self.error = "nu am putut încărca animația: " .. tostring(track):gsub("^.-:%d+: ", "")
+		return nil
+	end
 	track.Looped = self.loop
 	self.track, self.animator = track, animator
 	-- effects on markers

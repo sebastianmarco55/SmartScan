@@ -105,7 +105,8 @@ local function liveState(Editor): string
 		table.insert(lines, "Selecția din Explorer: " .. table.concat(names, ", "))
 	end
 	local text = table.concat(lines, "\n")
-	return #text > 6000 and (string.sub(text, 1, 6000) .. "\n…") or text
+	-- the cut drops a partial multi-byte character at the end (invalid UTF-8 would break the JSON of the request)
+	return #text > 6000 and (string.gsub(string.sub(text, 1, 6000), "[\192-\255][\128-\191]*$", "") .. "\n…") or text
 end
 
 -- a growing multi-line text box (the UI kit only has single-line ones)

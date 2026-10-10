@@ -1402,7 +1402,11 @@ local function placeInfo()
 		end)
 		if ok and type(product) == "table" then
 			info.title = type(product.Name) == "string" and product.Name or nil
-			info.description = type(product.Description) == "string" and string.sub(product.Description, 1, 300) or nil
+			local description = type(product.Description) == "string" and product.Description or nil
+			if description and #description > 300 then -- cut at a whole character: half of one is invalid UTF-8 (JSON report, request to Claude)
+				description = string.gsub(string.sub(description, 1, 300), "[\192-\255][\128-\191]*$", "")
+			end
+			info.description = description
 			info.creator = type(product.Creator) == "table" and product.Creator.Name or nil
 		end
 	end

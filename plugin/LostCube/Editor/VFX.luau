@@ -501,6 +501,13 @@ local function groundRibbon(trail: Trail, root: BasePart, model: Model, ignore, 
 		end
 		points[1] = ColorSequenceKeypoint.new(0, points[1].Value)
 		points[#points] = ColorSequenceKeypoint.new(1, points[#points].Value)
+		if #points > 20 then -- ColorSequence takes at most 20 keypoints: keep the ends, thin out the middle evenly
+			local thinned = {}
+			for i = 1, 20 do
+				table.insert(thinned, points[math.floor(1 + (i - 1) * (#points - 1) / 19 + 0.5)])
+			end
+			points = thinned
+		end
 		trail.Color = ColorSequence.new(points)
 	end
 

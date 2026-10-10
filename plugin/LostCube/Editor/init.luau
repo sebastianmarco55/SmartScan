@@ -2264,7 +2264,9 @@ local function loadAssetRoots(id)
 end
 
 local function findAnalyzer()
-	for _, place in { script, script.Parent, script.Parent and script.Parent.Parent } do
+	-- the plugin's Analyzer is a sibling; installed in a game, script.Parent.Parent is ReplicatedStorage, where an
+	-- "Analyzer" would be one of the game's own modules (requiring it runs the game's code)
+	for _, place in { script, script.Parent } do
 		local module = place and place:FindFirstChild("Analyzer")
 		if module and module:IsA("ModuleScript") then
 			return module
@@ -2342,12 +2344,13 @@ function Editor.importAsset(assetId, effectName)
 	end
 	local effect
 	local ok, err = pcall(function()
-		-- 1) scripts first: free models often carry backdoors, and nothing below needs a script
+		-- 1) optional analysis while the scripts are still there (it only reads their text: the loaded copy is not
+		-- parented anywhere, so none of them can run), otherwise it would always report nothing
+		report.analyzer = analyzerLines(holder)
+		-- 2) scripts out: free models often carry backdoors, and nothing below needs a script
 		local removed = stripScripts({ holder })
 		report.scriptsRemoved, report.scriptsByClass, report.suspicious = removed.total, removed.byClass, removed.suspicious
 		report.suspiciousExamples = removed.examples
-		-- 2) optional analysis of what is left
-		report.analyzer = analyzerLines(holder)
 		-- 3) the emitters
 		local count = 0
 		for _, d in holder:GetDescendants() do

@@ -919,8 +919,11 @@ function AnimGen.resolve(key, opts)
 		local first = frames[1]
 		table.insert(frames, { t = def.length, ease = first.ease, name = first.name, markers = {}, state = copyState(first.state) })
 	end
+	-- checked on the authored times (below, the previous frame is already divided by the speed)
 	for i, f in frames do
 		assert(i == 1 or f.t >= frames[i - 1].t, "timpi descrescători în " .. def.key)
+	end
+	for _, f in frames do
 		f.t /= o.speed
 		if f.state then
 			if o.mirror then
