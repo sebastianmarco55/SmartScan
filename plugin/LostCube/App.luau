@@ -8,9 +8,11 @@ local App = {}
 App.__index = App
 
 local TABS = {
+	{ key = "Game", label = "🧠 Joc", module = "AnalysisPanel" },
 	{ key = "VFX", label = "✨ VFX", module = "VFXPanel" },
-	{ key = "Anim", label = "🎬 Animații", module = "AnimPanel" },
-	{ key = "Claude", label = "◆  Claude", module = "ClaudePanel" },
+	{ key = "Anim", label = "🎬 Anim", module = "AnimPanel" },
+	{ key = "Library", label = "📚 Lib", module = "LibraryPanel" },
+	{ key = "Claude", label = "◆ Claude", module = "ClaudePanel" },
 }
 
 function App.mount(container, ctx)
@@ -24,6 +26,13 @@ function App.mount(container, ctx)
 		if t.key == savedTab then
 			self.tab = savedTab
 		end
+	end
+	-- first time in this place: no analysis stored yet -> open on the game tab, which starts the analysis
+	local okLoad, report = pcall(function()
+		return require(script.Parent.Analyzer).load()
+	end)
+	if okLoad and report == nil then
+		self.tab = "Game"
 	end
 	local folded = self:setting("collapsed")
 	if type(folded) == "table" then
@@ -113,7 +122,7 @@ function App:render()
 				self.scroll.CanvasPosition = Vector2.zero
 				self:render()
 			end
-		end, { selected = self.tab == t.key, height = 24, bold = self.tab == t.key })
+		end, { selected = self.tab == t.key, height = 24, bold = self.tab == t.key, textSize = 12 }) -- 5 tabs in ~360 px
 	end
 	for _, child in self.content:GetChildren() do
 		if child:IsA("GuiObject") then

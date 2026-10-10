@@ -14,7 +14,8 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "LostCube")
-SIBLING_ORDER = ["UI", "App", "VFXPanel", "AnimPanel", "ClaudePanel", "Installer", "Editor"]
+SIBLING_ORDER = ["UI", "App", "VFXPanel", "AnimPanel", "ClaudePanel", "Installer", "Editor",
+                 "Analyzer", "AnalysisPanel", "AI", "Markdown", "AnimGen", "AnimLibrary", "LibraryPanel"]
 
 HEADER = ('<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" '
           'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
