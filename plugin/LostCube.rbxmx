@@ -1,0 +1,4014 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4"><Item class="Script" referent="RBX1"><Properties><string name="Name">LostCube</string><ProtectedString name="Source"><![CDATA[-- LostCube - Roblox Studio plugin: VFX editor with live preview, animation preview + Moon-style easing,
+-- and the same tools for Claude (ReplicatedStorage.LostCube.Editor). Toolbar "LostCube" opens the panel.
+local App = require(script.App)
+
+local toolbar = plugin:CreateToolbar("LostCube")
+local button = toolbar:CreateButton("LostCube", "LostCube: VFX + animații (și Claude)", "rbxasset://textures/sparkle.png")
+button.ClickableWhenViewportHidden = true
+
+local info = DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right, false, false, 360, 760, 300, 360)
+local widget = plugin:CreateDockWidgetPluginGui("LostCubeMain", info)
+widget.Title = "LostCube"
+widget.Name = "LostCube"
+widget.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+local app
+
+local function open()
+	if app then
+		return
+	end
+	app = App.mount(widget, { plugin = plugin })
+end
+
+button.Click:Connect(function()
+	widget.Enabled = not widget.Enabled
+end)
+
+widget:GetPropertyChangedSignal("Enabled"):Connect(function()
+	button:SetActive(widget.Enabled)
+	if widget.Enabled then
+		open()
+	end
+end)
+
+if widget.Enabled then
+	button:SetActive(true)
+	open()
+end
+
+plugin.Unloading:Connect(function()
+	if app then
+		app:destroy()
+		app = nil
+	end
+end)
+]]></ProtectedString></Properties><Item class="ModuleScript" referent="RBX2"><Properties><string name="Name">UI</string><ProtectedString name="Source"><![CDATA[-- LostCube UI kit: the controls the panels are made of (dark theme, violet accent).
+-- Everything is plain Roblox GUI, so the same panels run in the plugin's dock widget and in a ScreenGui.
+local UI = {}
+
+UI.C = {
+	bg = Color3.fromRGB(28, 28, 32),
+	section = Color3.fromRGB(36, 36, 42),
+	header = Color3.fromRGB(44, 44, 52),
+	item = Color3.fromRGB(52, 52, 61),
+	hover = Color3.fromRGB(64, 64, 75),
+	input = Color3.fromRGB(21, 21, 25),
+	border = Color3.fromRGB(62, 62, 72),
+	text = Color3.fromRGB(234, 234, 242),
+	dim = Color3.fromRGB(150, 150, 166),
+	accent = Color3.fromRGB(155, 92, 255),
+	accentHover = Color3.fromRGB(172, 120, 255),
+	accentDark = Color3.fromRGB(74, 50, 125),
+	good = Color3.fromRGB(76, 195, 138),
+	danger = Color3.fromRGB(229, 72, 77),
+	warn = Color3.fromRGB(242, 169, 59),
+}
+UI.FONT = Enum.Font.BuilderSans
+UI.FONT_MED = Enum.Font.BuilderSansMedium
+UI.FONT_BOLD = Enum.Font.BuilderSansBold
+UI.H = 24 -- row height
+UI.LABEL_W = 104
+
+local C = UI.C
+local order = 0
+local root, overlay
+UI.collapsed = {} -- section title -> collapsed (survives re-renders)
+
+function UI.make(class, props, children)
+	local inst = Instance.new(class)
+	local parent = props.Parent
+	props.Parent = nil
+	if inst:IsA("GuiObject") then
+		order += 1
+		inst.LayoutOrder = order
+		inst.BorderSizePixel = 0
+	end
+	for k, v in props do
+		inst[k] = v
+	end
+	for _, child in children or {} do
+		child.Parent = inst
+	end
+	inst.Parent = parent
+	return inst
+end
+local make = UI.make
+
+function UI.corner(r)
+	return make("UICorner", { CornerRadius = UDim.new(0, r or 4) })
+end
+
+function UI.stroke(color, thickness)
+	return make("UIStroke", { Color = color or C.border, Thickness = thickness or 1,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border })
+end
+
+function UI.pad(t, r, b, l)
+	return make("UIPadding", { PaddingTop = UDim.new(0, t), PaddingRight = UDim.new(0, r or t),
+		PaddingBottom = UDim.new(0, b or t), PaddingLeft = UDim.new(0, l or r or t) })
+end
+
+function UI.vlist(gap)
+	return make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, gap or 4) })
+end
+
+function UI.hlist(gap, fill)
+	return make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, gap or 4),
+		FillDirection = Enum.FillDirection.Horizontal, VerticalAlignment = Enum.VerticalAlignment.Center,
+		HorizontalFlex = fill and Enum.UIFlexAlignment.Fill or Enum.UIFlexAlignment.None })
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- root + overlay (menus and pickers float above everything)
+-- ---------------------------------------------------------------------------------------------
+function UI.setRoot(frame)
+	root = frame
+	overlay = make("TextButton", { Name = "Overlay", Parent = frame, Size = UDim2.fromScale(1, 1), Text = "",
+		AutoButtonColor = false, BackgroundTransparency = 1, Visible = false, ZIndex = 50 })
+	overlay.MouseButton1Click:Connect(function()
+		UI.closePopup()
+	end)
+end
+
+function UI.closePopup()
+	if not overlay then
+		return
+	end
+	for _, child in overlay:GetChildren() do
+		child:Destroy()
+	end
+	overlay.Visible = false
+end
+
+local function popup(anchor, width, height)
+	UI.closePopup()
+	overlay.Visible = true
+	local rootPos = root.AbsolutePosition
+	local x = anchor.AbsolutePosition.X - rootPos.X
+	local y = anchor.AbsolutePosition.Y - rootPos.Y + anchor.AbsoluteSize.Y + 2
+	local maxY = root.AbsoluteSize.Y - height - 6
+	if y > maxY then
+		y = math.max(6, anchor.AbsolutePosition.Y - rootPos.Y - height - 2)
+	end
+	x = math.clamp(x, 4, math.max(4, root.AbsoluteSize.X - width - 4))
+	local frame = make("Frame", { Parent = overlay, Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(width, height),
+		BackgroundColor3 = C.header, ZIndex = 51 }, { UI.corner(6), UI.stroke(C.accentDark) })
+	return frame
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- basic controls
+-- ---------------------------------------------------------------------------------------------
+function UI.label(parent, text, opts)
+	opts = opts or {}
+	return make("TextLabel", { Parent = parent, Text = text, Font = opts.bold and UI.FONT_BOLD or (opts.medium and UI.FONT_MED or UI.FONT),
+		TextSize = opts.size or 13, TextColor3 = opts.color or (opts.dim and C.dim or C.text), BackgroundTransparency = 1,
+		TextXAlignment = opts.align or Enum.TextXAlignment.Left, TextWrapped = opts.wrap or false, RichText = opts.rich or false,
+		Size = opts.wrap and UDim2.new(1, 0, 0, 0) or (opts.width and UDim2.new(0, opts.width, 0, UI.H) or UDim2.new(1, 0, 0, opts.height or UI.H)),
+		AutomaticSize = opts.wrap and Enum.AutomaticSize.Y or Enum.AutomaticSize.None, TextTruncate = opts.wrap and Enum.TextTruncate.None
+			or Enum.TextTruncate.AtEnd })
+end
+
+local STYLES = {
+	primary = { bg = C.accent, hover = C.accentHover, text = Color3.new(1, 1, 1) },
+	normal = { bg = C.item, hover = C.hover, text = C.text },
+	ghost = { bg = C.section, hover = C.item, text = C.dim, transparent = true },
+	danger = { bg = Color3.fromRGB(90, 36, 42), hover = C.danger, text = C.text },
+	selected = { bg = C.accentDark, hover = Color3.fromRGB(92, 62, 150), text = Color3.new(1, 1, 1) },
+}
+
+function UI.button(parent, text, onClick, opts)
+	opts = opts or {}
+	local style = STYLES[opts.selected and "selected" or (opts.style or "normal")]
+	local b = make("TextButton", { Parent = parent, Text = text, Font = opts.bold and UI.FONT_BOLD or UI.FONT_MED,
+		TextSize = opts.textSize or 13, TextColor3 = style.text, AutoButtonColor = false, BackgroundColor3 = style.bg,
+		BackgroundTransparency = style.transparent and 1 or 0,
+		Size = opts.width and UDim2.new(0, opts.width, 0, opts.height or UI.H) or UDim2.new(opts.scale or 1, 0, 0, opts.height or UI.H),
+		TextXAlignment = opts.align or Enum.TextXAlignment.Center, TextTruncate = Enum.TextTruncate.AtEnd },
+		{ UI.corner(4), UI.pad(0, 8, 0, 8) })
+	if opts.selected then
+		UI.stroke(C.accent).Parent = b
+	end
+	b.MouseEnter:Connect(function()
+		b.BackgroundColor3 = style.hover
+		b.BackgroundTransparency = 0
+	end)
+	b.MouseLeave:Connect(function()
+		b.BackgroundColor3 = style.bg
+		b.BackgroundTransparency = style.transparent and 1 or 0
+	end)
+	if onClick then
+		b.MouseButton1Click:Connect(onClick)
+	end
+	if opts.tip then
+		b:SetAttribute("Tip", opts.tip)
+	end
+	return b
+end
+
+function UI.hstack(parent, opts)
+	opts = opts or {}
+	local f = make("Frame", { Parent = parent, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, opts.height or UI.H) },
+		{ UI.hlist(opts.gap or 4, opts.fill ~= false) })
+	return f
+end
+
+function UI.vstack(parent, gap)
+	return make("Frame", { Parent = parent, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y }, { UI.vlist(gap or 4) })
+end
+
+-- a labelled row: returns the area where the controls go (they share the width)
+function UI.row(parent, text, opts)
+	opts = opts or {}
+	local row = make("Frame", { Parent = parent, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, UI.H) },
+		{ UI.hlist(6, false) })
+	UI.label(row, text, { width = opts.labelWidth or UI.LABEL_W, dim = true, size = 12 })
+	local area = make("Frame", { Parent = row, BackgroundTransparency = 1,
+		Size = UDim2.new(1, -((opts.labelWidth or UI.LABEL_W) + 6), 1, 0) }, { UI.hlist(4, true) })
+	return area
+end
+
+local function fmt(v, decimals)
+	if decimals == 0 then
+		return tostring(math.floor(v + 0.5))
+	end
+	local s = string.format("%." .. (decimals or 2) .. "f", v)
+	s = s:gsub("0+$", ""):gsub("%.$", "")
+	return s == "-0" and "0" or s
+end
+UI.fmt = fmt
+
+function UI.number(parent, value, onChange, opts)
+	opts = opts or {}
+	local box = make("TextBox", { Parent = parent, Text = fmt(value, opts.decimals), Font = UI.FONT, TextSize = 13,
+		TextColor3 = C.text, PlaceholderColor3 = C.dim, BackgroundColor3 = C.input, ClearTextOnFocus = false,
+		Size = opts.width and UDim2.new(0, opts.width, 0, UI.H) or UDim2.new(1, 0, 0, UI.H) },
+		{ UI.corner(4), UI.stroke(C.border), UI.pad(0, 6, 0, 6) })
+	local current = value
+	local function commit(v)
+		if opts.min then
+			v = math.max(opts.min, v)
+		end
+		if opts.max then
+			v = math.min(opts.max, v)
+		end
+		current = v
+		box.Text = fmt(v, opts.decimals)
+		if onChange then
+			onChange(v)
+		end
+	end
+	box.FocusLost:Connect(function()
+		local v = tonumber((box.Text:gsub(",", ".")))
+		if v and v ~= current then
+			commit(v)
+		else
+			box.Text = fmt(current, opts.decimals)
+		end
+	end)
+	-- mouse wheel nudges the value (Shift = x10)
+	box.InputChanged:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseWheel and not box:IsFocused() then
+			local step = opts.step or 0.1
+			local shift = game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.LeftShift)
+			commit(current + (input.Position.Z > 0 and 1 or -1) * step * (shift and 10 or 1))
+		end
+	end)
+	if opts.tip then
+		box:SetAttribute("Tip", opts.tip)
+	end
+	return box
+end
+
+function UI.textbox(parent, value, onChange, opts)
+	opts = opts or {}
+	local box = make("TextBox", { Parent = parent, Text = value or "", PlaceholderText = opts.placeholder or "",
+		Font = UI.FONT, TextSize = 13, TextColor3 = C.text, PlaceholderColor3 = C.dim, BackgroundColor3 = C.input,
+		ClearTextOnFocus = false, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+		Size = opts.width and UDim2.new(0, opts.width, 0, UI.H) or UDim2.new(1, 0, 0, UI.H) },
+		{ UI.corner(4), UI.stroke(C.border), UI.pad(0, 6, 0, 6) })
+	box.FocusLost:Connect(function(enter)
+		if onChange and box.Text ~= value then
+			onChange(box.Text, enter)
+		end
+	end)
+	return box
+end
+
+function UI.toggle(parent, value, onChange, text, opts)
+	opts = opts or {}
+	return UI.button(parent, (value and "✓ " or "") .. text, function()
+		onChange(not value)
+	end, { selected = value, width = opts.width, scale = opts.scale, tip = opts.tip })
+end
+
+function UI.segmented(parent, items, value, onChange)
+	local bar = make("Frame", { Parent = parent, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, UI.H) },
+		{ UI.hlist(2, true) })
+	for _, item in items do
+		UI.button(bar, item.label, function()
+			onChange(item.value)
+		end, { selected = item.value == value, textSize = 12 })
+	end
+	return bar
+end
+
+-- items: { { value =, label =, header = bool } }
+function UI.dropdown(parent, items, value, onChange, opts)
+	opts = opts or {}
+	local current = opts.text
+	for _, item in items do
+		if not item.header and item.value == value then
+			current = current or item.label
+		end
+	end
+	local b
+	b = UI.button(parent, (current or opts.placeholder or "-") .. "   ▼", function()
+		local rows, height = 0, 0
+		for _, item in items do
+			rows += 1
+			height += item.header and 20 or 22
+		end
+		local width = math.max(b.AbsoluteSize.X, opts.menuWidth or 170)
+		local frame = popup(b, width, math.min(height + 8, 320))
+		local scroll = make("ScrollingFrame", { Parent = frame, Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
+			CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 4, ZIndex = 52 },
+			{ UI.vlist(0), UI.pad(4, 4, 4, 4) })
+		for _, item in items do
+			if item.header then
+				make("TextLabel", { Parent = scroll, Text = item.label, Font = UI.FONT_BOLD, TextSize = 11, TextColor3 = C.accent,
+					BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 20), TextXAlignment = Enum.TextXAlignment.Left,
+					ZIndex = 53 }, { UI.pad(0, 6, 0, 6) })
+			else
+				local row = make("TextButton", { Parent = scroll, Text = item.label, Font = UI.FONT, TextSize = 13,
+					TextColor3 = item.value == value and C.accentHover or C.text, AutoButtonColor = false,
+					BackgroundColor3 = C.hover, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 22),
+					TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 53 }, { UI.corner(3), UI.pad(0, 8, 0, 8) })
+				row.MouseEnter:Connect(function()
+					row.BackgroundTransparency = 0
+				end)
+				row.MouseLeave:Connect(function()
+					row.BackgroundTransparency = 1
+				end)
+				row.MouseButton1Click:Connect(function()
+					UI.closePopup()
+					onChange(item.value)
+				end)
+			end
+		end
+	end, { align = Enum.TextXAlignment.Left, width = opts.width, scale = opts.scale, style = opts.style })
+	return b
+end
+
+local PALETTE = {
+	"FFFFFF", "D9D9E6", "8C8CA0", "3C3C48", "141418", "000000",
+	"9B5CFF", "6A2EFF", "C9A6FF", "4B1FA0", "FF5CF0", "FF9BE8",
+	"5CD9FF", "2E8CFF", "A6F0FF", "1F4BA0", "5CFFB4", "2EC46E",
+	"FFE15C", "FFB02E", "FF6A2E", "FF2E2E", "A01F1F", "6E3A1F",
+}
+
+function UI.color(parent, color, onChange, opts)
+	opts = opts or {}
+	local b = make("TextButton", { Parent = parent, Text = "", AutoButtonColor = false, BackgroundColor3 = color,
+		Size = opts.width and UDim2.new(0, opts.width, 0, UI.H) or UDim2.new(1, 0, 0, UI.H) },
+		{ UI.corner(4), UI.stroke(C.border) })
+	make("TextLabel", { Parent = b, Text = "#" .. color:ToHex():upper(), Font = UI.FONT, TextSize = 11, BackgroundTransparency = 1,
+		TextColor3 = (color.R * 0.3 + color.G * 0.59 + color.B * 0.11) > 0.55 and Color3.new(0, 0, 0) or Color3.new(1, 1, 1),
+		Size = UDim2.fromScale(1, 1) })
+	b.MouseButton1Click:Connect(function()
+		local frame = popup(b, 190, 186)
+		make("Frame", { Parent = frame, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 128), Position = UDim2.fromOffset(0, 0),
+			ZIndex = 52 }, { UI.pad(8, 8, 0, 8), make("UIGridLayout", { CellSize = UDim2.fromOffset(25, 25),
+				CellPadding = UDim2.fromOffset(4, 4), SortOrder = Enum.SortOrder.LayoutOrder }) })
+		local grid = frame:FindFirstChildOfClass("Frame")
+		for _, hex in PALETTE do
+			local sw = make("TextButton", { Parent = grid, Text = "", AutoButtonColor = false, BackgroundColor3 = Color3.fromHex(hex),
+				ZIndex = 53 }, { UI.corner(4), UI.stroke(C.border) })
+			sw.MouseButton1Click:Connect(function()
+				UI.closePopup()
+				onChange(Color3.fromHex(hex))
+			end)
+		end
+		local box = make("TextBox", { Parent = frame, Text = color:ToHex():upper(), PlaceholderText = "hex (ex. 9B5CFF)",
+			Font = UI.FONT, TextSize = 13, TextColor3 = C.text, BackgroundColor3 = C.input, ClearTextOnFocus = false,
+			Position = UDim2.fromOffset(8, 146), Size = UDim2.new(1, -16, 0, 26), ZIndex = 53 },
+			{ UI.corner(4), UI.stroke(C.border), UI.pad(0, 6, 0, 6) })
+		box.FocusLost:Connect(function(enter)
+			local hex = box.Text:gsub("#", ""):gsub("%s", "")
+			local ok, c = pcall(Color3.fromHex, hex)
+			if ok and c then
+				UI.closePopup()
+				onChange(c)
+			end
+		end)
+	end)
+	return b
+end
+
+-- collapsible section; returns its body (a vertical stack)
+function UI.section(parent, title, opts)
+	opts = opts or {}
+	local key = opts.key or title
+	if UI.collapsed[key] == nil then
+		UI.collapsed[key] = opts.collapsed or false
+	end
+	local collapsed = UI.collapsed[key]
+	local frame = make("Frame", { Parent = parent, BackgroundColor3 = C.section, Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y }, { UI.corner(6), UI.vlist(0) })
+	local head = make("TextButton", { Parent = frame, Text = "", AutoButtonColor = false, BackgroundColor3 = C.header,
+		BackgroundTransparency = collapsed and 1 or 0, Size = UDim2.new(1, 0, 0, 28) }, { UI.corner(6), UI.pad(0, 8, 0, 8),
+		UI.hlist(6, false) })
+	local arrow = UI.label(head, collapsed and "►" or "▼", { width = 12, dim = true, size = 12 })
+	local t = UI.label(head, title, { medium = true, size = 13, width = 220 })
+	t.Size = UDim2.new(1, -18 - (opts.rightWidth or 0), 1, 0)
+	if opts.right then
+		local right = make("Frame", { Parent = head, BackgroundTransparency = 1, Size = UDim2.new(0, opts.rightWidth or 60, 1, 0) },
+			{ UI.hlist(3, false) })
+		opts.right(right)
+	end
+	local body = make("Frame", { Parent = frame, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y, Visible = not collapsed }, { UI.pad(6, 8, 8, 8), UI.vlist(4) })
+	head.MouseButton1Click:Connect(function()
+		-- applied right here (no redraw of the whole panel); the state survives re-renders in UI.collapsed
+		collapsed = not collapsed
+		UI.collapsed[key] = collapsed
+		arrow.Text = collapsed and "►" or "▼"
+		head.BackgroundTransparency = collapsed and 1 or 0
+		body.Visible = not collapsed
+		if opts.onToggle then
+			opts.onToggle(collapsed)
+		end
+	end)
+	return body
+end
+
+-- a selectable line in a list (effects, elements, clips)
+function UI.item(parent, text, opts)
+	opts = opts or {}
+	local selected = opts.selected
+	local frame = make("TextButton", { Parent = parent, Text = "", AutoButtonColor = false,
+		BackgroundColor3 = selected and C.accentDark or C.item, BackgroundTransparency = selected and 0 or 0.35,
+		Size = UDim2.new(1, 0, 0, opts.height or 26) }, { UI.corner(4), UI.pad(0, 4, 0, 8), UI.hlist(4, false) })
+	if selected then
+		UI.stroke(C.accent).Parent = frame
+	end
+	local actions = opts.actions or {}
+	local rightW = #actions * 26
+	if opts.icon then
+		UI.label(frame, opts.icon, { width = 16, color = selected and Color3.new(1, 1, 1) or C.accent, size = 13 })
+	end
+	local name = UI.label(frame, text, { medium = selected, size = 13, color = opts.muted and C.dim or C.text })
+	name.Size = UDim2.new(1, -(rightW + (opts.icon and 20 or 0) + (opts.note and 64 or 0) + 4), 1, 0)
+	if opts.note then
+		UI.label(frame, opts.note, { width = 60, dim = true, size = 11, align = Enum.TextXAlignment.Right })
+	end
+	for _, a in actions do
+		local ab = make("TextButton", { Parent = frame, Text = a.text, Font = UI.FONT_MED, TextSize = 12,
+			TextColor3 = a.color or C.dim, AutoButtonColor = false, BackgroundColor3 = C.hover, BackgroundTransparency = 1,
+			Size = UDim2.fromOffset(22, 20) }, { UI.corner(3) })
+		ab.MouseEnter:Connect(function()
+			ab.BackgroundTransparency = 0
+		end)
+		ab.MouseLeave:Connect(function()
+			ab.BackgroundTransparency = 1
+		end)
+		ab.MouseButton1Click:Connect(a.onClick)
+	end
+	frame.MouseEnter:Connect(function()
+		if not selected then
+			frame.BackgroundTransparency = 0
+		end
+	end)
+	frame.MouseLeave:Connect(function()
+		if not selected then
+			frame.BackgroundTransparency = 0.35
+		end
+	end)
+	if opts.onClick then
+		frame.MouseButton1Click:Connect(opts.onClick)
+	end
+	return frame
+end
+
+-- a list that scrolls on its own once it gets taller than maxHeight
+function UI.scrollList(parent, maxHeight)
+	local sf = make("ScrollingFrame", { Parent = parent, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 30),
+		CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 4,
+		ScrollBarImageColor3 = C.hover, ScrollingDirection = Enum.ScrollingDirection.Y,
+		VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar })
+	local layout = UI.vlist(3)
+	layout.Parent = sf
+	local function fit()
+		sf.Size = UDim2.new(1, 0, 0, math.min(maxHeight, layout.AbsoluteContentSize.Y + 2))
+	end
+	layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(fit)
+	task.defer(fit)
+	return sf
+end
+
+function UI.note(parent, text, color)
+	return make("Frame", { Parent = parent, BackgroundColor3 = C.input, Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y }, { UI.corner(4), UI.pad(6, 8, 6, 8),
+		make("TextLabel", { Text = text, Font = UI.FONT, TextSize = 12, TextColor3 = color or C.dim, BackgroundTransparency = 1,
+			TextWrapped = true, RichText = true, TextXAlignment = Enum.TextXAlignment.Left, Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y }) })
+end
+
+function UI.spacer(parent, h)
+	return make("Frame", { Parent = parent, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, h or 4) })
+end
+
+return UI
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX3"><Properties><string name="Name">App</string><ProtectedString name="Source"><![CDATA[-- LostCube window: header, tabs, the current panel; refreshes when effects change (also when Claude edits).
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local UI = require(script.Parent.UI)
+local C = UI.C
+
+local App = {}
+App.__index = App
+
+local TABS = {
+	{ key = "VFX", label = "✨ VFX", module = "VFXPanel" },
+	{ key = "Anim", label = "🎬 Animații", module = "AnimPanel" },
+	{ key = "Claude", label = "◆  Claude", module = "ClaudePanel" },
+}
+
+function App.mount(container, ctx)
+	ctx = ctx or {}
+	ctx.Editor = ctx.Editor or require(script.Parent.Editor)
+	local self = setmetatable({ ctx = ctx, tab = "VFX", conns = {}, panels = {} }, App)
+	ctx.app = self
+
+	local root = UI.make("Frame", { Name = "LostCube", Parent = container, Size = UDim2.fromScale(1, 1), BackgroundColor3 = C.bg,
+		ClipsDescendants = true })
+	self.root = root
+
+	-- header
+	local header = UI.make("Frame", { Parent = root, Size = UDim2.new(1, 0, 0, 42), BackgroundColor3 = C.section },
+		{ UI.pad(0, 12, 0, 12) })
+	UI.make("TextLabel", { Parent = header, Text = "◆", Font = UI.FONT_BOLD, TextSize = 20, TextColor3 = C.accent,
+		BackgroundTransparency = 1, Size = UDim2.new(0, 20, 1, 0) })
+	UI.make("TextLabel", { Parent = header, Text = "LostCube", Font = UI.FONT_BOLD, TextSize = 17, TextColor3 = C.text,
+		BackgroundTransparency = 1, Position = UDim2.fromOffset(26, 0), Size = UDim2.new(0, 120, 1, 0),
+		TextXAlignment = Enum.TextXAlignment.Left })
+	UI.make("TextLabel", { Parent = header, Text = "v" .. ctx.Editor.VERSION .. "  ·  Roblox VFX + animații", Font = UI.FONT,
+		TextSize = 11, TextColor3 = C.dim, BackgroundTransparency = 1, Position = UDim2.new(0, 112, 0, 0),
+		Size = UDim2.new(1, -112, 1, 0), TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd })
+
+	-- tabs
+	self.tabBar = UI.make("Frame", { Parent = root, Position = UDim2.fromOffset(0, 42), Size = UDim2.new(1, 0, 0, 34),
+		BackgroundColor3 = C.section }, { UI.pad(4, 8, 6, 8), UI.hlist(4, true) })
+
+	-- content
+	self.scroll = UI.make("ScrollingFrame", { Parent = root, Position = UDim2.fromOffset(0, 76), Size = UDim2.new(1, 0, 1, -76),
+		BackgroundTransparency = 1, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 6,
+		ScrollBarImageColor3 = C.hover, ScrollingDirection = Enum.ScrollingDirection.Y, VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar })
+	self.content = UI.make("Frame", { Parent = self.scroll, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y }, { UI.pad(8, 8, 16, 8), UI.vlist(8) })
+
+	UI.setRoot(root)
+	self:watch()
+	self:render()
+	return self
+end
+
+function App:panel(key)
+	if not self.panels[key] then
+		for _, t in TABS do
+			if t.key == key then
+				self.panels[key] = require(script.Parent[t.module]).new(self.ctx)
+			end
+		end
+	end
+	return self.panels[key]
+end
+
+function App:render()
+	local scrollY = self.scroll.CanvasPosition.Y
+	for _, child in self.tabBar:GetChildren() do
+		if child:IsA("GuiObject") then
+			child:Destroy()
+		end
+	end
+	for _, t in TABS do
+		UI.button(self.tabBar, t.label, function()
+			if self.tab ~= t.key then
+				self.tab = t.key
+				self.scroll.CanvasPosition = Vector2.zero
+				self:render()
+			end
+		end, { selected = self.tab == t.key, height = 24, bold = self.tab == t.key })
+	end
+	for _, child in self.content:GetChildren() do
+		if child:IsA("GuiObject") then
+			child:Destroy()
+		end
+	end
+	UI.closePopup()
+	local ok, err = pcall(function()
+		self:panel(self.tab):render(self.content)
+	end)
+	if not ok then
+		UI.note(self.content, "⚠ Eroare în panou: " .. tostring(err), C.danger)
+		warn("LostCube:", err)
+	end
+	task.defer(function()
+		if self.scroll.Parent then
+			self.scroll.CanvasPosition = Vector2.new(0, scrollY)
+		end
+	end)
+end
+
+-- coalesces many changes into one redraw
+function App:refresh()
+	if self.pending then
+		return
+	end
+	self.pending = true
+	task.defer(function()
+		self.pending = false
+		if self.root.Parent then
+			self:render()
+		end
+	end)
+end
+
+-- redraw when effects change from anywhere (other windows, Claude, undo)
+function App:watch()
+	local function hook()
+		for _, c in self.watchConns or {} do
+			c:Disconnect()
+		end
+		self.watchConns = {}
+		local conns = self.watchConns
+		local root = ReplicatedStorage:FindFirstChild("LostCube")
+		table.insert(conns, ReplicatedStorage.ChildAdded:Connect(function(child)
+			if child.Name == "LostCube" then
+				task.defer(hook)
+			end
+		end))
+		if not root then
+			return
+		end
+		table.insert(conns, root.DescendantAdded:Connect(function(d)
+			if d.Name == "Effects" then
+				task.defer(hook)
+			end
+			self:refresh()
+		end))
+		table.insert(conns, root.DescendantRemoving:Connect(function()
+			self:refresh()
+		end))
+		local effects = root:FindFirstChild("Effects")
+		if effects then
+			table.insert(conns, effects:GetAttributeChangedSignal("LC_Rev"):Connect(function()
+				self:refresh()
+			end))
+		end
+	end
+	hook()
+	-- the activity log (Claude tab) lives in ServerStorage.LostCubeSession, created on the first edit
+	local ok, storage = pcall(function()
+		return game:GetService("ServerStorage")
+	end)
+	if ok then
+		local function hookLog(folder)
+			if folder.Name == "LostCubeSession" then
+				table.insert(self.conns, folder:GetAttributeChangedSignal("Log"):Connect(function()
+					if self.tab == "Claude" then
+						self:refresh()
+					end
+				end))
+			end
+		end
+		local existing = storage:FindFirstChild("LostCubeSession")
+		if existing then
+			hookLog(existing)
+		end
+		table.insert(self.conns, storage.ChildAdded:Connect(hookLog))
+	end
+	table.insert(self.conns, game:GetService("ChangeHistoryService").OnUndo:Connect(function()
+		self:refresh()
+	end))
+	table.insert(self.conns, game:GetService("ChangeHistoryService").OnRedo:Connect(function()
+		self:refresh()
+	end))
+end
+
+function App:destroy()
+	for _, c in self.conns do
+		c:Disconnect()
+	end
+	for _, c in self.watchConns or {} do
+		c:Disconnect()
+	end
+	for _, p in self.panels do
+		if p.destroy then
+			p:destroy()
+		end
+	end
+	self.root:Destroy()
+end
+
+return App
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX4"><Properties><string name="Name">VFXPanel</string><ProtectedString name="Source"><![CDATA[-- LostCube > VFX tab: effects list, elements with presets, properties, timeline, live preview.
+local Selection = game:GetService("Selection")
+
+local UI = require(script.Parent.UI)
+local C = UI.C
+
+local Panel = {}
+Panel.__index = Panel
+
+local ORIENT = {
+	{ value = "FacingCamera", label = "Spre cameră" },
+	{ value = "FacingCameraWorldUp", label = "Spre cameră (vertical)" },
+	{ value = "VelocityParallel", label = "Pe direcția mișcării (raze)" },
+	{ value = "VelocityPerpendicular", label = "Culcat (cercuri pe sol)" },
+}
+local SHAPES = {
+	{ value = "Point", label = "Punct" }, { value = "Box", label = "Cutie" }, { value = "Sphere", label = "Sferă" },
+	{ value = "Cylinder", label = "Cilindru" }, { value = "Disc", label = "Disc" },
+}
+local DIRECTIONS = {
+	{ value = "Top", label = "Sus" }, { value = "Bottom", label = "Jos" }, { value = "Front", label = "Față" },
+	{ value = "Back", label = "Spate" }, { value = "Left", label = "Stânga" }, { value = "Right", label = "Dreapta" },
+}
+local KIND_ICON = { PARTICLES = "★", LIGHT = "☀", TRAIL = "≈", MESH = "■" }
+local KIND_LABEL = { PARTICLES = "Particule", LIGHT = "Lumină", TRAIL = "Trail", MESH = "Mesh 3D" }
+local MESH_MODES = {
+	{ value = "Ring", label = "Inel (se lărgește)" }, { value = "Crack", label = "Crăpături (radial)" },
+	{ value = "Pulse", label = "Puls (crește și dispare)" }, { value = "Puff", label = "Fum 3D (bile)" },
+	{ value = "Trail", label = "Urmă pe sol (rămâne)" }, { value = "Debris", label = "Debris (fizică reală)" },
+}
+local PART_SHAPES = { { value = "Block", label = "Cub" }, { value = "Ball", label = "Bilă" },
+	{ value = "Cylinder", label = "Cilindru" }, { value = "Wedge", label = "Pană" } }
+local MATERIALS = {}
+for _, m in { "Neon", "ForceField", "SmoothPlastic", "Glass", "Ice", "Slate", "Rock", "Concrete", "Plastic", "Sand" } do
+	table.insert(MATERIALS, { value = m, label = m })
+end
+
+function Panel.new(ctx)
+	return setmetatable({ ctx = ctx, Editor = ctx.Editor, effect = nil, element = nil, speed = 1, loop = false,
+		confirm = nil, creating = false, handle = nil }, Panel)
+end
+
+function Panel:refresh()
+	self.ctx.app:refresh()
+end
+
+-- every edit goes through the Editor (one undo step each); errors show up in the panel instead of breaking it
+function Panel:try(fn, ...)
+	local ok, err = pcall(fn, ...)
+	if not ok then
+		self.error = tostring(err):gsub("^.-:%d+: ", "")
+		warn("LostCube:", err)
+	else
+		self.error = nil
+	end
+	self:refresh()
+end
+
+function Panel:set(element, props)
+	self:try(self.Editor.setProps, element, props)
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- preview
+-- ---------------------------------------------------------------------------------------------
+function Panel:play()
+	if not self.effect then
+		return
+	end
+	if self.handle and not self.handle.Done then
+		self.handle:Destroy()
+	end
+	local ok, h = pcall(self.Editor.preview, self.effect, { speed = self.speed })
+	if ok then
+		self.handle = h
+	else
+		self.error = tostring(h)
+		self:refresh()
+	end
+end
+
+function Panel:setLoop(on)
+	self.loop = on
+	self.loopId = (self.loopId or 0) + 1
+	if on then
+		local id = self.loopId
+		task.spawn(function()
+			while self.loop and self.loopId == id and self.effect and self.effect.Parent do
+				self:play()
+				local ok, length = pcall(self.Editor.length, self.effect)
+				task.wait(((ok and length or 1) + 0.35) / self.speed)
+			end
+		end)
+	end
+	self:refresh()
+end
+
+function Panel:togglePause()
+	local h = self.handle
+	if not h or h.Done then
+		return
+	end
+	if self.paused then
+		h:Resume()
+		self.paused = false
+	else
+		h:Pause()
+		self.paused = true
+	end
+	self:refresh()
+end
+
+function Panel:destroy()
+	self.loop = false
+	if self.handle and not self.handle.Done then
+		self.handle:Destroy()
+	end
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- render
+-- ---------------------------------------------------------------------------------------------
+function Panel:render(parent)
+	local Editor = self.Editor
+	if self.effect and not self.effect.Parent then
+		self.effect, self.element = nil, nil
+	end
+	if self.element and (not self.element.Parent or (self.effect and not self.element:IsDescendantOf(self.effect))) then
+		self.element = nil
+	end
+	if self.error then
+		UI.note(parent, "⚠ " .. self.error, C.warn)
+		self.error = nil -- shown once; the next action sets it again if it still fails
+	end
+	local status = require(script.Parent.Installer).status()
+	if not status.ok then
+		local banner = UI.vstack(parent, 6)
+		UI.note(banner, status.vfx and "Modulele LostCube din joc sunt mai vechi decât pluginul."
+			or "Jocul nu are încă modulele LostCube (<b>VFX</b> redă efectele în joc, <b>Editor</b> e pentru Claude).", C.warn)
+		UI.button(UI.hstack(banner, { height = 28 }), "Instalează în joc (ReplicatedStorage.LostCube)", function()
+			self:try(require(script.Parent.Installer).install)
+		end, { style = "primary", bold = true, height = 28 })
+	end
+
+	-- effects ---------------------------------------------------------------------------------
+	local effects = Editor.effects()
+	local body = UI.section(parent, "Efecte  (" .. #effects .. ")", { key = "vfx.effects" })
+	local bar = UI.hstack(body)
+	UI.button(bar, "+ Efect nou", function()
+		self.creating = true
+		self:refresh()
+	end, { style = "primary", bold = true })
+	if self.creating then
+		local row = UI.hstack(body)
+		local box = UI.textbox(row, "", nil, { placeholder = "Numele efectului (ex. Foc)" })
+		UI.button(row, "Creează", function()
+			local name = box.Text ~= "" and box.Text or "Efect"
+			self.creating = false
+			local ok, fx = pcall(Editor.newEffect, name, { duration = 1 })
+			if ok then
+				self.effect, self.element = fx, nil
+			else
+				self.error = tostring(fx)
+			end
+			self:refresh()
+		end, { width = 74, style = "primary" })
+		UI.button(row, "×", function()
+			self.creating = false
+			self:refresh()
+		end, { width = 26, style = "ghost" })
+		task.defer(function()
+			if box.Parent then
+				box:CaptureFocus()
+			end
+		end)
+	end
+	if #effects == 0 then
+		UI.note(body, "Niciun efect încă. Apasă <b>+ Efect nou</b>, apoi adaugă elemente din preseturi.")
+	end
+	local list = #effects > 0 and UI.scrollList(body, 236) or body
+	for _, fx in effects do
+		local n = #Editor.elements(fx)
+		local confirm = self.confirm == fx
+		UI.item(list, fx.Name, {
+			icon = "◆", selected = fx == self.effect, note = n .. " el.",
+			onClick = function()
+				self.effect = fx
+				self.element = nil
+				self.confirm = nil
+				self:refresh()
+			end,
+			actions = {
+				{ text = "📋", onClick = function()
+					self:try(function()
+						self.effect = Editor.duplicateEffect(fx)
+					end)
+				end },
+				{ text = confirm and "✓?" or "×", color = C.danger, onClick = function()
+					if confirm then
+						self.confirm = nil
+						if self.effect == fx then
+							self.effect, self.element = nil, nil
+						end
+						self:try(Editor.removeEffect, fx)
+					else
+						self.confirm = fx
+						self:refresh()
+					end
+				end },
+			},
+		})
+	end
+	if not self.effect then
+		return
+	end
+
+	-- the effect ------------------------------------------------------------------------------
+	local fx = self.effect
+	body = UI.section(parent, "Efect: " .. fx.Name, { key = "vfx.effect" })
+	UI.textbox(UI.row(body, "Nume"), fx.Name, function(text)
+		if text ~= "" then
+			self:try(Editor.setEffect, fx, { name = text })
+		end
+	end)
+	UI.number(UI.row(body, "Durată (s)"), fx:GetAttribute("LC_Duration") or 1, function(v)
+		self:try(Editor.setEffect, fx, { duration = v })
+	end, { min = 0.01, step = 0.05, decimals = 2 })
+	local attachItems = {}
+	for _, a in Editor.ATTACH do
+		table.insert(attachItems, { value = a.key, label = a.label })
+	end
+	UI.dropdown(UI.row(body, "Prins de"), attachItems, fx:GetAttribute("LC_Attach") or "GROUND", function(v)
+		self:try(Editor.setEffect, fx, { attach = v })
+	end, { menuWidth = 200 })
+
+	local play = UI.hstack(body, { height = 28 })
+	UI.button(play, "▶  Redă", function()
+		self.paused = false
+		self:play()
+	end, { style = "primary", bold = true, height = 28 })
+	UI.button(play, self.loop and "🔁 Repetă: DA" or "🔁 Repetă", function()
+		self:setLoop(not self.loop)
+	end, { selected = self.loop, height = 28 })
+	UI.button(play, self.paused and "▶ Continuă" or "⏸ Pauză", function()
+		self:togglePause()
+	end, { height = 28 })
+	UI.segmented(UI.row(body, "Viteză"), {
+		{ value = 0.1, label = "×0.1" }, { value = 0.25, label = "×0.25" }, { value = 0.5, label = "×0.5" },
+		{ value = 1, label = "×1" },
+	}, self.speed, function(v)
+		self.speed = v
+		self:refresh()
+	end)
+	local timeRow = UI.row(body, "Întinde timpul")
+	for _, k in { 0.8, 1.15, 1.3 } do
+		UI.button(timeRow, "×" .. k, function()
+			self:try(Editor.retime, fx, k)
+		end, { textSize = 12, tip = "durată, emisii, burst-uri, chei și vieți x" .. k })
+	end
+	UI.label(body, "Se redă pe selecție (personaj / part) sau pe sol, în fața camerei.", { dim = true, size = 11, wrap = true })
+
+	-- elements --------------------------------------------------------------------------------
+	local elements = Editor.elements(fx)
+	body = UI.section(parent, "Elemente  (" .. #elements .. ")", { key = "vfx.elements" })
+	for _, e in elements do
+		local muted = e:GetAttribute("LC_Muted") == true
+		local kind = Editor.kindOf(e)
+		UI.item(body, e.Name, {
+			icon = KIND_ICON[kind], selected = e == self.element, muted = muted,
+			onClick = function()
+				self.element = e
+				self:refresh()
+			end,
+			actions = {
+				{ text = muted and "○" or "●", color = muted and C.dim or C.good, onClick = function()
+					self:set(e, { muted = not muted })
+				end },
+				{ text = "📋", onClick = function()
+					self:try(function()
+						self.element = Editor.duplicate(e)
+					end)
+				end },
+				{ text = "×", color = C.danger, onClick = function()
+					if self.element == e then
+						self.element = nil
+					end
+					self:try(Editor.remove, e)
+				end },
+			},
+		})
+	end
+	local addItems = {}
+	local lastKind
+	for _, p in Editor.PRESETS do
+		if p.kind ~= lastKind then
+			table.insert(addItems, { header = true, label = KIND_LABEL[p.kind] })
+			lastKind = p.kind
+		end
+		table.insert(addItems, { value = p.key, label = p.label })
+	end
+	table.insert(addItems, { header = true, label = "Gol" })
+	table.insert(addItems, { value = "PARTICLES", label = "Particule (gol)" })
+	table.insert(addItems, { value = "LIGHT", label = "Lumină (goală)" })
+	table.insert(addItems, { value = "TRAIL", label = "Trail (gol)" })
+	table.insert(addItems, { value = "MESH", label = "Mesh 3D (gol)" })
+	UI.dropdown(UI.hstack(body), addItems, nil, function(key)
+		self:try(function()
+			self.element = Editor.addElement(fx, key)
+		end)
+	end, { text = "+ Adaugă element", style = "primary", menuWidth = 220 })
+
+	if self.element then
+		self:renderElement(parent, self.element)
+	end
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- element properties
+-- ---------------------------------------------------------------------------------------------
+local function triple(self, body, label, values, element, key, opts)
+	local area = UI.row(body, label)
+	for i = 1, 3 do
+		UI.number(area, values[i], function(v)
+			local t = { values[1], values[2], values[3], mid = values.mid }
+			t[i] = v
+			self:set(element, { [key] = t })
+		end, opts)
+	end
+end
+
+local function pair(self, body, label, values, element, key, opts)
+	local area = UI.row(body, label)
+	for i = 1, 2 do
+		UI.number(area, values[i], function(v)
+			local t = { values[1], values[2] }
+			t[i] = v
+			self:set(element, { [key] = t })
+		end, opts)
+	end
+end
+
+local function vector(self, body, label, v, element, key, opts)
+	local area = UI.row(body, label)
+	for _, axis in { "X", "Y", "Z" } do
+		UI.number(area, v[axis], function(x)
+			local cur = (key == "position" and self.Editor.position(element)) or v
+			local t = { X = cur.X, Y = cur.Y, Z = cur.Z }
+			t[axis] = x
+			self:set(element, { [key] = Vector3.new(t.X, t.Y, t.Z) })
+		end, opts)
+	end
+end
+
+local function single(self, body, label, value, element, key, opts)
+	UI.number(UI.row(body, label), value, function(v)
+		self:set(element, { [key] = v })
+	end, opts)
+end
+
+function Panel:colorRow(body, data, element)
+	local cols = data.color
+	local mode = #cols
+	UI.segmented(UI.row(body, "Culori"), {
+		{ value = 1, label = "Una" }, { value = 2, label = "Două" }, { value = 3, label = "Trei" },
+	}, mode, function(m)
+		local a, b, c = cols[1], cols[2] or cols[1], cols[3] or cols[2] or cols[1]
+		self:set(element, { color = m == 1 and a or (m == 2 and { a, b } or { a, b, c }) })
+	end)
+	local area = UI.row(body, mode == 1 and "Culoare" or "început → sfârșit")
+	for i = 1, mode do
+		UI.color(area, cols[i], function(c)
+			local t = { cols[1], cols[2], cols[3], mid = cols.mid }
+			t[i] = c
+			self:set(element, { color = mode == 1 and c or (mode == 2 and { t[1], t[2] } or t) })
+		end)
+	end
+end
+
+function Panel:textureRow(body, data, element)
+	local items = {}
+	for _, t in self.Editor.TEXTURES do
+		table.insert(items, { value = t.key, label = t.label })
+	end
+	table.insert(items, { value = "CUSTOM", label = "ID propriu…" })
+	UI.dropdown(UI.row(body, "Textură"), items, data.texture, function(v)
+		if v == "CUSTOM" then
+			self.customTexture = true
+			self:refresh()
+		else
+			self.customTexture = false
+			self:set(element, { texture = v })
+		end
+	end, { menuWidth = 200 })
+	if data.texture == "CUSTOM" or self.customTexture then
+		UI.textbox(UI.row(body, "ID textură"), data.textureId, function(text)
+			local id = text:match("^%d+$") and ("rbxassetid://" .. text) or text
+			self:set(element, { texture = id })
+		end, { placeholder = "rbxassetid://123456" })
+	end
+end
+
+function Panel:renderElement(parent, element)
+	local Editor = self.Editor
+	local data = Editor.read(element)
+	local kind = data.kind
+	local body = UI.section(parent, KIND_ICON[kind] .. "  " .. element.Name, { key = "vfx.element" })
+	UI.textbox(UI.row(body, "Nume"), element.Name, function(text)
+		if text ~= "" then
+			self:set(element, { name = text })
+		end
+	end)
+	local presetItems = {}
+	for _, p in Editor.PRESETS do
+		if p.kind == kind then
+			table.insert(presetItems, { value = p.key, label = p.label })
+		end
+	end
+	UI.dropdown(UI.row(body, "Preset"), presetItems, data.preset, function(v)
+		self:try(Editor.applyPreset, element, v)
+	end, { placeholder = "alege…", menuWidth = 210 })
+	vector(self, body, "Poziție", data.position, element, "position", { step = 0.25, decimals = 2 })
+	UI.button(UI.hstack(body), "Selectează în Explorer", function()
+		Selection:Set({ element })
+	end, { style = "ghost" })
+
+	if kind == "PARTICLES" then
+		body = UI.section(parent, "Aspect", { key = "vfx.look" })
+		self:textureRow(body, data, element)
+		self:colorRow(body, data, element)
+		triple(self, body, "Mărime", data.size, element, "size", { min = 0, step = 0.1, decimals = 2 })
+		triple(self, body, "Transparență", data.transparency, element, "transparency", { min = 0, max = 1, step = 0.05, decimals = 2 })
+		UI.number(UI.row(body, "Mijloc la (0-1)"), data.size.mid or 0.5, function(v)
+			local s, tr = data.size, data.transparency
+			self:set(element, { size = { s[1], s[2], s[3], mid = v }, transparency = { tr[1], tr[2], tr[3], mid = v } })
+		end, { min = 0.01, max = 0.99, step = 0.05, decimals = 2 })
+		single(self, body, "Strălucire", data.LightEmission, element, "LightEmission", { min = 0, max = 1, step = 0.1, decimals = 2 })
+		single(self, body, "Influență lumină", data.LightInfluence, element, "LightInfluence", { min = 0, max = 1, step = 0.1, decimals = 2 })
+		single(self, body, "Luminozitate", data.Brightness, element, "Brightness", { min = 0, step = 0.25, decimals = 2 })
+		single(self, body, "Squash", data.squash, element, "squash", { min = -3, max = 3, step = 0.25, decimals = 2 })
+		UI.dropdown(UI.row(body, "Orientare"), ORIENT, data.Orientation, function(v)
+			self:set(element, { Orientation = v })
+		end, { menuWidth = 220 })
+		single(self, body, "ZOffset", data.ZOffset, element, "ZOffset", { step = 0.25, decimals = 2 })
+
+		body = UI.section(parent, "Mișcare", { key = "vfx.motion" })
+		pair(self, body, "Viață (s)", data.lifetime, element, "lifetime", { min = 0, step = 0.05, decimals = 2 })
+		pair(self, body, "Viteză", data.speed, element, "speed", { step = 0.5, decimals = 2 })
+		single(self, body, "Rată / s", data.Rate, element, "Rate", { min = 0, step = 5, decimals = 1 })
+		pair(self, body, "Spread X / Y", data.spread, element, "spread", { min = 0, max = 180, step = 5, decimals = 0 })
+		vector(self, body, "Accelerație", data.acceleration, element, "acceleration", { step = 1, decimals = 2 })
+		single(self, body, "Drag", data.Drag, element, "Drag", { min = 0, step = 0.5, decimals = 2 })
+		pair(self, body, "Rotație", data.rotation, element, "rotation", { step = 15, decimals = 0 })
+		pair(self, body, "Rotire / s", data.rotSpeed, element, "rotSpeed", { step = 15, decimals = 0 })
+		UI.toggle(UI.hstack(body), data.LockedToPart, function(v)
+			self:set(element, { LockedToPart = v })
+		end, "Lipit de efect (LockedToPart)")
+
+		body = UI.section(parent, "Formă și direcție", { key = "vfx.shape", collapsed = true })
+		UI.dropdown(UI.row(body, "Formă"), SHAPES, data.shape, function(v)
+			self:set(element, { shape = v })
+		end)
+		if data.shape ~= "Point" and data.partSize then
+			vector(self, body, "Mărime formă", data.partSize, element, "partSize", { min = 0.05, step = 0.25, decimals = 2 })
+			UI.segmented(UI.row(body, "Din"), { { value = "Volume", label = "Volum" }, { value = "Surface", label = "Suprafață" } },
+				data.ShapeStyle, function(v)
+					self:set(element, { ShapeStyle = v })
+				end)
+			UI.segmented(UI.row(body, "Sens"), { { value = "Outward", label = "Afară" }, { value = "Inward", label = "Înăuntru" },
+				{ value = "InAndOut", label = "Ambele" } }, data.ShapeInOut, function(v)
+				self:set(element, { ShapeInOut = v })
+			end)
+		end
+		UI.dropdown(UI.row(body, "Direcție"), DIRECTIONS, data.EmissionDirection, function(v)
+			self:set(element, { EmissionDirection = v })
+		end)
+		self:renderTimeline(parent, element, data)
+	elseif kind == "MESH" then
+		self:renderMesh(parent, element, data)
+		self:renderTimeline(parent, element, data)
+	elseif kind == "LIGHT" then
+		body = UI.section(parent, "Lumină", { key = "vfx.light" })
+		UI.color(UI.row(body, "Culoare"), data.Color, function(c)
+			self:set(element, { Color = c })
+		end)
+		single(self, body, "Luminozitate", data.Brightness, element, "Brightness", { min = 0, step = 0.5, decimals = 2 })
+		single(self, body, "Rază", data.Range, element, "Range", { min = 0, max = 60, step = 1, decimals = 1 })
+		UI.toggle(UI.hstack(body), data.Shadows, function(v)
+			self:set(element, { Shadows = v })
+		end, "Umbre")
+		body = UI.section(parent, "Chei (luminozitate în timp)", { key = "vfx.keys" })
+		local keys = data.keys
+		if #keys == 0 then
+			UI.label(body, "Fără chei: lumina stă constantă.", { dim = true, size = 12 })
+		end
+		for i, k in keys do
+			local area = UI.row(body, "Cheia " .. i, { labelWidth = 52 })
+			for j = 1, 3 do
+				UI.number(area, k[j], function(v)
+					local copy = table.clone(keys)
+					copy[i] = table.clone(k)
+					copy[i][j] = v
+					self:set(element, { keys = copy })
+				end, { min = 0, step = j == 1 and 0.05 or 0.5, decimals = 2, tip = ({ "timp (s)", "luminozitate", "rază" })[j] })
+			end
+			UI.button(area, "×", function()
+				local copy = table.clone(keys)
+				table.remove(copy, i)
+				self:set(element, { keys = copy })
+			end, { width = 24, style = "ghost" })
+		end
+		UI.label(body, "timp (s) · luminozitate · rază", { dim = true, size = 11 })
+		UI.button(UI.hstack(body), "+ Cheie", function()
+			local copy = table.clone(keys)
+			local last = keys[#keys]
+			table.insert(copy, { last and last[1] + 0.1 or 0, data.Brightness, data.Range })
+			self:set(element, { keys = copy })
+		end)
+	elseif kind == "TRAIL" then
+		body = UI.section(parent, "Trail", { key = "vfx.trail" })
+		self:textureRow(body, data, element)
+		self:colorRow(body, data, element)
+		pair(self, body, "Transparență", { data.transparency[1], data.transparency[3] }, element, "transparency",
+			{ min = 0, max = 1, step = 0.05, decimals = 2 })
+		single(self, body, "Viață (s)", data.lifetime, element, "lifetime", { min = 0.01, step = 0.05, decimals = 2 })
+		single(self, body, data.ground and "Lățime (pe sol)" or "Înălțime", data.height, element, "height",
+			{ min = 0.05, step = 0.25, decimals = 2 })
+		single(self, body, "Lățime la vârf", data.widthHead, element, "widthHead", { min = 0, max = 1, step = 0.05, decimals = 2 })
+		single(self, body, "Lățime la coadă", data.widthEnd, element, "widthEnd", { min = 0, max = 1, step = 0.05, decimals = 2 })
+		single(self, body, "Strălucire", data.LightEmission, element, "LightEmission", { min = 0, max = 1, step = 0.1, decimals = 2 })
+		UI.toggle(UI.hstack(body), data.ground, function(v)
+			self:set(element, { ground = v })
+		end, "Urmă plată pe sol (urmează piciorul)")
+		if data.ground then
+			single(self, body, "Curgere (cicluri/s)", data.flow, element, "flow", { min = 0, max = 6, step = 0.1, decimals = 2 })
+			single(self, body, "Ridicare (studs)", data.lift, element, "lift", { min = 0, max = 0.3, step = 0.005, decimals = 3 })
+		end
+		self:renderTimeline(parent, element, data)
+	end
+end
+
+function Panel:renderMesh(parent, element, data)
+	local body = UI.section(parent, "Mesh 3D", { key = "vfx.mesh" })
+	UI.dropdown(UI.row(body, "Mod"), MESH_MODES, data.mode, function(v)
+		self:set(element, { mode = v })
+	end, { menuWidth = 220 })
+	local looks = UI.row(body, "Formă / material")
+	UI.dropdown(looks, PART_SHAPES, data.shape, function(v)
+		self:set(element, { shape = v })
+	end)
+	UI.dropdown(looks, MATERIALS, data.material, function(v)
+		self:set(element, { material = v })
+	end, { menuWidth = 150 })
+	local colors = UI.row(body, "Culoare → final")
+	UI.color(colors, data.color, function(c)
+		self:set(element, { color = c })
+	end)
+	UI.color(colors, data.colorEnd or data.color, function(c)
+		self:set(element, { colorEnd = c })
+	end)
+	vector(self, body, "Mărime", data.size, element, "size", { min = 0.02, step = 0.1, decimals = 2 })
+	pair(self, body, "Creștere", data.grow, element, "grow", { min = 0, step = 0.1, decimals = 2 })
+	pair(self, body, "Transparență", data.transparency, element, "transparency", { min = 0, max = 1, step = 0.05, decimals = 2 })
+	pair(self, body, "Viață (s)", data.lifetime, element, "lifetime", { min = 0.02, step = 0.05, decimals = 2 })
+	single(self, body, "Rată / s", data.Rate, element, "rate", { min = 0, step = 5, decimals = 1 })
+	if data.mode == "Ring" or data.mode == "Crack" then
+		single(self, body, "Segmente", data.count, element, "count", { min = 1, max = 64, step = 1, decimals = 0 })
+		pair(self, body, data.mode == "Ring" and "Rază (început, final)" or "Lungime (min, max)", data.radius, element,
+			"radius", { min = 0, step = 0.5, decimals = 2 })
+	end
+	if data.mode == "Puff" or data.mode == "Debris" then
+		pair(self, body, "Viteză", data.speed, element, "speed", { min = 0, step = 1, decimals = 1 })
+		pair(self, body, "Spread X / Y", data.spread, element, "spread", { min = 0, max = 180, step = 5, decimals = 0 })
+		UI.dropdown(UI.row(body, "Direcție"), DIRECTIONS, data.direction, function(v)
+			self:set(element, { direction = v })
+		end)
+	end
+	if data.mode == "Puff" then
+		single(self, body, "Urcare (studs)", data.rise, element, "rise", { step = 0.25, decimals = 2 })
+	end
+	if data.mode == "Debris" then
+		single(self, body, "Rotire", data.spin, element, "spin", { min = 0, step = 2, decimals = 0 })
+	end
+	single(self, body, "Variație mărime", data.jitter, element, "jitter", { min = 0, max = 1, step = 0.05, decimals = 2 })
+	UI.toggle(UI.hstack(body), data.ground, function(v)
+		self:set(element, { ground = v })
+	end, "Lipit de sol (găsește podeaua)")
+	UI.label(body, "Piesele sunt 3D reale (Part): lumină, umbră și perspectivă adevărate.", { dim = true, size = 11, wrap = true })
+end
+
+function Panel:renderTimeline(parent, element, data)
+	local body = UI.section(parent, "Timeline", { key = "vfx.timeline" })
+	local w = data.window
+	local area = UI.row(body, data.kind == "TRAIL" and "Activ (s)" or "Emisie (s)")
+	UI.number(area, w and w[1] or 0, function(v)
+		self:set(element, { window = { v, math.max(v + 0.01, w and w[2] or v + 0.3) } })
+	end, { min = 0, step = 0.05, decimals = 2, tip = "de la" })
+	UI.number(area, w and w[2] or 0, function(v)
+		self:set(element, { window = { w and w[1] or 0, v } })
+	end, { min = 0, step = 0.05, decimals = 2, tip = "până la" })
+	UI.button(area, "×", function()
+		self:set(element, { window = false })
+	end, { width = 24, style = "ghost" })
+	UI.label(body, w and string.format("emite continuu %s → %s s (Rată / s)", UI.fmt(w[1]), UI.fmt(w[2]))
+		or "fără emisie continuă (doar burst-uri)", { dim = true, size = 11 })
+	if data.kind ~= "PARTICLES" and data.kind ~= "MESH" then
+		return
+	end
+	local bursts = data.bursts
+	for i, b in bursts do
+		local row = UI.row(body, "Burst " .. i, { labelWidth = 52 })
+		UI.number(row, b[1], function(v)
+			local copy = table.clone(bursts)
+			copy[i] = { v, b[2] }
+			self:set(element, { bursts = copy })
+		end, { min = 0, step = 0.05, decimals = 2, tip = "timp (s)" })
+		UI.number(row, b[2], function(v)
+			local copy = table.clone(bursts)
+			copy[i] = { b[1], math.max(1, math.floor(v)) }
+			self:set(element, { bursts = copy })
+		end, { min = 1, step = 1, decimals = 0, tip = "câte particule" })
+		UI.button(row, "×", function()
+			local copy = table.clone(bursts)
+			table.remove(copy, i)
+			self:set(element, { bursts = copy })
+		end, { width = 24, style = "ghost" })
+	end
+	if #bursts > 0 then
+		UI.label(body, "timp (s) · câte particule", { dim = true, size = 11 })
+	end
+	UI.button(UI.hstack(body), "+ Burst", function()
+		local copy = table.clone(bursts)
+		local last = bursts[#bursts]
+		table.insert(copy, { last and last[1] + 0.1 or 0, last and last[2] or 20 })
+		self:set(element, { bursts = copy })
+	end)
+end
+
+return Panel
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX5"><Properties><string name="Name">AnimPanel</string><ProtectedString name="Source"><![CDATA[-- LostCube > Animations tab: preview any KeyframeSequence on a rig in Edit mode, Moon-style easing on
+-- keyframes, and effects played on animation markers.
+local RunService = game:GetService("RunService")
+local Selection = game:GetService("Selection")
+local Players = game:GetService("Players")
+local KeyframeSequenceProvider = game:GetService("KeyframeSequenceProvider")
+local ChangeHistoryService = game:GetService("ChangeHistoryService")
+
+local UI = require(script.Parent.UI)
+local C = UI.C
+
+local Panel = {}
+Panel.__index = Panel
+
+local STYLES = { "Linear", "Constant", "Cubic", "Bounce", "Elastic" }
+local DIRECTIONS = { { value = "In", label = "In" }, { value = "Out", label = "Out" }, { value = "InOut", label = "InOut" } }
+local SEARCH = { "Workspace", "ReplicatedStorage", "ServerStorage", "StarterPlayer", "StarterPack", "Lighting" }
+
+function Panel.new(ctx)
+	return setmetatable({ ctx = ctx, Editor = ctx.Editor, rig = nil, clip = nil, speed = 1, loop = true,
+		picked = {}, style = "Cubic", direction = "Out", clips = nil }, Panel)
+end
+
+function Panel:refresh()
+	self.ctx.app:refresh()
+end
+
+local function record(name, fn)
+	local ok, id = pcall(ChangeHistoryService.TryBeginRecording, ChangeHistoryService, "LostCube: " .. name)
+	local done, err = pcall(fn)
+	if ok and id then
+		ChangeHistoryService:FinishRecording(id, done and Enum.FinishRecordingOperation.Commit or Enum.FinishRecordingOperation.Cancel)
+	end
+	if done then
+		pcall(function()
+			require(script.Parent.Editor).log(name)
+		end)
+	end
+	return done, err
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- rig + clips
+-- ---------------------------------------------------------------------------------------------
+local function animatorOf(rig)
+	local owner = rig:FindFirstChildOfClass("Humanoid") or rig:FindFirstChildOfClass("AnimationController")
+	if not owner then
+		return nil
+	end
+	local animator = owner:FindFirstChildOfClass("Animator")
+	if not animator then
+		animator = Instance.new("Animator")
+		animator.Parent = owner
+	end
+	return animator
+end
+
+local function rigType(rig)
+	local h = rig and rig:FindFirstChildOfClass("Humanoid")
+	if h then
+		return h.RigType == Enum.HumanoidRigType.R15 and "R15" or "R6"
+	end
+	return rig and (rig:FindFirstChild("UpperTorso") and "R15" or "R6") or "-"
+end
+
+function Panel:findClips()
+	local list = {}
+	for _, name in SEARCH do
+		local ok, service = pcall(game.GetService, game, name)
+		if ok and service then
+			for _, d in service:GetDescendants() do
+				if d:IsA("KeyframeSequence") then
+					table.insert(list, d)
+				end
+			end
+		end
+	end
+	table.sort(list, function(a, b)
+		local pa, pb = a.Parent and a.Parent:GetFullName() or "", b.Parent and b.Parent:GetFullName() or ""
+		if pa ~= pb then
+			return pa < pb
+		end
+		return a.Name:lower() < b.Name:lower()
+	end)
+	self.clips = list
+	return list
+end
+
+function Panel:makeDummy(kind)
+	self:stop()
+	local done, err = record("dummy " .. kind, function()
+		local model
+		local desc = Instance.new("HumanoidDescription")
+		local light, dark = Color3.fromRGB(214, 216, 226), Color3.fromRGB(40, 40, 48)
+		desc.HeadColor, desc.LeftArmColor, desc.RightArmColor = light, light, light
+		desc.LeftLegColor, desc.RightLegColor, desc.TorsoColor = dark, dark, dark
+		local ok, result = pcall(Players.CreateHumanoidModelFromDescription, Players, desc, Enum.HumanoidRigType[kind])
+		if ok and result then
+			model = result
+		else
+			error("nu am putut crea dummy-ul: " .. tostring(result))
+		end
+		model.Name = "LostCube Dummy " .. kind
+		local spot = self.Editor.previewTarget()
+		local cf = typeof(spot) == "CFrame" and spot or CFrame.new(0, 0, 0)
+		local root = model:FindFirstChild("HumanoidRootPart")
+		local drop = kind == "R15" and (model.Humanoid.HipHeight + root.Size.Y / 2) or 3
+		model:PivotTo(cf * CFrame.new(0, drop, 0))
+		root.Anchored = true
+		model.Parent = workspace
+		self.rig = model
+	end)
+	if not done then
+		self.error = tostring(err)
+	end
+	self:refresh()
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- playback (Edit mode: Animator:StepAnimations)
+-- ---------------------------------------------------------------------------------------------
+function Panel:resetPose()
+	if not self.rig then
+		return
+	end
+	for _, m in self.rig:GetDescendants() do
+		if m:IsA("Motor6D") then
+			m.Transform = CFrame.new()
+		end
+	end
+end
+
+function Panel:stop()
+	if self.conn then
+		self.conn:Disconnect()
+		self.conn = nil
+	end
+	for _, c in self.markerConns or {} do
+		c:Disconnect()
+	end
+	self.markerConns = nil
+	self.playing = false
+	if self.track then
+		pcall(function()
+			self.track:Stop(0)
+			self.track:Destroy()
+		end)
+		self.track = nil
+	end
+	self:resetPose()
+end
+
+function Panel:load()
+	if not (self.rig and self.clip) then
+		return nil
+	end
+	local animator = animatorOf(self.rig)
+	if not animator then
+		self.error = "rig-ul nu are Humanoid sau AnimationController"
+		return nil
+	end
+	self:stop()
+	local anim = Instance.new("Animation")
+	anim.AnimationId = KeyframeSequenceProvider:RegisterKeyframeSequence(self.clip) -- picks up the latest edits
+	local track = animator:LoadAnimation(anim)
+	track.Looped = self.loop
+	self.track, self.animator = track, animator
+	-- effects on markers
+	self.markerConns = {}
+	for _, marker in self:markers() do
+		local fxName = self.clip:GetAttribute("LC_FX_" .. marker.name)
+		if fxName then
+			table.insert(self.markerConns, track:GetMarkerReachedSignal(marker.name):Connect(function()
+				pcall(self.Editor.preview, fxName, { target = self.rig, speed = self.speed })
+			end))
+		end
+	end
+	self.conn = RunService.Heartbeat:Connect(function(dt)
+		if self.track then
+			self.animator:StepAnimations(dt)
+			if self.timeLabel and self.timeLabel.Parent then
+				self.timeLabel.Text = string.format("%.2f / %.2f s", self.track.TimePosition, self.track.Length)
+			end
+		end
+	end)
+	return track
+end
+
+function Panel:play()
+	local track = self.track or self:load()
+	if not track then
+		self:refresh()
+		return
+	end
+	if not track.IsPlaying then
+		track:Play(0, 1, self.speed)
+	end
+	track:AdjustSpeed(self.speed)
+	self.playing = true
+	self:refresh()
+end
+
+function Panel:pause()
+	if self.track then
+		self.track:AdjustSpeed(0)
+	end
+	self.playing = false
+	self:refresh()
+end
+
+function Panel:step(frames)
+	local track = self.track or self:load()
+	if not track then
+		return
+	end
+	if not track.IsPlaying then
+		track:Play(0, 1, 0)
+	end
+	track:AdjustSpeed(0)
+	self.playing = false
+	track.TimePosition = math.clamp(track.TimePosition + frames / 60, 0, math.max(track.Length - 1e-3, 0))
+	self.animator:StepAnimations(0)
+	self:refresh()
+end
+
+function Panel:destroy()
+	self:stop()
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- keyframes / markers
+-- ---------------------------------------------------------------------------------------------
+function Panel:keyframes()
+	local list = self.clip and self.clip:GetKeyframes() or {}
+	table.sort(list, function(a, b)
+		return a.Time < b.Time
+	end)
+	return list
+end
+
+function Panel:markers()
+	local out = {}
+	for _, kf in self:keyframes() do
+		for _, m in kf:GetMarkers() do
+			table.insert(out, { name = m.Name, time = kf.Time, marker = m })
+		end
+	end
+	return out
+end
+
+local function firstPose(kf)
+	for _, d in kf:GetDescendants() do
+		if d:IsA("Pose") and d.Weight > 0 then
+			return d
+		end
+	end
+	return nil
+end
+
+function Panel:applyEasing()
+	local picked = {}
+	for kf in self.picked do
+		if kf.Parent == self.clip then
+			table.insert(picked, kf)
+		end
+	end
+	if #picked == 0 then
+		self.error = "alege întâi cadrele (click pe ele)"
+		self:refresh()
+		return
+	end
+	local style, direction = Enum.PoseEasingStyle[self.style], Enum.PoseEasingDirection[self.direction]
+	local done, err = record(string.format("easing %s %s pe %d cadre (%s)", self.style, self.direction, #picked, self.clip.Name), function()
+		for _, kf in picked do
+			for _, pose in kf:GetDescendants() do
+				if pose:IsA("Pose") then
+					pose.EasingStyle = style
+					pose.EasingDirection = direction
+				end
+			end
+		end
+	end)
+	self.error = not done and tostring(err) or nil
+	self:stop() -- the next play re-registers the clip with the new easing
+	self:refresh()
+end
+
+function Panel:addMarker(name)
+	if not (self.clip and self.track) then
+		self.error = "pornește sau pune animația pe un cadru întâi"
+		self:refresh()
+		return
+	end
+	local t = self.track.TimePosition
+	local done, err = record("marker " .. name .. " pe " .. self.clip.Name, function()
+		local target
+		for _, kf in self:keyframes() do
+			if math.abs(kf.Time - t) < 1 / 120 then
+				target = kf
+			end
+		end
+		if not target then
+			target = Instance.new("Keyframe")
+			target.Name = name
+			target.Time = math.floor(t * 60 + 0.5) / 60
+			target.Parent = self.clip
+		end
+		local m = Instance.new("KeyframeMarker")
+		m.Name = name
+		target:AddMarker(m)
+	end)
+	self.error = not done and tostring(err) or nil
+	self:stop()
+	self:refresh()
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- render
+-- ---------------------------------------------------------------------------------------------
+function Panel:render(parent)
+	if self.rig and not self.rig.Parent then
+		self:stop()
+		self.rig = nil
+	end
+	if self.error then
+		UI.note(parent, "⚠ " .. self.error, C.warn)
+		self.error = nil
+	end
+
+	-- rig
+	local body = UI.section(parent, "Rig de previzualizare", { key = "anim.rig" })
+	UI.label(body, self.rig and (self.rig.Name .. "  (" .. rigType(self.rig) .. ")") or "Niciun rig ales", { medium = true })
+	UI.button(UI.hstack(body), "Folosește personajul selectat", function()
+		local sel = Selection:Get()[1]
+		local model = sel and (sel:IsA("Model") and sel or sel:FindFirstAncestorWhichIsA("Model"))
+		if model and (model:FindFirstChildOfClass("Humanoid") or model:FindFirstChildOfClass("AnimationController")) then
+			self:stop()
+			self.rig = model
+		else
+			self.error = "selectează un personaj (Model cu Humanoid)"
+		end
+		self:refresh()
+	end)
+	local bar = UI.hstack(body)
+	UI.button(bar, "+ Dummy R6", function()
+		self:makeDummy("R6")
+	end)
+	UI.button(bar, "+ Dummy R15", function()
+		self:makeDummy("R15")
+	end)
+
+	-- clips
+	local clips = self.clips or self:findClips()
+	body = UI.section(parent, "Animații  (" .. #clips .. ")", { key = "anim.clips", right = function(r)
+		UI.button(r, "🔁", function()
+			self:findClips()
+			self:refresh()
+		end, { width = 34, height = 22, style = "ghost" })
+	end, rightWidth = 38 })
+	local list = UI.scrollList(body, self.clip and 200 or 420)
+	local lastGroup
+	for _, clip in clips do
+		if clip.Parent then
+			local group = clip.Parent:GetFullName():gsub("^Workspace%.", ""):gsub("^ReplicatedStorage%.", "")
+			if group ~= lastGroup then
+				UI.label(list, group, { dim = true, size = 11, height = 18 })
+				lastGroup = group
+			end
+			local kfs = clip:GetKeyframes()
+			local length = 0
+			for _, kf in kfs do
+				length = math.max(length, kf.Time)
+			end
+			UI.item(list, clip.Name, { icon = "►", selected = clip == self.clip, note = string.format("%.2fs", length),
+				onClick = function()
+					self:stop()
+					self.clip = clip
+					self.picked = {}
+					self:refresh()
+				end })
+		end
+	end
+	if #clips == 0 then
+		UI.note(body, "Nicio animație (KeyframeSequence) în joc.")
+	end
+	if not self.clip then
+		return
+	end
+	local clip = self.clip
+
+	-- playback
+	body = UI.section(parent, "Redare: " .. clip.Name, { key = "anim.play" })
+	if not self.rig then
+		UI.note(body, "Alege un rig (selecția sau un dummy) ca să vezi animația.")
+	end
+	local controls = UI.hstack(body, { height = 28 })
+	UI.button(controls, self.playing and "⏸ Pauză" or "▶  Redă", function()
+		if self.playing then
+			self:pause()
+		else
+			self:play()
+		end
+	end, { style = "primary", bold = true, height = 28 })
+	UI.button(controls, "◀", function()
+		self:step(-1)
+	end, { width = 30, height = 28 })
+	UI.button(controls, "▶", function()
+		self:step(1)
+	end, { width = 30, height = 28 })
+	UI.button(controls, "⏹", function()
+		self:stop()
+		self.playing = false
+		self:refresh()
+	end, { width = 30, height = 28 })
+	self.timeLabel = UI.label(body, self.track and string.format("%.2f / %.2f s", self.track.TimePosition, self.track.Length)
+		or "-", { dim = true, size = 12 })
+	UI.segmented(UI.row(body, "Viteză"), {
+		{ value = 0.25, label = "×0.25" }, { value = 0.5, label = "×0.5" }, { value = 1, label = "×1" }, { value = 2, label = "×2" },
+	}, self.speed, function(v)
+		self.speed = v
+		if self.track and self.playing then
+			self.track:AdjustSpeed(v)
+		end
+		self:refresh()
+	end)
+	UI.toggle(UI.hstack(body), self.loop, function(v)
+		self.loop = v
+		if self.track then
+			self.track.Looped = v
+		end
+		self:refresh()
+	end, "Repetă")
+
+	-- keyframes + easing
+	local kfs = self:keyframes()
+	body = UI.section(parent, "Cadre și easing (ca în Moon)", { key = "anim.ease" })
+	local count = 0
+	for _ in self.picked do
+		count += 1
+	end
+	local sel = UI.hstack(body)
+	UI.button(sel, "Toate", function()
+		for _, kf in kfs do
+			self.picked[kf] = true
+		end
+		self:refresh()
+	end)
+	UI.button(sel, "Niciunul", function()
+		self.picked = {}
+		self:refresh()
+	end)
+	for _, kf in kfs do
+		local pose = firstPose(kf)
+		local easing = pose and (pose.EasingStyle.Name .. " " .. pose.EasingDirection.Name) or "-"
+		local markers = #kf:GetMarkers() > 0 and ("  ◆ " .. kf:GetMarkers()[1].Name) or ""
+		UI.item(body, string.format("%.2fs  %s%s", kf.Time, kf.Name, markers), {
+			icon = self.picked[kf] and "■" or "□", selected = self.picked[kf] == true, note = easing, height = 24,
+			onClick = function()
+				self.picked[kf] = not self.picked[kf] or nil
+				self:refresh()
+			end })
+	end
+	local grid = UI.hstack(body)
+	for i, style in STYLES do
+		if i == 4 then
+			grid = UI.hstack(body)
+		end
+		UI.button(grid, style, function()
+			self.style = style
+			self:refresh()
+		end, { selected = self.style == style, textSize = 12 })
+	end
+	UI.segmented(UI.row(body, "Direcție"), DIRECTIONS, self.direction, function(v)
+		self.direction = v
+		self:refresh()
+	end)
+	UI.button(UI.hstack(body, { height = 28 }), string.format("Aplică pe %d cadre", count), function()
+		self:applyEasing()
+	end, { style = "primary", bold = true, height = 28 })
+	UI.label(body, "Easing-ul unui cadru = mișcarea de la el spre următorul.", { dim = true, size = 11, wrap = true })
+
+	-- effects on markers
+	body = UI.section(parent, "Efecte pe markere", { key = "anim.fx" })
+	local effectItems = { { value = "", label = "(niciun efect)" } }
+	for _, fx in self.Editor.effects() do
+		table.insert(effectItems, { value = fx.Name, label = fx.Name })
+	end
+	local markers = self:markers()
+	if #markers == 0 then
+		UI.label(body, "Animația nu are markere.", { dim = true, size = 12 })
+	end
+	for _, m in markers do
+		UI.dropdown(UI.row(body, string.format("◆ %s (%.2fs)", m.name, m.time), { labelWidth = 130 }), effectItems,
+			clip:GetAttribute("LC_FX_" .. m.name) or "", function(v)
+				record("efect " .. (v ~= "" and v or "-") .. " pe markerul " .. m.name, function()
+					clip:SetAttribute("LC_FX_" .. m.name, v ~= "" and v or nil)
+				end)
+				self:stop()
+				self:refresh()
+			end, { menuWidth = 180 })
+	end
+	local add = UI.hstack(body)
+	local box = UI.textbox(add, "", nil, { placeholder = "nume marker (ex. Hit)" })
+	UI.button(add, "+ Marker aici", function()
+		if box.Text ~= "" then
+			self:addMarker(box.Text)
+		end
+	end, { width = 110 })
+	UI.label(body, "În joc: VFX.bindMarkers(track, personaj, { Hit = \"NumeEfect\" })", { dim = true, size = 11, wrap = true })
+end
+
+return Panel
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX6"><Properties><string name="Name">ClaudePanel</string><ProtectedString name="Source"><![CDATA[-- LostCube > Claude tab: what Claude (or you) did with LostCube, and the modules it needs in the game.
+local UI = require(script.Parent.UI)
+local Installer = require(script.Parent.Installer)
+local C = UI.C
+
+local Panel = {}
+Panel.__index = Panel
+
+local EXAMPLES = {
+	"„fă-mi un efect de foc pe mână când lovește”",
+	"„pune easing Bounce pe aterizare”",
+	"„fă scânteile mai mari și mai albastre”",
+	"„un cerc magic sub personaj la teleport”",
+}
+
+function Panel.new(ctx)
+	return setmetatable({ ctx = ctx, Editor = ctx.Editor }, Panel)
+end
+
+function Panel:render(parent)
+	local body = UI.section(parent, "Claude lucrează cu LostCube", { key = "claude.about" })
+	UI.label(body, "Claude are acces direct la Studio și folosește aceleași funcții ca panourile LostCube "
+		.. "(modulul ReplicatedStorage.LostCube.Editor). Spune-i în chat ce vrei, de exemplu:", { wrap = true, size = 12 })
+	for _, e in EXAMPLES do
+		UI.label(body, "•  " .. e, { dim = true, size = 12, wrap = true })
+	end
+	UI.note(body, "Fiecare pas e un singur <b>Ctrl+Z</b>. Efectele apar în tab-ul VFX imediat ce Claude le face.")
+
+	local status = Installer.status()
+	body = UI.section(parent, "Module în joc", { key = "claude.modules" })
+	UI.label(body, string.format("LostCube %s", status.version), { medium = true })
+	UI.label(body, "VFX (player în joc): " .. (status.vfx or "lipsește"), { dim = true, size = 12,
+		color = status.vfx == status.version and C.good or C.warn })
+	UI.label(body, "Editor (pentru Claude): " .. (status.editor or "lipsește"), { dim = true, size = 12,
+		color = status.editor == status.version and C.good or C.warn })
+	UI.button(UI.hstack(body, { height = 28 }), status.ok and "Reinstalează modulele" or "Instalează / actualizează modulele",
+		function()
+			local ok, err = pcall(Installer.install)
+			if not ok then
+				warn("LostCube:", err)
+			end
+			self.ctx.app:refresh()
+		end, { style = status.ok and "normal" or "primary", bold = true, height = 28 })
+
+	local history = self.Editor.history()
+	body = UI.section(parent, "Ce s-a făcut  (" .. #history .. ")", { key = "claude.log" })
+	if #history == 0 then
+		UI.label(body, "Nimic încă în sesiunea asta.", { dim = true, size = 12 })
+	end
+	for i = #history, math.max(1, #history - 24), -1 do
+		local h = history[i]
+		UI.label(body, h.t .. "   " .. h.a, { size = 12, color = i == #history and C.text or C.dim })
+	end
+end
+
+function Panel:destroy() end
+
+return Panel
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX7"><Properties><string name="Name">Installer</string><ProtectedString name="Source"><![CDATA[-- Puts LostCube's two modules into the game (ReplicatedStorage.LostCube):
+--   VFX    - plays the effects in the game (client)
+--   Editor - the same editing functions the plugin uses; Claude calls it through Studio
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ChangeHistoryService = game:GetService("ChangeHistoryService")
+
+local Installer = {}
+
+local function source()
+	local editor = script.Parent.Editor
+	return editor, editor.VFX, require(editor).VERSION
+end
+
+function Installer.status()
+	local _, _, version = source()
+	local root = ReplicatedStorage:FindFirstChild("LostCube")
+	local editor = root and root:FindFirstChild("Editor")
+	local vfx = root and root:FindFirstChild("VFX")
+	local function v(inst)
+		return inst and (inst:GetAttribute("LC_Version") or "?") or nil
+	end
+	return {
+		version = version,
+		editor = v(editor),
+		vfx = v(vfx),
+		ok = v(editor) == version and v(vfx) == version,
+	}
+end
+
+function Installer.install()
+	local editorSource, vfxSource, version = source()
+	local ok, id = pcall(ChangeHistoryService.TryBeginRecording, ChangeHistoryService, "LostCube: instalare module")
+	local root = ReplicatedStorage:FindFirstChild("LostCube")
+	if not root then
+		root = Instance.new("Folder")
+		root.Name = "LostCube"
+		root.Parent = ReplicatedStorage
+	end
+	if not root:FindFirstChild("Effects") then
+		local effects = Instance.new("Folder")
+		effects.Name = "Effects"
+		effects.Parent = root
+	end
+	local done, err = pcall(function()
+		for _, pair in { { "VFX", vfxSource }, { "Editor", editorSource } } do
+			local old = root:FindFirstChild(pair[1])
+			if old then
+				old:Destroy()
+			end
+			local copy = pair[2]:Clone()
+			for _, child in copy:GetChildren() do
+				child:Destroy() -- the game's Editor uses the VFX next to it
+			end
+			copy.Name = pair[1]
+			copy:SetAttribute("LC_Version", version)
+			copy.Parent = root
+		end
+	end)
+	if ok and id then
+		-- a failed install is rolled back instead of leaving a half-written LostCube folder (and an open recording)
+		ChangeHistoryService:FinishRecording(id, done and Enum.FinishRecordingOperation.Commit or Enum.FinishRecordingOperation.Cancel)
+	end
+	if not done then
+		error(err, 0)
+	end
+	return Installer.status()
+end
+
+return Installer
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX8"><Properties><string name="Name">Editor</string><ProtectedString name="Source"><![CDATA[--[[ LostCube Editor - creates and edits Roblox effects (LostCube VFX format) in Studio.
+Used by the LostCube plugin's panels and by Claude (through Studio):
+
+	local Editor = require(game.ReplicatedStorage.LostCube.Editor)
+	local fx = Editor.newEffect("Boom", { duration = 0.6, attach = "GROUND" })
+	local s = Editor.addElement(fx, "SPARKLES", { position = Vector3.new(0, 3, 0), bursts = { { 0.1, 40 } } })
+	Editor.setProps(s, { color = { Color3.new(1, 1, 1), Color3.fromRGB(158, 92, 255) }, speed = { 18, 30 } })
+	Editor.preview(fx)  -- plays it in Studio, in front of the camera (or on the selection)
+
+Format (the same the Blender exporter writes; LostCube.VFX plays it in the game):
+	Model <effect>  attributes LC_Duration (s), LC_Attach
+	  Part Root
+	    Attachment <element> > ParticleEmitter / PointLight      (point emitters, lights)
+	    Attachment <element>_Top / _Bottom + Trail <element>      (trails)
+	  Part <element> > ParticleEmitter                            (shape emitters: the Part is the shape)
+Timeline attributes (seconds) on elements: LC_On "t0,t1", LC_Bursts "t:n;t:n", LC_Keys "t,b,r;..." (lights),
+LC_Muted (skipped by the player).
+]]
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local ChangeHistoryService = game:GetService("ChangeHistoryService")
+local Selection = game:GetService("Selection")
+
+local VFX = require(script:FindFirstChild("VFX") or script.Parent:WaitForChild("VFX"))
+
+local Editor = {}
+Editor.VERSION = "1.5.0"
+
+local P = "rbxasset://textures/particles/"
+-- the ground crack streak (Textures/ground_crack_trail.png), uploaded as one asset
+Editor.GROUND_CRACK_URL = "rbxassetid://105887359860913" -- rotated 90 degrees: Trail maps image height along the length
+Editor.TEXTURES = {
+	{ key = "SPARKLES", label = "Scântei (stea)", url = P .. "sparkles_main.dds" },
+	{ key = "GLOW", label = "Glow (bilă moale)", url = P .. "explosion01_implosion_main.dds" },
+	{ key = "RING", label = "Inel (undă)", url = P .. "explosion01_shockwave_main.dds" },
+	{ key = "CIRCLE", label = "Cerc magic", url = P .. "forcefield_vortex_main.dds" },
+	{ key = "SMOKE", label = "Fum", url = P .. "smoke_main.dds" },
+	{ key = "SMOKE_SOFT", label = "Fum moale", url = P .. "explosion01_smoke_main.dds" },
+	{ key = "FIRE", label = "Foc", url = P .. "fire_main.dds" },
+	{ key = "EXPLOSION", label = "Explozie", url = P .. "explosion01_core_main.dds" },
+	{ key = "SQUARE", label = "Pătrat", url = P .. "SquareParticle.png" },
+	{ key = "GROUND_CRACK", label = "Urmă crăpată (pe sol)", url = Editor.GROUND_CRACK_URL },
+	{ key = "NONE", label = "Fără (alb)", url = "" },
+}
+local TEXTURE_URL, TEXTURE_KEY = {}, {}
+for _, t in Editor.TEXTURES do
+	TEXTURE_URL[t.key] = t.url
+	if t.url ~= "" then
+		TEXTURE_KEY[t.url] = t.key
+	end
+end
+
+Editor.ATTACH = {
+	{ key = "GROUND", label = "Pe sol (rămâne pe loc)" },
+	{ key = "GROUND_FOLLOW", label = "Pe sol (urmărește)" },
+	{ key = "ROOT", label = "HumanoidRootPart" },
+	{ key = "TORSO", label = "Trunchi" },
+	{ key = "HEAD", label = "Cap" },
+	{ key = "RIGHT_HAND", label = "Mâna dreaptă" },
+	{ key = "LEFT_HAND", label = "Mâna stângă" },
+	{ key = "RIGHT_FOOT", label = "Talpa dreaptă" },
+	{ key = "LEFT_FOOT", label = "Talpa stângă" },
+	{ key = "WORLD", label = "Lume (CFrame dat)" },
+}
+
+-- ---------------------------------------------------------------------------------------------
+-- presets (times in seconds)
+-- ---------------------------------------------------------------------------------------------
+local WHITE = Color3.new(1, 1, 1)
+local VIOLET = Color3.fromRGB(158, 92, 255)
+local CYAN = Color3.fromRGB(102, 217, 255)
+
+Editor.PRESETS = {
+	{ key = "SPARKLES", label = "Scântei (explozie)", kind = "PARTICLES", props = {
+		texture = "SPARKLES", color = { WHITE, VIOLET, CYAN }, size = { 0.5, 0.35, 0 }, transparency = { 0, 0.1, 1 },
+		LightEmission = 1, lifetime = { 0.35, 0.7 }, speed = { 14, 26 }, spread = { 180, 180 }, Drag = 4,
+		rotation = { 0, 360 }, rotSpeed = { -200, 200 }, bursts = { { 0, 30 } } } },
+	{ key = "RISING", label = "Scântei care urcă", kind = "PARTICLES", props = {
+		texture = "SPARKLES", color = { CYAN, VIOLET }, size = { 0.35, 0.3, 0 }, transparency = { 0.2, 0, 1 },
+		LightEmission = 1, lifetime = { 0.45, 0.9 }, Rate = 60, speed = { 4, 9 }, shape = "Cylinder",
+		partSize = Vector3.new(3.2, 0.3, 3.2), ShapeStyle = "Surface", acceleration = Vector3.new(0, 6, 0),
+		rotation = { 0, 360 }, window = { 0, 0.33 } } },
+	{ key = "MAGIC_CIRCLE", label = "Cerc magic (pe sol)", kind = "PARTICLES", props = {
+		texture = "CIRCLE", Orientation = "VelocityPerpendicular", color = VIOLET, size = { 3, 6.5, 6.8, mid = 0.25 },
+		transparency = { 1, 0.05, 1, mid = 0.25 }, LightEmission = 1, Brightness = 2, lifetime = 0.8, speed = 0.01,
+		rotSpeed = 140, LockedToPart = true, position = Vector3.new(0, 0.08, 0), bursts = { { 0, 1 } } } },
+	{ key = "SHOCKWAVE", label = "Undă pe sol", kind = "PARTICLES", props = {
+		texture = "RING", Orientation = "VelocityPerpendicular", color = { WHITE, VIOLET }, size = { 1, 9, 13, mid = 0.45 },
+		transparency = { 0, 0.35, 1, mid = 0.45 }, LightEmission = 1, lifetime = 0.4, speed = 0.01,
+		position = Vector3.new(0, 0.12, 0), bursts = { { 0, 1 } } } },
+	{ key = "FLASH", label = "Flash", kind = "PARTICLES", props = {
+		texture = "GLOW", color = { Color3.fromRGB(235, 217, 255), VIOLET }, size = { 2, 7, 8, mid = 0.3 },
+		transparency = { 0.2, 0.45, 1, mid = 0.3 }, LightEmission = 1, Brightness = 1.2, lifetime = 0.22, speed = 0,
+		ZOffset = 2, bursts = { { 0, 1 } } } },
+	{ key = "STAR_FLASH", label = "Stea (sclipire)", kind = "PARTICLES", props = {
+		texture = "SPARKLES", color = { WHITE, CYAN }, size = { 1, 12, 3, mid = 0.35 }, transparency = { 0.1, 0.2, 1, mid = 0.35 },
+		LightEmission = 1, Brightness = 1.6, lifetime = 0.25, speed = 0, rotation = { 0, 45 }, rotSpeed = 90,
+		ZOffset = 2.5, bursts = { { 0, 1 } } } },
+	{ key = "IMPLOSION", label = "Implozie (energie strânsă)", kind = "PARTICLES", props = {
+		texture = "GLOW", color = { CYAN, WHITE }, size = { 10, 4, 0, mid = 0.6 }, transparency = { 1, 0.2, 0, mid = 0.6 },
+		LightEmission = 1, lifetime = 0.25, speed = 0, bursts = { { 0, 1 } } } },
+	{ key = "STREAKS", label = "Raze în sus", kind = "PARTICLES", props = {
+		texture = "GLOW", Orientation = "VelocityParallel", squash = -2.6, color = { WHITE, VIOLET },
+		size = { 0.9, 0.7, 0 }, transparency = { 0, 0.1, 1 }, LightEmission = 1, lifetime = { 0.2, 0.4 },
+		speed = { 45, 80 }, spread = { 14, 14 }, Drag = 2, bursts = { { 0, 16 } } } },
+	{ key = "SMOKE", label = "Fum", kind = "PARTICLES", props = {
+		texture = "SMOKE", color = { Color3.fromRGB(64, 31, 102), Color3.fromRGB(20, 13, 31) }, size = { 1.5, 3.5, 5 },
+		transparency = { 0.45, 0.6, 1 }, LightEmission = 0.15, LightInfluence = 0.3, lifetime = { 0.6, 1 },
+		speed = { 2, 6 }, spread = { 180, 180 }, Drag = 3, rotation = { 0, 360 }, rotSpeed = { -40, 40 },
+		bursts = { { 0, 12 } } } },
+	{ key = "DUST", label = "Praf pe sol", kind = "PARTICLES", props = {
+		texture = "SMOKE", color = Color3.fromRGB(173, 173, 184), size = { 1, 2.6, 3.4 }, transparency = { 0.5, 0.7, 1 },
+		LightEmission = 0, LightInfluence = 1, lifetime = { 0.5, 0.9 }, speed = { 6, 12 }, spread = { 180, 0 },
+		Drag = 4, rotation = { 0, 360 }, shape = "Disc", partSize = Vector3.new(2, 0.1, 2),
+		acceleration = Vector3.new(0, 1, 0), position = Vector3.new(0, 0.2, 0), bursts = { { 0, 16 } } } },
+	{ key = "FIRE", label = "Foc", kind = "PARTICLES", props = {
+		texture = "FIRE", color = { Color3.fromRGB(255, 179, 77), Color3.fromRGB(255, 64, 13) }, size = { 2, 1.6, 0.6 },
+		transparency = { 0.2, 0.3, 1 }, LightEmission = 0.8, lifetime = { 0.4, 0.7 }, Rate = 40, speed = { 3, 6 },
+		spread = { 15, 15 }, acceleration = Vector3.new(0, 6, 0), rotation = { 0, 360 }, rotSpeed = { -60, 60 },
+		window = { 0, 1 } } },
+	{ key = "MOTES", label = "Praf magic (plutește)", kind = "PARTICLES", props = {
+		texture = "SPARKLES", color = { VIOLET, CYAN }, size = { 0, 0.3, 0 }, transparency = { 0, 0, 1 },
+		LightEmission = 1, lifetime = { 0.8, 1.4 }, Rate = 25, speed = { 0.5, 1.5 }, spread = { 180, 180 },
+		shape = "Sphere", partSize = Vector3.new(4, 4, 4), acceleration = Vector3.new(0, 1.5, 0),
+		rotSpeed = { -90, 90 }, window = { 0, 1 } } },
+	{ key = "FLASH_LIGHT", label = "Lumină flash", kind = "LIGHT", props = {
+		Color = VIOLET, keys = { { 0, 0, 16 }, { 0.033, 6, 18 }, { 0.27, 0, 12 } }, position = Vector3.new(0, 2, 0) } },
+	{ key = "GLOW_LIGHT", label = "Lumină constantă", kind = "LIGHT", props = {
+		Color = VIOLET, Brightness = 2, Range = 12, position = Vector3.new(0, 2, 0) } },
+	{ key = "RING3D", label = "Inel 3D (undă pe sol)", kind = "MESH", props = {
+		ground = true, mode = "Ring", shape = "Block", material = "Neon", color = VIOLET, colorEnd = Color3.fromRGB(90, 40, 200),
+		size = Vector3.new(1, 0.12, 0.35), grow = { 1, 0.3 }, transparency = { 0.05, 1 }, lifetime = 0.45, count = 22,
+		radius = { 0.8, 9 }, position = Vector3.new(0, 0.08, 0), bursts = { { 0, 1 } } } },
+	{ key = "CRACK3D", label = "Crăpături în sol", kind = "MESH", props = {
+		ground = true, mode = "Crack", shape = "Block", material = "Slate", color = Color3.fromRGB(28, 26, 34), size = Vector3.new(0.16, 0.06, 1),
+		transparency = { 0, 1 }, lifetime = { 0.9, 1.2 }, count = 7, radius = { 1.6, 3.2 }, position = Vector3.new(0, 0.03, 0),
+		bursts = { { 0, 1 } } } },
+	{ key = "DOME3D", label = "Dom de energie", kind = "MESH", props = {
+		mode = "Pulse", shape = "Ball", material = "ForceField", color = VIOLET, size = Vector3.new(1, 1, 1), grow = { 1.5, 8 },
+		transparency = { 0, 1 }, lifetime = 0.4, position = Vector3.new(0, 1, 0), bursts = { { 0, 1 } } } },
+	{ key = "PUFF3D", label = "Bile de fum 3D", kind = "MESH", props = {
+		mode = "Puff", shape = "Ball", material = "SmoothPlastic", color = Color3.fromRGB(226, 226, 234),
+		colorEnd = Color3.fromRGB(180, 178, 192), size = Vector3.new(1, 1, 1), grow = { 0.5, 2.2 }, transparency = { 0.15, 1 },
+		lifetime = { 0.45, 0.8 }, speed = { 3, 7 }, spread = { 50, 40 }, direction = "Back", rise = 1.2, jitter = 0.3,
+		position = Vector3.new(0, 0.3, 0), bursts = { { 0, 6 } } } },
+	{ key = "GROOVE3D", label = "Șanț luminos (urmă)", kind = "MESH", props = {
+		ground = true, mode = "Trail", shape = "Block", material = "Neon", color = VIOLET, colorEnd = Color3.fromRGB(60, 20, 140),
+		size = Vector3.new(0.32, 0.06, 0.9), grow = { 1, 0.55 }, transparency = { 0.1, 1 }, lifetime = 1.3, Rate = 45,
+		position = Vector3.new(0, 0.02, 0), window = { 0, 0.4 } } },
+	{ key = "SCAR3D", label = "Zgârietură în sol", kind = "MESH", props = {
+		ground = true, mode = "Trail", shape = "Block", material = "Slate", color = Color3.fromRGB(34, 32, 42), size = Vector3.new(0.6, 0.04, 1),
+		grow = { 1, 1 }, transparency = { 0.15, 1 }, lifetime = 2, Rate = 45, position = Vector3.new(0, 0.015, 0),
+		window = { 0, 0.4 } } },
+	{ key = "DEBRIS3D", label = "Pietre (debris)", kind = "MESH", props = {
+		mode = "Debris", shape = "Block", material = "Slate", color = Color3.fromRGB(92, 88, 104), size = Vector3.new(0.3, 0.26, 0.3),
+		grow = { 1, 0.5 }, transparency = { 0, 1 }, lifetime = { 0.9, 1.4 }, speed = { 9, 17 }, spread = { 35, 40 },
+		direction = "Back", spin = 18, jitter = 0.45, Rate = 22, position = Vector3.new(0, 0.2, 0), bursts = { { 0, 6 } },
+		window = { 0, 0.35 } } },
+	{ key = "MAGIC_TRAIL", label = "Dâră magică", kind = "TRAIL", props = {
+		texture = "GLOW", color = { WHITE, VIOLET }, transparency = { 0, 1 }, LightEmission = 1, lifetime = 0.25,
+		widthEnd = 0.15, height = 3, window = { 0, 1 } } },
+	-- ground ribbons: the crack streak, one piece, lying on the floor, stretched over the path (layer several)
+	{ key = "GROUND_RIBBON", label = "Urmă pe sol: fisură luminoasă", kind = "TRAIL", props = {
+		texture = "GROUND_CRACK", TextureMode = "Stretch", ground = true, height = 1.9, widthHead = 1, widthEnd = 1, MinLength = 0.03,
+		color = { { 0, Color3.new(1, 1, 1) }, { 0.02, Color3.fromRGB(225, 185, 255) }, { 0.08, Color3.fromRGB(160, 100, 250) },
+			{ 0.5, Color3.fromRGB(112, 62, 212) }, { 0.8, Color3.fromRGB(78, 44, 160) } },
+		transparency = { { 0, 0.05 }, { 0.08, 0.12 }, { 0.5, 0.3 }, { 0.56, 0.36 }, { 0.8, 1 }, { 1, 1 } },
+		LightEmission = 1, Brightness = 2, lifetime = 6, window = { 0, 0.45 } } },
+	{ key = "GROUND_SCORCH", label = "Urmă pe sol: arsură întunecată", kind = "TRAIL", props = {
+		texture = "GROUND_CRACK", TextureMode = "Stretch", ground = true, height = 2.4, widthHead = 1, widthEnd = 1, MinLength = 0.03,
+		color = Color3.fromRGB(14, 8, 24), transparency = { { 0, 0.5 }, { 0.08, 0.5 }, { 0.5, 0.6 }, { 0.84, 1 }, { 1, 1 } },
+		LightEmission = 0, LightInfluence = 0.2, lifetime = 6.5, window = { 0, 0.45 } } },
+	{ key = "GROUND_CORE", label = "Urmă pe sol: miez alb-fierbinte", kind = "TRAIL", props = {
+		texture = "GROUND_CRACK", TextureMode = "Stretch", ground = true, height = 0.7, widthHead = 1, widthEnd = 1, MinLength = 0.03,
+		color = { { 0, Color3.new(1, 1, 1) }, { 0.1, Color3.fromRGB(240, 226, 255) }, { 0.5, Color3.fromRGB(205, 168, 255) }, { 1, Color3.fromRGB(170, 130, 250) } },
+		transparency = { { 0, 0 }, { 0.1, 0.1 }, { 0.5, 0.4 }, { 0.88, 1 }, { 1, 1 } }, LightEmission = 1,
+		Brightness = 2.5, lifetime = 3.2, window = { 0, 0.45 } } },
+}
+local PRESET_BY_KEY = {}
+for _, p in Editor.PRESETS do
+	PRESET_BY_KEY[p.key] = p
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- small helpers
+-- ---------------------------------------------------------------------------------------------
+local function round(x, d)
+	local m = 10 ^ (d or 4)
+	return math.floor(x * m + 0.5) / m
+end
+
+local function vec3(v)
+	if typeof(v) == "Vector3" then
+		return v
+	end
+	return Vector3.new(v[1] or v.X or 0, v[2] or v.Y or 0, v[3] or v.Z or 0)
+end
+
+local function numberSequence(v)
+	if typeof(v) == "NumberSequence" then
+		return v
+	elseif type(v) == "number" then
+		return NumberSequence.new(v)
+	elseif type(v[1]) == "table" then -- keypoints: { { time, value }, ... } (the ends are filled in if missing)
+		local points = {}
+		if v[1][1] > 0 then
+			table.insert(points, NumberSequenceKeypoint.new(0, v[1][2]))
+		end
+		for _, kp in v do
+			table.insert(points, NumberSequenceKeypoint.new(kp[1], kp[2]))
+		end
+		if v[#v][1] < 1 then
+			table.insert(points, NumberSequenceKeypoint.new(1, v[#v][2]))
+		end
+		return NumberSequence.new(points)
+	elseif #v == 2 then
+		return NumberSequence.new({ NumberSequenceKeypoint.new(0, v[1]), NumberSequenceKeypoint.new(1, v[2]) })
+	end
+	local mid = math.clamp(v.mid or 0.5, 0.01, 0.99)
+	return NumberSequence.new({
+		NumberSequenceKeypoint.new(0, v[1]), NumberSequenceKeypoint.new(mid, v[2]), NumberSequenceKeypoint.new(1, v[3]),
+	})
+end
+
+local function toColor(c)
+	if typeof(c) == "Color3" then
+		return c
+	elseif type(c) == "string" then
+		return Color3.fromHex(c)
+	end
+	return Color3.fromRGB(c[1], c[2], c[3])
+end
+
+local function colorSequence(v)
+	if typeof(v) == "ColorSequence" then
+		return v
+	elseif type(v) == "table" and type(v[1]) == "table" then -- keypoints: { { time, Color3 }, ... } (ends filled in)
+		local points = {}
+		if v[1][1] > 0 then
+			table.insert(points, ColorSequenceKeypoint.new(0, toColor(v[1][2])))
+		end
+		for _, kp in v do
+			table.insert(points, ColorSequenceKeypoint.new(kp[1], toColor(kp[2])))
+		end
+		if v[#v][1] < 1 then
+			table.insert(points, ColorSequenceKeypoint.new(1, toColor(v[#v][2])))
+		end
+		return ColorSequence.new(points)
+	elseif typeof(v) == "Color3" or type(v) == "string" or (type(v) == "table" and type(v[1]) == "number") then
+		return ColorSequence.new(toColor(v))
+	elseif #v == 1 then
+		return ColorSequence.new(toColor(v[1]))
+	elseif #v == 2 then
+		return ColorSequence.new(toColor(v[1]), toColor(v[2]))
+	end
+	local mid = math.clamp(v.mid or 0.5, 0.01, 0.99)
+	return ColorSequence.new({
+		ColorSequenceKeypoint.new(0, toColor(v[1])), ColorSequenceKeypoint.new(mid, toColor(v[2])),
+		ColorSequenceKeypoint.new(1, toColor(v[3])),
+	})
+end
+
+local function numberRange(v)
+	if typeof(v) == "NumberRange" then
+		return v
+	elseif type(v) == "number" then
+		return NumberRange.new(v)
+	end
+	return NumberRange.new(math.min(v[1], v[2]), math.max(v[1], v[2]))
+end
+
+local function enumItem(enumType, v)
+	if typeof(v) == "EnumItem" then
+		return v
+	end
+	return enumType[v]
+end
+
+local function parseList(s)
+	local out = {}
+	if type(s) ~= "string" then
+		return out
+	end
+	for item in string.gmatch(s, "[^;]+") do
+		local values = {}
+		for x in string.gmatch(item, "[^,:]+") do
+			table.insert(values, tonumber(x) or 0)
+		end
+		table.insert(out, values)
+	end
+	return out
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- undo + activity log (the plugin's Claude tab shows the log)
+-- ---------------------------------------------------------------------------------------------
+local function session()
+	local ok, storage = pcall(function()
+		return game:GetService("ServerStorage")
+	end)
+	if not ok then
+		return nil
+	end
+	local folder = storage:FindFirstChild("LostCubeSession")
+	if not folder then
+		folder = Instance.new("Folder")
+		folder.Name = "LostCubeSession"
+		folder.Archivable = false
+		folder.Parent = storage
+	end
+	return folder
+end
+
+function Editor.log(text)
+	local folder = session()
+	if not folder then
+		return
+	end
+	local ok, list = pcall(HttpService.JSONDecode, HttpService, folder:GetAttribute("Log") or "[]")
+	list = ok and list or {}
+	table.insert(list, { t = os.date("%H:%M:%S"), a = text })
+	while #list > 40 do
+		table.remove(list, 1)
+	end
+	folder:SetAttribute("Log", HttpService:JSONEncode(list))
+end
+
+function Editor.history()
+	local folder = session()
+	if not folder then
+		return {}
+	end
+	local ok, list = pcall(HttpService.JSONDecode, HttpService, folder:GetAttribute("Log") or "[]")
+	return ok and list or {}
+end
+
+local function record(name, fn, ...)
+	local okBegin, id = pcall(ChangeHistoryService.TryBeginRecording, ChangeHistoryService, "LostCube: " .. name)
+	local results = table.pack(pcall(fn, ...))
+	if results[1] then
+		Editor.log(name)
+		local folder = Editor.folder(false)
+		if folder then -- tells the plugin's panels to refresh
+			folder:SetAttribute("LC_Rev", (folder:GetAttribute("LC_Rev") or 0) + 1)
+		end
+	end
+	if okBegin and id then
+		-- a failed step is rolled back, a good one becomes one Ctrl+Z
+		local op = results[1] and Enum.FinishRecordingOperation.Commit or Enum.FinishRecordingOperation.Cancel
+		pcall(ChangeHistoryService.FinishRecording, ChangeHistoryService, id, op)
+	end
+	if not results[1] then
+		error(results[2], 2)
+	end
+	return table.unpack(results, 2, results.n)
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- effects
+-- ---------------------------------------------------------------------------------------------
+function Editor.folder(create)
+	local root = ReplicatedStorage:FindFirstChild("LostCube")
+	if not root then
+		if create == false then
+			return nil
+		end
+		root = Instance.new("Folder")
+		root.Name = "LostCube"
+		root.Parent = ReplicatedStorage
+	end
+	local effects = root:FindFirstChild("Effects")
+	if not effects and create ~= false then
+		effects = Instance.new("Folder")
+		effects.Name = "Effects"
+		effects.Parent = root
+	end
+	return effects
+end
+
+function Editor.effects()
+	local folder = Editor.folder(false)
+	local list = {}
+	for _, m in (folder and folder:GetChildren() or {}) do
+		if m:IsA("Model") then
+			table.insert(list, m)
+		end
+	end
+	table.sort(list, function(a, b)
+		return a.Name:lower() < b.Name:lower()
+	end)
+	return list
+end
+
+function Editor.effect(nameOrModel)
+	if typeof(nameOrModel) == "Instance" then
+		return nameOrModel
+	end
+	local folder = Editor.folder(false)
+	local found = folder and folder:FindFirstChild(nameOrModel)
+	assert(found, "LostCube: nu există efectul " .. tostring(nameOrModel))
+	return found
+end
+
+local function rootOf(effect)
+	return effect.PrimaryPart or effect:FindFirstChild("Root")
+end
+
+local function invisiblePart(name, size, cf)
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Size = size
+	p.CFrame = cf
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	p.CastShadow = false
+	p.Massless = true
+	p.Transparency = 1
+	return p
+end
+
+function Editor.newEffect(name, opts)
+	opts = opts or {}
+	return record("efect nou " .. name, function()
+		local folder = Editor.folder(true)
+		local old = folder:FindFirstChild(name)
+		if old then
+			assert(opts.replace, "LostCube: efectul " .. name .. " există deja (replace = true ca să-l refaci)")
+			old:Destroy()
+		end
+		local model = Instance.new("Model")
+		model.Name = name
+		local root = invisiblePart("Root", Vector3.new(0.2, 0.2, 0.2), CFrame.new())
+		root.Parent = model
+		model.PrimaryPart = root
+		model:SetAttribute("LC_Duration", opts.duration or 1)
+		model:SetAttribute("LC_Attach", opts.attach or "GROUND")
+		model:SetAttribute("LC_Tool", "LostCube")
+		model.Parent = folder
+		return model
+	end)
+end
+
+local function assertFreeName(folder, name, except)
+	assert(type(name) == "string" and name ~= "", "LostCube: numele efectului nu poate fi gol")
+	local other = folder and folder:FindFirstChild(name)
+	assert(not other or other == except, "LostCube: există deja un efect numit " .. name)
+end
+
+function Editor.renameEffect(effect, name)
+	effect = Editor.effect(effect)
+	assertFreeName(effect.Parent, name, effect)
+	return record("redenumit " .. effect.Name .. " -> " .. name, function()
+		effect.Name = name
+	end)
+end
+
+function Editor.setEffect(effect, opts)
+	effect = Editor.effect(effect)
+	return record("setări efect " .. effect.Name, function()
+		if opts.duration then
+			effect:SetAttribute("LC_Duration", math.max(0.01, opts.duration))
+		end
+		if opts.attach then
+			effect:SetAttribute("LC_Attach", opts.attach)
+		end
+		if opts.name then
+			assertFreeName(effect.Parent, opts.name, effect)
+			effect.Name = opts.name
+		end
+	end)
+end
+
+function Editor.duplicateEffect(effect, name)
+	effect = Editor.effect(effect)
+	return record("duplicat " .. effect.Name, function()
+		local copy = effect:Clone()
+		local base = name or (effect.Name .. " copie")
+		local free, i = base, 2
+		while effect.Parent:FindFirstChild(free) do -- duplicating twice must not give two effects with one name
+			free = base .. " " .. i
+			i += 1
+		end
+		copy.Name = free
+		copy.Parent = effect.Parent
+		return copy
+	end)
+end
+
+function Editor.removeEffect(effect)
+	effect = Editor.effect(effect)
+	return record("șters efect " .. effect.Name, function()
+		effect:Destroy()
+	end)
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- elements
+-- ---------------------------------------------------------------------------------------------
+function Editor.kindOf(inst)
+	if inst:IsA("BasePart") and inst:GetAttribute("LC_Mode") then
+		return "MESH"
+	elseif inst:IsA("ParticleEmitter") then
+		return "PARTICLES"
+	elseif inst:IsA("PointLight") or inst:IsA("SpotLight") then
+		return "LIGHT"
+	elseif inst:IsA("Trail") then
+		return "TRAIL"
+	end
+	return nil
+end
+
+function Editor.elements(effect)
+	effect = Editor.effect(effect)
+	local list = {}
+	for _, d in effect:GetDescendants() do
+		if Editor.kindOf(d) then
+			table.insert(list, d)
+		end
+	end
+	table.sort(list, function(a, b)
+		return a.Name:lower() < b.Name:lower()
+	end)
+	return list
+end
+
+function Editor.effectOf(element)
+	return element:FindFirstAncestorWhichIsA("Model")
+end
+
+local function uniqueName(effect, base)
+	local taken = {}
+	for _, e in Editor.elements(effect) do
+		taken[e.Name] = true
+	end
+	if not taken[base] then
+		return base
+	end
+	local i = 2
+	while taken[base .. " " .. i] do
+		i += 1
+	end
+	return base .. " " .. i
+end
+
+local function trailAttachments(trail)
+	return trail.Attachment0, trail.Attachment1
+end
+
+function Editor.position(element)
+	local parent = element.Parent
+	if element:IsA("BasePart") then -- 3D mesh element: the part itself
+		local root = rootOf(Editor.effectOf(element))
+		return root.CFrame:PointToObjectSpace(element.Position)
+	elseif element:IsA("Trail") then
+		local a, b = trailAttachments(element)
+		return (a and b) and (a.Position + b.Position) / 2 or Vector3.zero
+	elseif parent and parent:IsA("Attachment") then
+		return parent.Position
+	elseif parent and parent:IsA("BasePart") then
+		local root = rootOf(Editor.effectOf(element))
+		return root.CFrame:PointToObjectSpace(parent.Position)
+	end
+	return Vector3.zero
+end
+
+local function setPosition(element, pos)
+	local parent = element.Parent
+	if element:IsA("BasePart") then
+		local root = rootOf(Editor.effectOf(element))
+		local rot = element.CFrame - element.CFrame.Position
+		element.CFrame = CFrame.new(root.CFrame:PointToWorldSpace(pos)) * rot
+	elseif element:IsA("Trail") then
+		local a, b = trailAttachments(element)
+		local h = (a and b) and (a.Position - b.Position).Magnitude or 3
+		if a then
+			a.Position = pos + Vector3.new(0, h / 2, 0)
+		end
+		if b then
+			b.Position = pos - Vector3.new(0, h / 2, 0)
+		end
+	elseif parent:IsA("Attachment") then
+		parent.Position = pos
+	elseif parent:IsA("BasePart") then
+		local root = rootOf(Editor.effectOf(element))
+		local rot = parent.CFrame - parent.CFrame.Position
+		parent.CFrame = CFrame.new(root.CFrame:PointToWorldSpace(pos)) * rot
+	end
+end
+
+local SHAPES = { Point = true, Box = true, Sphere = true, Cylinder = true, Disc = true }
+
+function Editor.shapeOf(emitter)
+	if emitter.Parent and emitter.Parent:IsA("BasePart") then
+		return emitter.Shape.Name
+	end
+	return "Point"
+end
+
+local function setShape(emitter, shape, partSize)
+	assert(SHAPES[shape], "LostCube: formă necunoscută " .. tostring(shape))
+	local effect = Editor.effectOf(emitter)
+	local root = rootOf(effect)
+	local pos = Editor.position(emitter)
+	local old = emitter.Parent
+	if shape == "Point" then
+		if old:IsA("Attachment") then
+			return
+		end
+		local att = Instance.new("Attachment")
+		att.Name = emitter.Name
+		att.Position = pos
+		att.Parent = root
+		emitter.Parent = att
+		old:Destroy()
+		return
+	end
+	emitter.Shape = Enum.ParticleEmitterShape[shape]
+	if old:IsA("BasePart") then
+		if partSize then
+			old.Size = partSize
+		end
+		return
+	end
+	local part = invisiblePart(emitter.Name, partSize or Vector3.new(3, 0.3, 3), root.CFrame * CFrame.new(pos))
+	part.Parent = effect
+	emitter.Parent = part
+	old:Destroy()
+end
+
+local function setTimeline(element, key, value)
+	if key == "window" then
+		if value and value[2] > value[1] then
+			element:SetAttribute("LC_On", string.format("%s,%s", round(value[1]), round(value[2])))
+		else
+			element:SetAttribute("LC_On", nil)
+		end
+	elseif key == "bursts" then
+		local parts = {}
+		table.sort(value, function(a, b)
+			return a[1] < b[1]
+		end)
+		for _, b in value do
+			table.insert(parts, string.format("%s:%d", round(b[1]), b[2]))
+		end
+		element:SetAttribute("LC_Bursts", #parts > 0 and table.concat(parts, ";") or nil)
+	elseif key == "keys" then
+		local parts = {}
+		table.sort(value, function(a, b)
+			return a[1] < b[1]
+		end)
+		for _, k in value do
+			table.insert(parts, string.format("%s,%s,%s", round(k[1]), round(k[2], 3), round(k[3], 3)))
+		end
+		element:SetAttribute("LC_Keys", #parts > 0 and table.concat(parts, ";") or nil)
+		if value[1] then
+			element.Brightness = value[1][2]
+			element.Range = value[1][3]
+		end
+	end
+end
+
+local function setOne(element, key, value)
+	if key == "name" then
+		local parent = element.Parent
+		if element:IsA("Trail") then
+			local a, b = trailAttachments(element)
+			if a then
+				a.Name = value .. "_Top"
+			end
+			if b then
+				b.Name = value .. "_Bottom"
+			end
+		elseif parent and not parent:IsA("Model") and parent.Name == element.Name then
+			parent.Name = value
+		end
+		element.Name = value
+	elseif key == "position" then
+		setPosition(element, vec3(value))
+	elseif key == "shape" then
+		setShape(element, typeof(value) == "EnumItem" and value.Name or value)
+	elseif key == "partSize" then
+		if element.Parent:IsA("BasePart") then
+			element.Parent.Size = vec3(value)
+		end
+	elseif key == "texture" then
+		element.Texture = TEXTURE_URL[value] or value
+	elseif key == "color" then
+		if element:IsA("PointLight") or element:IsA("SpotLight") then
+			element.Color = toColor(type(value) == "table" and type(value[1]) ~= "number" and value[1] or value)
+		else
+			element.Color = colorSequence(value)
+		end
+	elseif key == "size" then
+		element.Size = numberSequence(value)
+	elseif key == "transparency" then
+		element.Transparency = numberSequence(value)
+	elseif key == "squash" then
+		element.Squash = numberSequence(value)
+	elseif key == "lifetime" then
+		if element:IsA("Trail") then
+			element.Lifetime = type(value) == "table" and value[1] or value
+		else
+			element.Lifetime = numberRange(value)
+		end
+	elseif key == "speed" then
+		element.Speed = numberRange(value)
+	elseif key == "rotation" then
+		element.Rotation = numberRange(value)
+	elseif key == "rotSpeed" then
+		element.RotSpeed = numberRange(value)
+	elseif key == "spread" then
+		element.SpreadAngle = typeof(value) == "Vector2" and value or Vector2.new(value[1], value[2])
+	elseif key == "acceleration" then
+		element.Acceleration = vec3(value)
+	elseif key == "window" or key == "bursts" or key == "keys" then
+		setTimeline(element, key, value)
+	elseif key == "height" or key == "width" then
+		local a, b = trailAttachments(element)
+		local center = Editor.position(element)
+		if a then
+			a.Position = center + Vector3.new(0, value / 2, 0)
+		end
+		if b then
+			b.Position = center - Vector3.new(0, value / 2, 0)
+		end
+	elseif key == "ground" then -- a ribbon lying on the floor, following the path of the effect
+		element:SetAttribute("LC_Ground", value and true or nil)
+		element.FaceCamera = not value
+	elseif key == "widthEnd" or key == "widthHead" then
+		-- width along the trail: head (the newest end, at the foot) -> full width at 30% -> tail
+		local k = element.WidthScale.Keypoints
+		local head, tail = k[1].Value, k[#k].Value
+		if key == "widthEnd" then tail = value else head = value end
+		element.WidthScale = head >= 0.999 and NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, tail) })
+			or NumberSequence.new({ NumberSequenceKeypoint.new(0, head), NumberSequenceKeypoint.new(0.3, 1), NumberSequenceKeypoint.new(1, tail) })
+	elseif key == "lift" then
+		element:SetAttribute("LC_Lift", value ~= 0 and value or nil)
+	elseif key == "flow" then
+		element:SetAttribute("LC_Flow", value and value > 0 and value or nil)
+	elseif key == "muted" then
+		element:SetAttribute("LC_Muted", value and true or nil)
+	elseif key == "preset" then
+		-- handled by applyPreset
+	else
+		local ok, current = pcall(function()
+			return element[key]
+		end)
+		assert(ok, "LostCube: " .. element.ClassName .. " nu are proprietatea " .. tostring(key))
+		local kind = typeof(current)
+		if kind == "EnumItem" then
+			value = enumItem(current.EnumType, value)
+		elseif kind == "NumberSequence" then
+			value = numberSequence(value)
+		elseif kind == "ColorSequence" then
+			value = colorSequence(value)
+		elseif kind == "NumberRange" then
+			value = numberRange(value)
+		elseif kind == "Vector3" then
+			value = vec3(value)
+		elseif kind == "Color3" then
+			value = toColor(value)
+		end
+		element[key] = value
+	end
+end
+
+local MESH_ATTR = { mode = "LC_Mode", rate = "LC_Rate", Rate = "LC_Rate", direction = "LC_Dir", EmissionDirection = "LC_Dir",
+	rise = "LC_Rise", spin = "LC_Spin", count = "LC_Count", jitter = "LC_Jitter", ground = "LC_Ground" }
+local MESH_PAIR = { grow = "LC_Grow", transparency = "LC_Alpha", alpha = "LC_Alpha", lifetime = "LC_Life",
+	speed = "LC_Speed", spread = "LC_Spread", radius = "LC_Radius" }
+
+-- 3D mesh elements keep their behaviour in attributes; returns true when the key was handled
+local function setMesh(part, key, value)
+	if MESH_ATTR[key] then
+		part:SetAttribute(MESH_ATTR[key], typeof(value) == "EnumItem" and value.Name or value)
+	elseif MESH_PAIR[key] then
+		local a, b
+		if type(value) == "number" then
+			a, b = value, value
+		elseif typeof(value) == "NumberRange" then
+			a, b = value.Min, value.Max
+		elseif typeof(value) == "Vector2" then
+			a, b = value.X, value.Y
+		else
+			a, b = value[1], value[2] or value[1]
+		end
+		part:SetAttribute(MESH_PAIR[key], string.format("%s,%s", round(a), round(b)))
+	elseif key == "shape" then
+		part.Shape = enumItem(Enum.PartType, value)
+	elseif key == "material" then
+		part.Material = enumItem(Enum.Material, value)
+	elseif key == "color" then
+		part.Color = toColor(type(value) == "table" and type(value[1]) ~= "number" and value[1] or value)
+	elseif key == "colorEnd" then
+		part:SetAttribute("LC_ColorEnd", value and toColor(value) or nil)
+	elseif key == "size" or key == "partSize" then
+		part.Size = vec3(value)
+	else
+		return false
+	end
+	return true
+end
+
+local ORDER = { "shape", "partSize", "position", "height" } -- shape first (it moves the emitter)
+
+local function applyProps(element, props)
+	if Editor.kindOf(element) == "MESH" then
+		for key, value in props do
+			if not setMesh(element, key, value) then
+				setOne(element, key, value)
+			end
+		end
+		return
+	end
+	for _, key in ORDER do
+		if props[key] ~= nil then
+			if key == "shape" then
+				setShape(element, typeof(props.shape) == "EnumItem" and props.shape.Name or props.shape, props.partSize and vec3(props.partSize))
+			else
+				setOne(element, key, props[key])
+			end
+		end
+	end
+	for key, value in props do
+		if not table.find(ORDER, key) then
+			setOne(element, key, value)
+		end
+	end
+end
+
+local function create(effect, kind, name)
+	local root = rootOf(effect)
+	if kind == "MESH" then
+		local p = invisiblePart(name, Vector3.new(1, 0.2, 1), root.CFrame)
+		p.Material = Enum.Material.Neon
+		p.Color = VIOLET
+		p:SetAttribute("LC_Mode", "Pulse")
+		p:SetAttribute("LC_Life", "0.5,0.5")
+		p:SetAttribute("LC_Grow", "1,3")
+		p:SetAttribute("LC_Alpha", "0.2,1")
+		p.Parent = effect
+		return p
+	elseif kind == "PARTICLES" then
+		local att = Instance.new("Attachment")
+		att.Name = name
+		att.Parent = root
+		local e = Instance.new("ParticleEmitter")
+		e.Name = name
+		e.Enabled = false
+		e.Texture = TEXTURE_URL.SPARKLES
+		e.Rate = 20
+		e.Lifetime = NumberRange.new(0.5, 0.8)
+		e.Speed = NumberRange.new(5, 8)
+		e.LightEmission = 1
+		e.Parent = att
+		return e
+	elseif kind == "LIGHT" then
+		local att = Instance.new("Attachment")
+		att.Name = name
+		att.Position = Vector3.new(0, 2, 0)
+		att.Parent = root
+		local l = Instance.new("PointLight")
+		l.Name = name
+		l.Color = VIOLET
+		l.Brightness = 2
+		l.Range = 12
+		l.Parent = att
+		return l
+	elseif kind == "TRAIL" then
+		local a = Instance.new("Attachment")
+		a.Name = name .. "_Top"
+		a.Position = Vector3.new(0, 1.5, 0)
+		a.Parent = root
+		local b = Instance.new("Attachment")
+		b.Name = name .. "_Bottom"
+		b.Position = Vector3.new(0, -1.5, 0)
+		b.Parent = root
+		local t = Instance.new("Trail")
+		t.Name = name
+		t.Attachment0, t.Attachment1 = a, b
+		t.Enabled = false
+		t.FaceCamera = true
+		t.LightEmission = 1
+		t.Lifetime = 0.25
+		t.Parent = root
+		return t
+	end
+	error("LostCube: tip necunoscut " .. tostring(kind))
+end
+
+--- addElement(effect, presetKey | "PARTICLES" | "LIGHT" | "TRAIL", props?) -> the emitter / light / trail
+function Editor.addElement(effect, what, props)
+	effect = Editor.effect(effect)
+	props = props or {}
+	local preset = PRESET_BY_KEY[what]
+	local kind = preset and preset.kind or what
+	return record("adăugat " .. (preset and preset.label or kind) .. " în " .. effect.Name, function()
+		local name = uniqueName(effect, props.name or (preset and preset.label)
+			or ({ PARTICLES = "Particule", LIGHT = "Lumină", TRAIL = "Trail", MESH = "Mesh 3D" })[kind])
+		local element = create(effect, kind, name)
+		if preset then
+			applyProps(element, preset.props)
+			element:SetAttribute("LC_Preset", preset.key)
+		end
+		local rest = table.clone(props)
+		rest.name = nil
+		applyProps(element, rest)
+		return element
+	end)
+end
+
+function Editor.setProps(element, props)
+	return record("modificat " .. element.Name, function()
+		applyProps(element, props)
+		return element
+	end)
+end
+
+function Editor.applyPreset(element, key)
+	local preset = PRESET_BY_KEY[key]
+	assert(preset and preset.kind == Editor.kindOf(element), "LostCube: preset nepotrivit " .. tostring(key))
+	return record("preset " .. preset.label .. " pe " .. element.Name, function()
+		element:SetAttribute("LC_On", nil)
+		element:SetAttribute("LC_Bursts", nil)
+		element:SetAttribute("LC_Keys", nil)
+		applyProps(element, preset.props)
+		element:SetAttribute("LC_Preset", preset.key)
+		return element
+	end)
+end
+
+function Editor.remove(element)
+	return record("șters " .. element.Name, function()
+		local parent = element.Parent
+		if element:IsA("Trail") then
+			local a, b = trailAttachments(element)
+			if a then
+				a:Destroy()
+			end
+			if b then
+				b:Destroy()
+			end
+			element:Destroy()
+		elseif parent and (parent:IsA("Attachment") or (parent:IsA("BasePart") and parent.Name ~= "Root")) then
+			element:Destroy()
+			if #parent:GetChildren() == 0 then
+				parent:Destroy()
+			end
+		else
+			element:Destroy()
+		end
+	end)
+end
+
+function Editor.duplicate(element)
+	return record("duplicat " .. element.Name, function()
+		local effect = Editor.effectOf(element)
+		local name = uniqueName(effect, element.Name)
+		if Editor.kindOf(element) == "MESH" then
+			local copy = element:Clone()
+			copy.Name = name
+			copy.Parent = effect
+			return copy
+		end
+		local data = Editor.read(element)
+		local copy = create(effect, Editor.kindOf(element), name)
+		for _, prop in { "Texture", "Color", "Transparency", "LightEmission", "LightInfluence", "Brightness", "Enabled" } do
+			pcall(function()
+				copy[prop] = element[prop]
+			end)
+		end
+		if copy:IsA("ParticleEmitter") then
+			for _, prop in { "Size", "Squash", "Lifetime", "Rate", "Speed", "SpreadAngle", "Acceleration", "Drag", "Rotation",
+				"RotSpeed", "Orientation", "ZOffset", "LockedToPart", "EmissionDirection", "ShapeStyle", "ShapeInOut" } do
+				copy[prop] = element[prop]
+			end
+			setShape(copy, data.shape, data.partSize)
+		elseif copy:IsA("PointLight") then
+			copy.Range, copy.Shadows = element.Range, element.Shadows
+		elseif copy:IsA("Trail") then
+			copy.Lifetime, copy.WidthScale = element.Lifetime, element.WidthScale
+			for _, prop in { "FaceCamera", "MinLength", "MaxLength", "TextureMode", "TextureLength" } do
+				copy[prop] = element[prop]
+			end
+			setOne(copy, "height", data.height)
+		end
+		setPosition(copy, data.position)
+		for attr, value in element:GetAttributes() do -- timeline, preset, muted, ground / lift / flow
+			copy:SetAttribute(attr, value)
+		end
+		return copy
+	end)
+end
+
+-- timeline shortcuts
+function Editor.bursts(element)
+	local out = {}
+	for _, b in parseList(element:GetAttribute("LC_Bursts")) do
+		table.insert(out, { b[1] or 0, b[2] or 1 })
+	end
+	return out
+end
+
+function Editor.addBurst(element, t, n)
+	local list = Editor.bursts(element)
+	table.insert(list, { t, n })
+	return Editor.setProps(element, { bursts = list })
+end
+
+function Editor.window(element)
+	local w = parseList(element:GetAttribute("LC_On"))[1]
+	return w and { w[1], w[2] } or nil
+end
+
+function Editor.lightKeys(element)
+	return parseList(element:GetAttribute("LC_Keys"))
+end
+
+--- stretches (k > 1) or squeezes (k < 1) the whole effect in time: duration, emission windows, bursts,
+--- light keys and lifetimes; speeds stay, so particles travel further when it is slower
+function Editor.retime(effect, k)
+	assert(type(k) == "number" and k > 0, "LostCube: factorul de timp trebuie să fie un număr > 0")
+	effect = Editor.effect(effect)
+	return record(string.format("timp x%.2f pe %s", k, effect.Name), function()
+		effect:SetAttribute("LC_Duration", round((effect:GetAttribute("LC_Duration") or 1) * k))
+		for _, e in Editor.elements(effect) do
+			local w = Editor.window(e)
+			if w then
+				setTimeline(e, "window", { w[1] * k, w[2] * k })
+			end
+			local b = Editor.bursts(e)
+			if #b > 0 then
+				for _, x in b do
+					x[1] *= k
+				end
+				setTimeline(e, "bursts", b)
+			end
+			if e:IsA("ParticleEmitter") then
+				e.Lifetime = NumberRange.new(e.Lifetime.Min * k, e.Lifetime.Max * k)
+			elseif e:IsA("Trail") then
+				e.Lifetime *= k
+			elseif e:IsA("PointLight") then
+				local keys = Editor.lightKeys(e)
+				if #keys > 0 then
+					for _, key in keys do
+						key[1] *= k
+					end
+					setTimeline(e, "keys", keys)
+				end
+			elseif Editor.kindOf(e) == "MESH" then
+				local life = parseList(e:GetAttribute("LC_Life"))[1]
+				if life then
+					e:SetAttribute("LC_Life", string.format("%s,%s", round(life[1] * k), round((life[2] or life[1]) * k)))
+				end
+			end
+		end
+	end)
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- reading (simple values for the panels)
+-- ---------------------------------------------------------------------------------------------
+local function seq3(seq)
+	local k = seq.Keypoints
+	if #k <= 2 then
+		local a, b = k[1].Value, k[#k].Value
+		return { a, (a + b) / 2, b, mid = 0.5 }
+	end
+	local m = k[math.ceil(#k / 2)]
+	return { k[1].Value, m.Value, k[#k].Value, mid = m.Time }
+end
+
+local function colors3(seq)
+	local k = seq.Keypoints
+	if #k == 2 and k[1].Value == k[2].Value then
+		return { k[1].Value }
+	elseif #k == 2 then
+		return { k[1].Value, k[2].Value }
+	end
+	local m = k[math.ceil(#k / 2)]
+	return { k[1].Value, m.Value, k[#k].Value, mid = m.Time }
+end
+
+function Editor.read(element)
+	local kind = Editor.kindOf(element)
+	local data = { kind = kind, name = element.Name, position = Editor.position(element),
+		muted = element:GetAttribute("LC_Muted") == true, preset = element:GetAttribute("LC_Preset") }
+	if kind == "PARTICLES" then
+		local e = element
+		data.texture = TEXTURE_KEY[e.Texture] or (e.Texture == "" and "NONE" or "CUSTOM")
+		data.textureId = e.Texture
+		data.color = colors3(e.Color)
+		data.size = seq3(e.Size)
+		data.transparency = seq3(e.Transparency)
+		data.squash = e.Squash.Keypoints[1].Value
+		data.lifetime = { e.Lifetime.Min, e.Lifetime.Max }
+		data.speed = { e.Speed.Min, e.Speed.Max }
+		data.rotation = { e.Rotation.Min, e.Rotation.Max }
+		data.rotSpeed = { e.RotSpeed.Min, e.RotSpeed.Max }
+		data.spread = { e.SpreadAngle.X, e.SpreadAngle.Y }
+		data.acceleration = e.Acceleration
+		data.shape = Editor.shapeOf(e)
+		data.partSize = e.Parent:IsA("BasePart") and e.Parent.Size or nil
+		for _, prop in { "Rate", "Drag", "LightEmission", "LightInfluence", "Brightness", "ZOffset", "LockedToPart" } do
+			data[prop] = e[prop]
+		end
+		for _, prop in { "Orientation", "EmissionDirection", "ShapeStyle", "ShapeInOut" } do
+			data[prop] = e[prop].Name
+		end
+		data.window = Editor.window(e)
+		data.bursts = Editor.bursts(e)
+	elseif kind == "MESH" then
+		local p = element
+		local function pairOf(attr, a, b)
+			local v = parseList(p:GetAttribute(attr))[1]
+			return { v and v[1] or a, v and (v[2] or v[1]) or b }
+		end
+		data.mode = p:GetAttribute("LC_Mode")
+		data.shape = p.Shape.Name
+		data.material = p.Material.Name
+		data.color = p.Color
+		data.colorEnd = p:GetAttribute("LC_ColorEnd")
+		data.size = p.Size
+		data.grow = pairOf("LC_Grow", 1, 1)
+		data.transparency = pairOf("LC_Alpha", 0, 1)
+		data.lifetime = pairOf("LC_Life", 0.5, 0.5)
+		data.speed = pairOf("LC_Speed", 0, 0)
+		data.spread = pairOf("LC_Spread", 0, 0)
+		data.radius = pairOf("LC_Radius", 1, 6)
+		data.Rate = p:GetAttribute("LC_Rate") or 0
+		data.direction = p:GetAttribute("LC_Dir") or "Top"
+		data.rise = p:GetAttribute("LC_Rise") or 0
+		data.spin = p:GetAttribute("LC_Spin") or 0
+		data.count = p:GetAttribute("LC_Count") or 16
+		data.jitter = p:GetAttribute("LC_Jitter") or 0
+		data.ground = p:GetAttribute("LC_Ground") == true
+		data.window = Editor.window(p)
+		data.bursts = Editor.bursts(p)
+	elseif kind == "LIGHT" then
+		data.Color, data.Brightness, data.Range, data.Shadows = element.Color, element.Brightness, element.Range, element.Shadows
+		data.keys = Editor.lightKeys(element)
+	elseif kind == "TRAIL" then
+		local t = element
+		data.texture = TEXTURE_KEY[t.Texture] or (t.Texture == "" and "NONE" or "CUSTOM")
+		data.textureId = t.Texture
+		data.color = colors3(t.Color)
+		data.transparency = seq3(t.Transparency)
+		data.lifetime = t.Lifetime
+		data.LightEmission = t.LightEmission
+		data.Brightness = t.Brightness
+		data.widthEnd = t.WidthScale.Keypoints[#t.WidthScale.Keypoints].Value
+		data.widthHead = t.WidthScale.Keypoints[1].Value
+		data.ground = t:GetAttribute("LC_Ground") == true
+		data.lift = t:GetAttribute("LC_Lift") or 0
+		data.flow = t:GetAttribute("LC_Flow") or 0
+		local a, b = trailAttachments(t)
+		data.height = (a and b) and (a.Position - b.Position).Magnitude or 3
+		data.window = Editor.window(t)
+	end
+	return data
+end
+
+function Editor.describe()
+	local out = {}
+	for _, fx in Editor.effects() do
+		local els = {}
+		for _, e in Editor.elements(fx) do
+			table.insert(els, { name = e.Name, kind = Editor.kindOf(e), preset = e:GetAttribute("LC_Preset") })
+		end
+		table.insert(out, { name = fx.Name, duration = fx:GetAttribute("LC_Duration"), attach = fx:GetAttribute("LC_Attach"),
+			elements = els })
+	end
+	return out
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- preview in Studio
+-- ---------------------------------------------------------------------------------------------
+-- where to show it: the selection (a part / a character), else on the floor in front of the camera
+function Editor.previewTarget()
+	local sel = Selection:Get()[1]
+	if sel then
+		if sel:IsA("Model") and sel:FindFirstChildOfClass("Humanoid") then
+			return sel
+		elseif sel:IsA("BasePart") then
+			return CFrame.new(sel.Position - Vector3.new(0, sel.Size.Y / 2, 0))
+		elseif sel:IsA("Model") then
+			return CFrame.new(sel:GetPivot().Position)
+		end
+	end
+	local cam = workspace.CurrentCamera
+	local look = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z)
+	look = look.Magnitude > 1e-3 and look.Unit or Vector3.new(0, 0, -1)
+	local spot = cam.CFrame.Position + cam.CFrame.LookVector * 16
+	local params = RaycastParams.new()
+	local hit = workspace:Raycast(spot + Vector3.new(0, 30, 0), Vector3.new(0, -200, 0), params)
+	local y = hit and hit.Position.Y or (spot.Y - 3)
+	local pos = Vector3.new(spot.X, y, spot.Z)
+	return CFrame.lookAt(pos, pos - look)
+end
+
+function Editor.preview(effect, opts)
+	effect = Editor.effect(effect)
+	opts = opts or {}
+	local target = opts.target or Editor.previewTarget()
+	return VFX.play(effect, target, {
+		speed = opts.speed or 1,
+		scale = opts.scale or 1,
+		parent = opts.parent or workspace.CurrentCamera,
+		attach = opts.attach,
+		facing = opts.facing,
+	})
+end
+
+-- total length of one play (duration + the longest particle life), seconds
+function Editor.length(effect)
+	effect = Editor.effect(effect)
+	local tail = 0
+	for _, e in Editor.elements(effect) do
+		if e:IsA("ParticleEmitter") then
+			tail = math.max(tail, e.Lifetime.Max)
+		elseif e:IsA("Trail") then
+			tail = math.max(tail, e.Lifetime)
+		elseif Editor.kindOf(e) == "MESH" then
+			local life = parseList(e:GetAttribute("LC_Life"))[1]
+			tail = math.max(tail, life and (life[2] or life[1]) or 0.5)
+		end
+	end
+	return (effect:GetAttribute("LC_Duration") or 1) + tail
+end
+
+Editor.VFX = VFX
+return Editor
+]]></ProtectedString></Properties><Item class="ModuleScript" referent="RBX9"><Properties><string name="Name">VFX</string><ProtectedString name="Source"><![CDATA[--[[ LostCube VFX player
+Plays the effects made with LostCube (the Studio plugin's VFX tab, or the Blender exporter).
+
+	local VFX = require(ReplicatedStorage.LostCube.VFX)
+	VFX.Library = ReplicatedStorage.LostCube.Effects     -- folder with the exported effects
+
+	VFX.play("TeleportCast", character)                  -- on a character (uses the effect's "Prins de")
+	VFX.play("Boom", CFrame.new(0, 5, 0))                -- at a place
+	local h = VFX.play(effect, part, { scale = 1.5, speed = 1, attach = "ROOT", parent = workspace })
+	VFX.play("Scrape", character, { attach = "RIGHT_FOOT", facing = moveDirection }) -- front = facing
+	h:Stop()                                             -- stop emitting; cleans up when the last particle is gone
+	h:Pause() / h:Resume()                               -- freeze on the current moment (to look at it)
+
+	VFX.bindMarkers(track, character, { Cast = "TeleportCast" })  -- play effects on animation markers
+
+Timeline written by LostCube on each element (attributes, seconds):
+	LC_On     "t0,t1;t2,t3"   continuous emission windows (ParticleEmitter / Trail)
+	LC_Bursts "t:n;t:n"       Emit(n) at time t
+	LC_Keys   "t,b,r;..."     PointLight Brightness + Range over time (linear between keys)
+	LC_Muted  true            element switched off in the editor (not played)
+3D mesh elements: a Part in the effect with LC_Mode = Ring | Crack | Pulse | Puff | Trail | Debris; the
+player spawns pieces from it (same Shape / Material / Color) - LC_Rate, LC_Life "min,max", LC_Grow "g0,g1",
+LC_Alpha "a0,a1", LC_ColorEnd, LC_Speed "min,max", LC_Spread "x,y", LC_Dir (Top, Back...), LC_Rise, LC_Spin,
+LC_Count, LC_Radius "r0,r1", LC_Jitter, LC_Ground (sit on the floor under it).
+Ground ribbons: a Trail with LC_Ground = true lies flat on the floor under the effect's root and follows its path
+(its two attachments give the width and the sideways / forward offset); the texture is stretched over its length.
+LC_Lift (studs above the floor, stack ribbons without z-fighting), LC_Flow (a bright band running along it, cycles/s).
+Trail curves (Color / Transparency / WidthScale) are mapped by the AGE of each point (age / Lifetime), and a trail
+shrinks from the tail as points reach Lifetime: to hold and fade without shrinking, Lifetime = hold + fade + margin and
+Transparency reaches 1 before the end.
+Effect (Model) attributes: LC_Duration, LC_Attach (GROUND, GROUND_FOLLOW, ROOT, TORSO, HEAD, RIGHT_HAND,
+LEFT_HAND, RIGHT_FOOT, LEFT_FOOT, WORLD). Effects are meant to be played on the client (each client plays its own copy).
+]]
+local RunService = game:GetService("RunService")
+local ContentProvider = game:GetService("ContentProvider")
+local TweenService = game:GetService("TweenService")
+
+local VFX = {}
+VFX.Library = nil :: Instance?
+
+local PARTS = {
+	ROOT = { "HumanoidRootPart" },
+	TORSO = { "UpperTorso", "Torso" },
+	HEAD = { "Head" },
+	RIGHT_HAND = { "RightHand", "Right Arm" },
+	LEFT_HAND = { "LeftHand", "Left Arm" },
+}
+-- the sole of the foot (R15 foot / bottom of the R6 leg): for effects that touch the ground
+local FEET = {
+	RIGHT_FOOT = { "RightFoot", "Right Leg" },
+	LEFT_FOOT = { "LeftFoot", "Left Leg" },
+}
+
+local function parseList(s): { { number } }
+	local out = {}
+	if type(s) ~= "string" then
+		return out
+	end
+	for item in string.gmatch(s, "[^;]+") do
+		local values = {}
+		for v in string.gmatch(item, "[^,:]+") do
+			table.insert(values, tonumber(v) or 0)
+		end
+		table.insert(out, values)
+	end
+	return out
+end
+
+-- the floor under a character, facing where it faces
+local function groundCFrame(character: Model): (CFrame, BasePart?)
+	local root = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not root then
+		return character:GetPivot(), nil
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local drop = root.Size.Y / 2 + 2 -- R6: 2-stud legs under the root
+	if humanoid and humanoid.RigType == Enum.HumanoidRigType.R15 then
+		drop = humanoid.HipHeight + root.Size.Y / 2
+	end
+	local pos = root.Position - Vector3.new(0, drop, 0)
+	local look = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
+	if look.Magnitude < 1e-3 then
+		return CFrame.new(pos), root
+	end
+	return CFrame.lookAt(pos, pos + look), root
+end
+
+local function resolve(target, attach): (CFrame, BasePart?)
+	local kind = typeof(target)
+	if kind == "CFrame" then
+		return target, nil
+	elseif kind == "Vector3" then
+		return CFrame.new(target), nil
+	elseif kind ~= "Instance" then
+		error("LostCubeVFX: target must be a CFrame, Vector3, Model, BasePart or Attachment")
+	end
+	if target:IsA("Model") then
+		if attach == "GROUND" or attach == "WORLD" then
+			return (groundCFrame(target)), nil
+		elseif attach == "GROUND_FOLLOW" then
+			return groundCFrame(target)
+		elseif FEET[attach] then
+			for _, name in FEET[attach] do
+				local part = target:FindFirstChild(name)
+				if part and part:IsA("BasePart") then
+					return part.CFrame * CFrame.new(0, -part.Size.Y / 2, 0), part
+				end
+			end
+		end
+		for _, name in PARTS[attach] or PARTS.ROOT do
+			local part = target:FindFirstChild(name)
+			if part and part:IsA("BasePart") then
+				return part.CFrame, part
+			end
+		end
+		return target:GetPivot(), nil
+	elseif target:IsA("BasePart") then
+		if attach == "GROUND" or attach == "WORLD" then
+			return target.CFrame, nil
+		end
+		return target.CFrame, target
+	elseif target:IsA("Attachment") then
+		return target.WorldCFrame, target.Parent :: BasePart
+	end
+	error("LostCubeVFX: unsupported target " .. target:GetFullName())
+end
+
+local function scaleSequence(seq: NumberSequence, k: number): NumberSequence
+	local points = {}
+	for _, kp in seq.Keypoints do
+		table.insert(points, NumberSequenceKeypoint.new(kp.Time, kp.Value * k, kp.Envelope * k))
+	end
+	return NumberSequence.new(points)
+end
+
+local function applyScale(model: Model, root: BasePart, k: number)
+	if k == 1 then
+		return
+	end
+	for _, d in model:GetDescendants() do
+		if d:IsA("BasePart") and d ~= root then
+			local rel = root.CFrame:ToObjectSpace(d.CFrame)
+			d.Size *= k
+			d.CFrame = root.CFrame * (rel - rel.Position + rel.Position * k)
+		elseif d:IsA("Attachment") then
+			d.Position *= k
+		elseif d:IsA("ParticleEmitter") then
+			d.Size = scaleSequence(d.Size, k)
+			d.Speed = NumberRange.new(d.Speed.Min * k, d.Speed.Max * k)
+			d.Acceleration *= k
+		end
+	end
+end
+
+local function lightAt(keys, t)
+	if t <= keys[1][1] then
+		return keys[1][2], keys[1][3]
+	end
+	for i = 2, #keys do
+		local a, b = keys[i - 1], keys[i]
+		if t <= b[1] then
+			local f = (t - a[1]) / math.max(b[1] - a[1], 1e-6)
+			return a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f
+		end
+	end
+	local last = keys[#keys]
+	return last[2], last[3]
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- 3D mesh elements: pieces spawned from a Part template (rings, cracks, smoke balls, grooves, debris)
+-- ---------------------------------------------------------------------------------------------
+local NORMALS = {
+	Top = Vector3.yAxis, Bottom = -Vector3.yAxis, Front = -Vector3.zAxis, Back = Vector3.zAxis,
+	Right = Vector3.xAxis, Left = -Vector3.xAxis,
+}
+
+local function pair(s, a, b)
+	local list = parseList(s)[1]
+	if not list then
+		return a, b
+	end
+	return list[1] or a, list[2] or list[1] or b
+end
+
+local function rnd(a, b)
+	return a + (b - a) * math.random()
+end
+
+-- a direction of the template's space with a random spread (degrees), in world space
+local function spreadDir(cf, name, sx, sy)
+	local d = NORMALS[name or "Top"] or Vector3.yAxis
+	local rot
+	if math.abs(d.Y) > 0.9 then
+		rot = CFrame.fromAxisAngle(Vector3.xAxis, math.rad(rnd(-sx, sx))) * CFrame.fromAxisAngle(Vector3.zAxis, math.rad(rnd(-sy, sy)))
+	else -- horizontal directions: fan out sideways (x) and upwards (y)
+		rot = CFrame.fromAxisAngle(Vector3.yAxis, math.rad(rnd(-sx, sx)))
+			* CFrame.fromAxisAngle(d:Cross(Vector3.yAxis).Unit, math.rad(rnd(0, sy)))
+	end
+	return cf:VectorToWorldSpace(rot:VectorToWorldSpace(d))
+end
+
+local function newMesh(model, ignore)
+	local self = { tweens = {}, debris = {}, paused = false, elements = {} }
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = ignore
+
+	-- marks that lie on the ground (LC_Ground): snapped onto the floor under them, keeping their heading
+	local function onGround(cf)
+		local hit = workspace:Raycast(cf.Position + Vector3.new(0, 1.5, 0), Vector3.new(0, -6, 0), params)
+		if not hit then
+			return cf
+		end
+		local look = cf.LookVector - hit.Normal * cf.LookVector:Dot(hit.Normal)
+		if look.Magnitude < 1e-3 then
+			look = cf.RightVector:Cross(hit.Normal)
+		end
+		return CFrame.lookAt(hit.Position + hit.Normal * 0.012, hit.Position + hit.Normal * 0.012 + look.Unit, hit.Normal)
+	end
+
+	local function piece(template, cf, size, alpha)
+		local p = template:Clone()
+		for _, c in p:GetChildren() do
+			c:Destroy()
+		end
+		for name in p:GetAttributes() do
+			p:SetAttribute(name, nil)
+		end
+		p.Name = template.Name .. "_"
+		p.Anchored = true
+		p.CanCollide, p.CanQuery, p.CanTouch, p.CastShadow = false, false, false, false
+		p.Size = size
+		p.CFrame = cf
+		p.Transparency = alpha
+		p.Parent = model
+		return p
+	end
+
+	local function tween(inst, time, goal, style, dir)
+		local tw = TweenService:Create(inst, TweenInfo.new(math.max(time, 0.01), style or Enum.EasingStyle.Quad,
+			dir or Enum.EasingDirection.Out), goal)
+		self.tweens[tw] = true
+		tw.Completed:Once(function()
+			self.tweens[tw] = nil
+		end)
+		if not self.paused then
+			tw:Play()
+		end
+		return tw
+	end
+
+	local function fadeOut(p, life, a1, colorEnd)
+		local goal = { Transparency = a1 }
+		if colorEnd then
+			goal.Color = colorEnd
+		end
+		tween(p, life, goal, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		task.delay(life + 0.05, function()
+			if not self.paused then
+				p:Destroy()
+			end
+		end)
+	end
+
+	function self.add(template, scale, speed)
+		local e = {
+			t = template, scale = scale, speed = speed, acc = 0, on = false,
+			mode = template:GetAttribute("LC_Mode"), rate = template:GetAttribute("LC_Rate") or 0,
+			colorEnd = template:GetAttribute("LC_ColorEnd"),
+			dir = template:GetAttribute("LC_Dir") or "Top", rise = template:GetAttribute("LC_Rise") or 0,
+			spin = template:GetAttribute("LC_Spin") or 0, count = template:GetAttribute("LC_Count") or 16,
+			jitter = template:GetAttribute("LC_Jitter") or 0, base = template.Size,
+			ground = template:GetAttribute("LC_Ground") == true,
+		}
+		e.life0, e.life1 = pair(template:GetAttribute("LC_Life"), 0.5, 0.5)
+		e.g0, e.g1 = pair(template:GetAttribute("LC_Grow"), 1, 1)
+		e.a0, e.a1 = pair(template:GetAttribute("LC_Alpha"), 0, 1)
+		e.s0, e.s1 = pair(template:GetAttribute("LC_Speed"), 0, 0)
+		e.sx, e.sy = pair(template:GetAttribute("LC_Spread"), 0, 0)
+		e.r0, e.r1 = pair(template:GetAttribute("LC_Radius"), 1, 6)
+		table.insert(self.elements, e)
+		return e
+	end
+
+	function self.tail(e)
+		return math.max(e.life0, e.life1) + 0.2
+	end
+
+	function self.spawn(e, n)
+		for _ = 1, n or 1 do
+			local t, k = e.t, e.scale
+			local cf = e.ground and onGround(t.CFrame) or t.CFrame
+			local life = rnd(e.life0, e.life1) / e.speed
+			local jit = 1 + (math.random() * 2 - 1) * e.jitter
+			local base = e.base * k * jit
+			if e.mode == "Ring" then
+				local count = math.max(3, e.count)
+				local r0, r1 = e.r0 * k, e.r1 * k
+				for i = 1, count do
+					local a = (i - 1) / count * math.pi * 2
+					local function at(r)
+						return cf * CFrame.new(math.cos(a) * r, 0, math.sin(a) * r) * CFrame.Angles(0, -(a + math.pi / 2), 0)
+					end
+					local len0 = math.max(base.X * e.g0, 2 * math.pi * r0 / count * 1.02)
+					local len1 = math.max(base.X * e.g1, 2 * math.pi * r1 / count * 1.02)
+					local p = piece(t, at(r0), Vector3.new(len0, base.Y * e.g0, base.Z * e.g0), e.a0)
+					tween(p, life, { CFrame = at(r1), Size = Vector3.new(len1, base.Y * e.g1, base.Z * e.g1) },
+						Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+					fadeOut(p, life, e.a1, e.colorEnd)
+				end
+			elseif e.mode == "Crack" then
+				local count = math.max(1, e.count)
+				for i = 1, count do
+					local a = (i - 1) / count * math.pi * 2 + rnd(-0.35, 0.35)
+					local dir = cf:VectorToWorldSpace(Vector3.new(math.cos(a), 0, math.sin(a)))
+					local len = rnd(e.r0, e.r1) * k
+					local function at(l)
+						return CFrame.lookAt(cf.Position, cf.Position + dir) * CFrame.new(0, 0, -l / 2)
+					end
+					local p = piece(t, at(0.1), Vector3.new(base.X, base.Y, 0.2), e.a0)
+					tween(p, math.min(0.14, life * 0.3), { CFrame = at(len), Size = Vector3.new(base.X, base.Y, len) },
+						Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+					fadeOut(p, life, e.a1, e.colorEnd)
+				end
+			elseif e.mode == "Pulse" then
+				local p = piece(t, cf, base * e.g0, e.a0)
+				tween(p, life, { Size = base * e.g1 }, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+				fadeOut(p, life, e.a1, e.colorEnd)
+			elseif e.mode == "Puff" then
+				local dir = spreadDir(cf, e.dir, e.sx, e.sy)
+				local speed = rnd(e.s0, e.s1) * k
+				local from = cf.Position + Vector3.new(rnd(-0.3, 0.3), rnd(0, 0.2), rnd(-0.3, 0.3)) * k
+				local to = from + dir * speed * life * 0.45 + Vector3.new(0, e.rise * k, 0)
+				local spin = CFrame.Angles(math.random() * 6.28, math.random() * 6.28, math.random() * 6.28)
+				local p = piece(t, CFrame.new(from) * spin, base * e.g0, e.a0)
+				tween(p, life, { CFrame = CFrame.new(to) * spin, Size = base * e.g1 }, Enum.EasingStyle.Quart,
+					Enum.EasingDirection.Out)
+				fadeOut(p, life, e.a1, e.colorEnd)
+			elseif e.mode == "Trail" then
+				local yaw = CFrame.new(0, rnd(0, 0.012), 0) * CFrame.Angles(0, math.rad(rnd(-2.5, 2.5)), 0) -- no z-fighting
+				local p = piece(t, cf * yaw, base * e.g0, e.a0)
+				tween(p, life, { Size = base * e.g1 }, Enum.EasingStyle.Linear)
+				fadeOut(p, life, e.a1, e.colorEnd)
+			elseif e.mode == "Debris" then
+				local p = piece(t, cf * CFrame.new(rnd(-0.2, 0.2) * k, 0.15 * k, rnd(-0.2, 0.2) * k)
+					* CFrame.Angles(math.random() * 6.28, math.random() * 6.28, math.random() * 6.28), base * e.g0, e.a0)
+				p.Anchored = self.paused
+				p.CanCollide = true
+				p.Massless = false
+				p.CustomPhysicalProperties = PhysicalProperties.new(0.4, 0.6, 0.35)
+				p.AssemblyLinearVelocity = spreadDir(cf, e.dir, e.sx, e.sy) * rnd(e.s0, e.s1) * k
+				p.AssemblyAngularVelocity = Vector3.new(rnd(-1, 1), rnd(-1, 1), rnd(-1, 1)) * e.spin
+				self.debris[p] = true
+				task.delay(life * 0.6, function()
+					if p.Parent then
+						tween(p, life * 0.4, { Transparency = e.a1, Size = base * e.g1 }, Enum.EasingStyle.Quad,
+							Enum.EasingDirection.In)
+					end
+				end)
+				task.delay(life + 0.05, function()
+					if not self.paused then
+						self.debris[p] = nil
+						p:Destroy()
+					end
+				end)
+			end
+		end
+	end
+
+	function self.step(dt)
+		for _, e in self.elements do
+			if e.on and e.rate > 0 then
+				e.acc += dt * e.rate
+				local n = math.floor(e.acc)
+				if n > 0 then
+					e.acc -= n
+					self.spawn(e, n)
+				end
+			end
+		end
+	end
+
+	function self.pause(on)
+		self.paused = on
+		for tw in self.tweens do
+			if on then
+				tw:Pause()
+			else
+				tw:Play()
+			end
+		end
+		for p in self.debris do
+			if p.Parent then
+				p.Anchored = on
+			end
+		end
+	end
+
+	return self
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- ground ribbons: a Trail (attribute LC_Ground) whose width lies flat on the floor under the effect.
+-- It follows the path of the effect's root (e.g. a foot dragging) and stretches ONE texture over the whole
+-- ribbon, so it grows and bends with the movement; Lifetime / Transparency fade it from the oldest end.
+-- ---------------------------------------------------------------------------------------------
+local function groundRibbon(trail: Trail, root: BasePart, model: Model, ignore, facing: Vector3?)
+	local a0, a1 = trail.Attachment0, trail.Attachment1
+	if not a0 or not a1 then
+		return nil
+	end
+	local width = (a0.Position - a1.Position).Magnitude
+	local center = (a0.Position + a1.Position) / 2 -- X: sideways offset, Z: forward offset
+	local follower = Instance.new("Part")
+	follower.Name = "GroundFollower"
+	follower.Size = Vector3.new(0.2, 0.2, 0.2)
+	follower.Transparency = 1
+	follower.Anchored = true
+	follower.CanCollide, follower.CanQuery, follower.CanTouch, follower.CastShadow = false, false, false, false
+	follower.CFrame = root.CFrame
+	follower.Parent = model
+	local b0, b1 = Instance.new("Attachment"), Instance.new("Attachment")
+	b0.Name, b1.Name = "RibbonA", "RibbonB"
+	b0.Position = Vector3.new(center.X + width / 2, 0, 0)
+	b1.Position = Vector3.new(center.X - width / 2, 0, 0)
+	b0.Parent, b1.Parent = follower, follower
+	trail.Attachment0, trail.Attachment1 = b0, b1
+	trail.FaceCamera = false
+
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = ignore
+
+	local look = facing and Vector3.new(facing.X, 0, facing.Z) or Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
+	local heading = look.Magnitude > 1e-3 and look.Unit or Vector3.new(0, 0, -1)
+	local fixed = facing ~= nil and look.Magnitude > 1e-3
+	local last = root.Position
+	local moved = false
+	local lift = trail:GetAttribute("LC_Lift") or 0
+
+	-- "flow": a bright band runs along the ribbon (head -> tail) and keeps repeating, like energy leaking out
+	local flow = trail:GetAttribute("LC_Flow")
+	local base = flow and trail.Color.Keypoints
+	local function baseColor(t)
+		for i = 2, #base do
+			if t <= base[i].Time then
+				local a, b = base[i - 1], base[i]
+				return a.Value:Lerp(b.Value, (t - a.Time) / math.max(b.Time - a.Time, 1e-6))
+			end
+		end
+		return base[#base].Value
+	end
+	local s0, s1 -- when the ribbon started / stopped being drawn
+	local function updateFlow()
+		local now = os.clock()
+		if trail.Enabled then
+			s0 = s0 or now
+			s1 = now
+		elseif s0 and not s1 then
+			s1 = now
+		end
+		if not s0 then
+			return
+		end
+		-- Trail colour is mapped by AGE (age / Lifetime): the ribbon covers only the ages [now - s1, now - s0],
+		-- so the bright band sweeps exactly that window, head (youngest) -> tail (oldest), once per 1/flow seconds
+		local life = trail.Lifetime
+		local lo, hi = (now - s1) / life, (now - s0) / life
+		if hi >= 1 or hi - lo < 1e-4 then
+			return
+		end
+		local f = lo + ((now * flow) % 1) * (hi - lo)
+		local sigma = math.max((hi - lo) * 0.12, 0.003)
+		local times = { 0, 1 }
+		for i = 1, #base do
+			table.insert(times, base[i].Time)
+		end
+		for _, d in { -2, -1, -0.5, 0, 0.5, 1, 2 } do
+			local t = f + d * sigma
+			if t > 0 and t < 1 then
+				table.insert(times, t)
+			end
+		end
+		table.sort(times)
+		local points, prev = {}, -1
+		for _, t in times do
+			if t - prev > 1e-4 then
+				local g = math.exp(-(((t - f) / sigma) ^ 2))
+				table.insert(points, ColorSequenceKeypoint.new(t, baseColor(t):Lerp(Color3.fromRGB(255, 244, 255), 0.55 * g)))
+				prev = t
+			end
+		end
+		points[1] = ColorSequenceKeypoint.new(0, points[1].Value)
+		points[#points] = ColorSequenceKeypoint.new(1, points[#points].Value)
+		trail.Color = ColorSequence.new(points)
+	end
+
+	return function()
+		if flow then
+			updateFlow()
+		end
+		local pos = root.Position
+		if not fixed then -- no direction given: follow where the effect moves (so the ribbon bends with a curved path)
+			local d = Vector3.new(pos.X - last.X, 0, pos.Z - last.Z)
+			if d.Magnitude > 0.04 then
+				heading = moved and heading:Lerp(d.Unit, 0.35).Unit or d.Unit -- the first move sets the heading at once
+				moved = true
+			end
+		end
+		last = pos
+		local hit = workspace:Raycast(pos + Vector3.new(0, 2, 0), Vector3.new(0, -9, 0), params)
+		local ground = hit and hit.Position or Vector3.new(pos.X, pos.Y - 2.5, pos.Z)
+		local normal = hit and hit.Normal or Vector3.yAxis
+		local flat = heading - normal * heading:Dot(normal)
+		flat = flat.Magnitude > 1e-3 and flat.Unit or heading
+		local origin = ground + normal * (0.04 + lift) + flat * center.Z
+		follower.CFrame = CFrame.lookAt(origin, origin + flat, normal)
+	end
+end
+
+export type Handle = {
+	Model: Model,
+	Done: boolean,
+	Stop: (Handle) -> (),
+	Destroy: (Handle) -> (),
+	Pause: (Handle) -> (),
+	Resume: (Handle) -> (),
+}
+
+function VFX.play(effect: Instance | string, target: any, options: { [string]: any }?): Handle
+	local opts = options or {}
+	if type(effect) == "string" then
+		local found = VFX.Library and VFX.Library:FindFirstChild(effect)
+		assert(found, "LostCubeVFX: no effect named " .. effect)
+		effect = found
+	end
+	local template = effect :: Instance
+	local scale = opts.scale or 1
+	local speed = opts.speed or 1
+	local model = template:Clone() :: Model
+	local root = (model.PrimaryPart or model:FindFirstChild("Root")) :: BasePart
+	assert(root, "LostCubeVFX: the effect has no Root part")
+	local attach = opts.attach or model:GetAttribute("LC_Attach") or "GROUND"
+	local base, follow = resolve(target, attach)
+	if opts.facing then -- point the effect's front along a direction (e.g. where a slide goes)
+		local f = Vector3.new(opts.facing.X, 0, opts.facing.Z)
+		if f.Magnitude > 1e-3 then
+			base = CFrame.lookAt(base.Position, base.Position + f)
+		end
+	end
+	model:PivotTo(base)
+	applyScale(model, root, scale)
+
+	for _, d in model:GetDescendants() do
+		if d:IsA("BasePart") then
+			d.CanCollide = false
+			d.CanQuery = false
+			d.CanTouch = false
+			d.CastShadow = false
+			d.Massless = true
+			d.Transparency = 1
+			d.Anchored = follow == nil
+			if follow and d ~= root then
+				local weld = Instance.new("WeldConstraint")
+				weld.Part0 = root
+				weld.Part1 = d
+				weld.Parent = d
+			end
+		elseif d:IsA("ParticleEmitter") then
+			d.Enabled = false
+			d.TimeScale = speed
+		elseif d:IsA("Trail") then
+			d.Enabled = false
+		end
+	end
+	if follow then
+		local weld = Instance.new("WeldConstraint")
+		weld.Part0 = follow
+		weld.Part1 = root
+		weld.Parent = root
+	end
+	model.Parent = opts.parent or workspace
+
+	-- timeline
+	local events = {}
+	local lights = {}
+	local tail = 0
+	local ignore = { model }
+	if typeof(target) == "Instance" then
+		table.insert(ignore, target) -- the character / part the effect is on
+	end
+	local mesh = newMesh(model, ignore)
+	local grounders = {}
+	local function at(t, fn)
+		table.insert(events, { t = t, fn = fn })
+	end
+	for _, d in model:GetDescendants() do
+		if d:GetAttribute("LC_Muted") then -- switched off in the editor
+			if d:IsA("PointLight") then
+				d.Enabled = false
+			end
+			continue
+		end
+		if d:IsA("Trail") and d:GetAttribute("LC_Ground") then -- ribbon lying on the floor
+			local update = groundRibbon(d, root, model, ignore, opts.facing)
+			if update then
+				table.insert(grounders, update)
+				update()
+			end
+		end
+		if d:IsA("BasePart") and d:GetAttribute("LC_Mode") then -- 3D mesh element
+			local e = mesh.add(d, scale, speed)
+			for _, w in parseList(d:GetAttribute("LC_On")) do
+				at(w[1] or 0, function()
+					e.on = true
+				end)
+				at(w[2] or 0, function()
+					e.on = false
+				end)
+			end
+			for _, b in parseList(d:GetAttribute("LC_Bursts")) do
+				at(b[1] or 0, function()
+					mesh.spawn(e, b[2] or 1)
+				end)
+			end
+			tail = math.max(tail, mesh.tail(e) / speed)
+		elseif d:IsA("ParticleEmitter") or d:IsA("Trail") then
+			local emitter = d
+			for _, w in parseList(d:GetAttribute("LC_On")) do
+				at(w[1] or 0, function()
+					emitter.Enabled = true
+				end)
+				at(w[2] or 0, function()
+					emitter.Enabled = false
+				end)
+			end
+			if d:IsA("ParticleEmitter") then
+				local particles = d
+				for _, b in parseList(d:GetAttribute("LC_Bursts")) do
+					at(b[1] or 0, function()
+						particles:Emit(b[2] or 1)
+					end)
+				end
+				tail = math.max(tail, d.Lifetime.Max)
+			else
+				tail = math.max(tail, (d :: Trail).Lifetime)
+			end
+		elseif d:IsA("PointLight") then
+			local keys = parseList(d:GetAttribute("LC_Keys"))
+			if #keys > 0 then
+				table.insert(lights, { light = d, keys = keys })
+			end
+		end
+	end
+	table.sort(events, function(a, b)
+		return a.t < b.t
+	end)
+
+	local duration = model:GetAttribute("LC_Duration") or 1
+	local start = os.clock()
+	local nextEvent = 1
+	local stopAt: number? = nil
+	local pausedAt: number? = nil
+	local conn: RBXScriptConnection? = nil
+	local handle = { Model = model, Done = false } :: any
+
+	local function cleanup()
+		if conn then
+			conn:Disconnect()
+			conn = nil
+		end
+		handle.Done = true
+		model:Destroy()
+	end
+
+	local lastT = 0
+	local function step()
+		if pausedAt then
+			return
+		end
+		for _, update in grounders do
+			update()
+		end
+		local t = (os.clock() - start) * speed
+		while not stopAt and nextEvent <= #events and events[nextEvent].t <= t do
+			events[nextEvent].fn()
+			nextEvent += 1
+		end
+		if not stopAt then
+			mesh.step(math.max(0, t - lastT))
+		end
+		lastT = t
+		for _, l in lights do
+			local b, r = lightAt(l.keys, t)
+			l.light.Brightness = b
+			l.light.Range = r * scale
+		end
+		if t >= (stopAt or duration) + tail then
+			cleanup()
+		end
+	end
+
+	function handle:Stop()
+		if self.Done or stopAt then
+			return
+		end
+		stopAt = (os.clock() - start) * speed
+		for _, d in model:GetDescendants() do
+			if d:IsA("ParticleEmitter") or d:IsA("Trail") then
+				d.Enabled = false
+			end
+		end
+		for _, e in mesh.elements do
+			e.on = false
+		end
+	end
+
+	function handle:Destroy()
+		cleanup()
+	end
+
+	-- freezes the effect (particles included) on the current moment - handy to look at it closely
+	function handle:Pause()
+		if self.Done or pausedAt then
+			return
+		end
+		pausedAt = os.clock()
+		for _, d in model:GetDescendants() do
+			if d:IsA("ParticleEmitter") then
+				d.TimeScale = 0
+			end
+		end
+		mesh.pause(true)
+	end
+
+	function handle:Resume()
+		if not pausedAt then
+			return
+		end
+		start += os.clock() - pausedAt
+		pausedAt = nil
+		for _, d in model:GetDescendants() do
+			if d:IsA("ParticleEmitter") then
+				d.TimeScale = speed
+			end
+		end
+		mesh.pause(false)
+	end
+
+	conn = RunService.Heartbeat:Connect(step)
+	step() -- what happens at t = 0 happens now
+	return handle
+end
+
+-- plays effects when an animation reaches its markers (LostCube exports timeline markers)
+function VFX.bindMarkers(track: AnimationTrack, target: any, map: { [string]: string | Instance }, options: { [string]: any }?)
+	local conns = {}
+	for marker, effect in map do
+		table.insert(conns, track:GetMarkerReachedSignal(marker):Connect(function()
+			VFX.play(effect, target, options)
+		end))
+	end
+	table.insert(conns, track.Ended:Connect(function()
+		for _, c in conns do
+			c:Disconnect()
+		end
+	end))
+	return conns
+end
+
+-- loads the textures of a folder of effects before they are first played (avoids a blank first play)
+function VFX.preload(folder: Instance?)
+	local list = {}
+	for _, d in (folder or VFX.Library or Instance.new("Folder")):GetDescendants() do
+		if d:IsA("ParticleEmitter") or d:IsA("Trail") then
+			table.insert(list, d)
+		end
+	end
+	task.spawn(function()
+		pcall(ContentProvider.PreloadAsync, ContentProvider, list)
+	end)
+end
+
+return VFX
+]]></ProtectedString></Properties></Item></Item></Item></roblox>

@@ -442,8 +442,15 @@ function Editor.newEffect(name, opts)
 	end)
 end
 
+local function assertFreeName(folder, name, except)
+	assert(type(name) == "string" and name ~= "", "LostCube: numele efectului nu poate fi gol")
+	local other = folder and folder:FindFirstChild(name)
+	assert(not other or other == except, "LostCube: există deja un efect numit " .. name)
+end
+
 function Editor.renameEffect(effect, name)
 	effect = Editor.effect(effect)
+	assertFreeName(effect.Parent, name, effect)
 	return record("redenumit " .. effect.Name .. " -> " .. name, function()
 		effect.Name = name
 	end)
@@ -459,6 +466,7 @@ function Editor.setEffect(effect, opts)
 			effect:SetAttribute("LC_Attach", opts.attach)
 		end
 		if opts.name then
+			assertFreeName(effect.Parent, opts.name, effect)
 			effect.Name = opts.name
 		end
 	end)
@@ -468,7 +476,13 @@ function Editor.duplicateEffect(effect, name)
 	effect = Editor.effect(effect)
 	return record("duplicat " .. effect.Name, function()
 		local copy = effect:Clone()
-		copy.Name = name or (effect.Name .. " copie")
+		local base = name or (effect.Name .. " copie")
+		local free, i = base, 2
+		while effect.Parent:FindFirstChild(free) do -- duplicating twice must not give two effects with one name
+			free = base .. " " .. i
+			i += 1
+		end
+		copy.Name = free
 		copy.Parent = effect.Parent
 		return copy
 	end)
@@ -952,7 +966,7 @@ function Editor.duplicate(element)
 		end
 		local data = Editor.read(element)
 		local copy = create(effect, Editor.kindOf(element), name)
-		for _, prop in { "Texture", "Color", "Transparency", "LightEmission", "LightInfluence", "Brightness" } do
+		for _, prop in { "Texture", "Color", "Transparency", "LightEmission", "LightInfluence", "Brightness", "Enabled" } do
 			pcall(function()
 				copy[prop] = element[prop]
 			end)
@@ -967,11 +981,14 @@ function Editor.duplicate(element)
 			copy.Range, copy.Shadows = element.Range, element.Shadows
 		elseif copy:IsA("Trail") then
 			copy.Lifetime, copy.WidthScale = element.Lifetime, element.WidthScale
+			for _, prop in { "FaceCamera", "MinLength", "MaxLength", "TextureMode", "TextureLength" } do
+				copy[prop] = element[prop]
+			end
 			setOne(copy, "height", data.height)
 		end
 		setPosition(copy, data.position)
-		for _, attr in { "LC_On", "LC_Bursts", "LC_Keys", "LC_Preset" } do
-			copy:SetAttribute(attr, element:GetAttribute(attr))
+		for attr, value in element:GetAttributes() do -- timeline, preset, muted, ground / lift / flow
+			copy:SetAttribute(attr, value)
 		end
 		return copy
 	end)
@@ -1004,6 +1021,7 @@ end
 --- stretches (k > 1) or squeezes (k < 1) the whole effect in time: duration, emission windows, bursts,
 --- light keys and lifetimes; speeds stay, so particles travel further when it is slower
 function Editor.retime(effect, k)
+	assert(type(k) == "number" and k > 0, "LostCube: factorul de timp trebuie să fie un număr > 0")
 	effect = Editor.effect(effect)
 	return record(string.format("timp x%.2f pe %s", k, effect.Name), function()
 		effect:SetAttribute("LC_Duration", round((effect:GetAttribute("LC_Duration") or 1) * k))

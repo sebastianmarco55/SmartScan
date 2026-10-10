@@ -41,21 +41,27 @@ function Installer.install()
 		effects.Name = "Effects"
 		effects.Parent = root
 	end
-	for _, pair in { { "VFX", vfxSource }, { "Editor", editorSource } } do
-		local old = root:FindFirstChild(pair[1])
-		if old then
-			old:Destroy()
+	local done, err = pcall(function()
+		for _, pair in { { "VFX", vfxSource }, { "Editor", editorSource } } do
+			local old = root:FindFirstChild(pair[1])
+			if old then
+				old:Destroy()
+			end
+			local copy = pair[2]:Clone()
+			for _, child in copy:GetChildren() do
+				child:Destroy() -- the game's Editor uses the VFX next to it
+			end
+			copy.Name = pair[1]
+			copy:SetAttribute("LC_Version", version)
+			copy.Parent = root
 		end
-		local copy = pair[2]:Clone()
-		for _, child in copy:GetChildren() do
-			child:Destroy() -- the game's Editor uses the VFX next to it
-		end
-		copy.Name = pair[1]
-		copy:SetAttribute("LC_Version", version)
-		copy.Parent = root
-	end
+	end)
 	if ok and id then
-		ChangeHistoryService:FinishRecording(id, Enum.FinishRecordingOperation.Commit)
+		-- a failed install is rolled back instead of leaving a half-written LostCube folder (and an open recording)
+		ChangeHistoryService:FinishRecording(id, done and Enum.FinishRecordingOperation.Commit or Enum.FinishRecordingOperation.Cancel)
+	end
+	if not done then
+		error(err, 0)
 	end
 	return Installer.status()
 end

@@ -375,7 +375,7 @@ function UI.section(parent, title, opts)
 	local head = make("TextButton", { Parent = frame, Text = "", AutoButtonColor = false, BackgroundColor3 = C.header,
 		BackgroundTransparency = collapsed and 1 or 0, Size = UDim2.new(1, 0, 0, 28) }, { UI.corner(6), UI.pad(0, 8, 0, 8),
 		UI.hlist(6, false) })
-	UI.label(head, collapsed and "►" or "▼", { width = 12, dim = true, size = 12 })
+	local arrow = UI.label(head, collapsed and "►" or "▼", { width = 12, dim = true, size = 12 })
 	local t = UI.label(head, title, { medium = true, size = 13, width = 220 })
 	t.Size = UDim2.new(1, -18 - (opts.rightWidth or 0), 1, 0)
 	if opts.right then
@@ -383,14 +383,19 @@ function UI.section(parent, title, opts)
 			{ UI.hlist(3, false) })
 		opts.right(right)
 	end
-	head.MouseButton1Click:Connect(function()
-		UI.collapsed[key] = not collapsed
-		if opts.onToggle then
-			opts.onToggle()
-		end
-	end)
 	local body = make("Frame", { Parent = frame, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0),
 		AutomaticSize = Enum.AutomaticSize.Y, Visible = not collapsed }, { UI.pad(6, 8, 8, 8), UI.vlist(4) })
+	head.MouseButton1Click:Connect(function()
+		-- applied right here (no redraw of the whole panel); the state survives re-renders in UI.collapsed
+		collapsed = not collapsed
+		UI.collapsed[key] = collapsed
+		arrow.Text = collapsed and "►" or "▼"
+		head.BackgroundTransparency = collapsed and 1 or 0
+		body.Visible = not collapsed
+		if opts.onToggle then
+			opts.onToggle(collapsed)
+		end
+	end)
 	return body
 end
 

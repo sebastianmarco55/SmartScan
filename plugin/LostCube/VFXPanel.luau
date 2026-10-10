@@ -130,6 +130,7 @@ function Panel:render(parent)
 	end
 	if self.error then
 		UI.note(parent, "⚠ " .. self.error, C.warn)
+		self.error = nil -- shown once; the next action sets it again if it still fails
 	end
 	local status = require(script.Parent.Installer).status()
 	if not status.ok then

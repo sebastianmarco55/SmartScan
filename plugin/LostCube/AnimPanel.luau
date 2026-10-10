@@ -139,6 +139,7 @@ function Panel:stop()
 		c:Disconnect()
 	end
 	self.markerConns = nil
+	self.playing = false
 	if self.track then
 		pcall(function()
 			self.track:Stop(0)
