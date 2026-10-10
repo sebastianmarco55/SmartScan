@@ -31,7 +31,7 @@ local MESH_MODES = {
 local PART_SHAPES = { { value = "Block", label = "Cub" }, { value = "Ball", label = "Bilă" },
 	{ value = "Cylinder", label = "Cilindru" }, { value = "Wedge", label = "Pană" } }
 local MATERIALS = {}
-for _, m in { "Neon", "ForceField", "SmoothPlastic", "Glass", "Ice", "Slate", "Rock", "Concrete", "Plastic", "Sand" } do
+for _, m in { "Neon", "ForceField", "SmoothPlastic", "Glass", "Ice", "Metal", "Slate", "Rock", "Concrete", "Plastic", "Sand" } do
 	table.insert(MATERIALS, { value = m, label = m })
 end
 
@@ -47,6 +47,58 @@ end
 -- "ReplicatedStorage.LostCube.Editor:123: LostCube: ..." -> "LostCube: ..."
 local function clean(err)
 	return (tostring(err):gsub("^.-:%d+: ", ""))
+end
+
+local function trim(text)
+	return (text:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+-- UI.note renders rich text: text that comes from outside (asset names, script names) must not be read as tags
+local function plain(text)
+	return (text:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
+end
+
+-- an effect name that is not taken yet ("Fulger", "Fulger 2", ...)
+local function freeName(Editor, base)
+	local taken = {}
+	for _, fx in Editor.effects() do
+		taken[fx.Name] = true
+	end
+	if not taken[base] then
+		return base
+	end
+	local i = 2
+	while taken[base .. " " .. i] do
+		i += 1
+	end
+	return base .. " " .. i
+end
+
+-- dropdown items grouped under headers, in the order the groups first appear; `label` decides how an entry is written
+local function groupedItems(entries, groupOf, valueOf, labelOf)
+	local order, byGroup = {}, {}
+	for _, entry in entries do
+		local group = groupOf(entry)
+		if not byGroup[group] then
+			byGroup[group] = {}
+			table.insert(order, group)
+		end
+		table.insert(byGroup[group], entry)
+	end
+	local items = {}
+	for _, group in order do
+		table.insert(items, { header = true, label = group })
+		for _, entry in byGroup[group] do
+			table.insert(items, { value = valueOf(entry), label = labelOf(entry) })
+		end
+	end
+	return items
+end
+
+-- the asset id out of what people paste: "123", "rbxassetid://123" or a Creator Store address
+local function assetIdOf(text)
+	text = trim(text)
+	return text:match("^(%d+)$") or text:match("rbxassetid://(%d+)") or text:match("/asset/(%d+)") or text:match("/store/asset/(%d+)")
 end
 
 -- every edit goes through the Editor (one undo step each); errors show up in the panel instead of breaking it
@@ -184,8 +236,17 @@ function Panel:render(parent)
 	local bar = UI.hstack(body)
 	UI.button(bar, "+ Efect nou", function()
 		self.creating = true
+		self.templating = false
 		self:refresh()
 	end, { style = "primary", bold = true })
+	UI.button(bar, "+ Din șablon", function()
+		self.templating = not self.templating
+		self.creating = false
+		self:refresh()
+	end, { selected = self.templating, bold = true, tip = "efecte gata făcute (lovitură, fulger, vindecare, teleport...)" })
+	if self.templating then
+		self:renderTemplates(body)
+	end
 	if self.creating then
 		local row = UI.hstack(body)
 		local box = UI.textbox(row, "", nil, { placeholder = "Numele efectului (ex. Foc)" })
@@ -246,6 +307,7 @@ function Panel:render(parent)
 			},
 		})
 	end
+	self:renderImport(parent)
 	if not self.effect then
 		return
 	end
@@ -327,15 +389,14 @@ function Panel:render(parent)
 			},
 		})
 	end
-	local addItems = {}
-	local lastKind
-	for _, p in Editor.PRESETS do
-		if p.kind ~= lastKind then
-			table.insert(addItems, { header = true, label = KIND_LABEL[p.kind] })
-			lastKind = p.kind
-		end
-		table.insert(addItems, { value = p.key, label = p.label })
-	end
+	-- presets grouped by theme (Electricitate, Apă și gheață...); the icon tells the kind of element it adds
+	local addItems = groupedItems(Editor.PRESETS, function(p)
+		return p.group or KIND_LABEL[p.kind]
+	end, function(p)
+		return p.key
+	end, function(p)
+		return KIND_ICON[p.kind] .. "  " .. p.label
+	end)
 	table.insert(addItems, { header = true, label = "Gol" })
 	table.insert(addItems, { value = "PARTICLES", label = "Particule (gol)" })
 	table.insert(addItems, { value = "LIGHT", label = "Lumină (goală)" })
@@ -349,6 +410,177 @@ function Panel:render(parent)
 
 	if self.element then
 		self:renderElement(parent, self.element)
+	end
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- new effect from a template
+-- ---------------------------------------------------------------------------------------------
+function Panel:renderTemplates(body)
+	local Editor = self.Editor
+	local templates = Editor.TEMPLATES or {}
+	local box = UI.vstack(body, 4)
+	if #templates == 0 then
+		UI.note(box, "Acest Editor nu are șabloane (versiune veche a modulului).", C.warn)
+		return
+	end
+	local tpl
+	for _, t in templates do
+		if t.key == self.tplKey then
+			tpl = t
+		end
+	end
+	tpl = tpl or templates[1]
+	self.tplKey = tpl.key
+
+	local items = groupedItems(templates, function(t)
+		return t.category
+	end, function(t)
+		return t.key
+	end, function(t)
+		return t.label
+	end)
+	UI.dropdown(UI.row(box, "Șablon"), items, tpl.key, function(key)
+		self.tplKey = key
+		self.tplName = nil
+		self:refresh()
+	end, { menuWidth = 230 })
+	local attachLabel = tpl.attach
+	for _, a in Editor.ATTACH do
+		if a.key == tpl.attach then
+			attachLabel = a.label
+		end
+	end
+	UI.label(box, tpl.desc, { dim = true, size = 11, wrap = true })
+	UI.label(box, string.format("%s s  ·  %d elemente  ·  prins de: %s", UI.fmt(tpl.duration), #tpl.elements, attachLabel),
+		{ dim = true, size = 11, wrap = true })
+
+	local colors = UI.row(box, "Culoare")
+	UI.color(colors, self.tplColor or tpl.main, function(c)
+		self.tplColor = c
+		self:refresh()
+	end)
+	if self.tplColor then
+		UI.button(colors, "↺", function()
+			self.tplColor = nil
+			self:refresh()
+		end, { width = 28, style = "ghost", tip = "culorile originale ale șablonului" })
+	end
+	UI.number(UI.row(box, "Scară"), self.tplScale or 1, function(v)
+		self.tplScale = v
+		self:refresh()
+	end, { min = 0.25, max = 4, step = 0.25, decimals = 2, tip = "mărește / micșorează tot efectul (mărimi, distanțe, viteze)" })
+
+	local defaultName = freeName(Editor, tpl.label)
+	local nameBox = UI.textbox(UI.row(box, "Nume"), self.tplName or defaultName, function(text)
+		self.tplName = text
+	end, { placeholder = "Numele efectului" })
+	local row = UI.hstack(box)
+	UI.button(row, "Creează și redă", function()
+		local name = trim(nameBox.Text) ~= "" and nameBox.Text or defaultName
+		local scale = self.tplScale or 1
+		local ok, fx = pcall(Editor.newFromTemplate, name, tpl.key, { color = self.tplColor, scale = scale ~= 1 and scale or nil })
+		if ok then
+			self.effect, self.element = fx, nil
+			self.templating, self.tplName = false, nil
+			self.error = nil
+			self:refresh()
+			task.defer(function()
+				if self.effect == fx and fx.Parent then
+					self:play()
+				end
+			end)
+		else
+			self.error = clean(fx)
+			self:refresh()
+		end
+	end, { style = "primary", bold = true })
+	UI.button(row, "×", function()
+		self.templating = false
+		self:refresh()
+	end, { width = 26, style = "ghost" })
+	UI.spacer(box, 2)
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- free VFX from the Creator Store (scripts are deleted by the Editor before anything is copied)
+-- ---------------------------------------------------------------------------------------------
+local function importLines(result)
+	local lines = {
+		"✓ Importate în efectul ales: " .. result.particles .. " particule, " .. result.trails .. " trail-uri, " .. result.lights
+			.. " lumini (scripturile nu se copiază).",
+	}
+	for _, note in result.notes do
+		table.insert(lines, "• " .. note)
+	end
+	return lines
+end
+
+function Panel:renderImport(parent)
+	local Editor = self.Editor
+	local body = UI.section(parent, "Importă VFX gratuit (Creator Store)", { key = "vfx.import", collapsed = true })
+	if not Editor.importAsset then
+		UI.note(body, "Acest Editor nu poate importa (versiune veche a modulului).", C.warn)
+		return
+	end
+	UI.label(body, "Lipește ID-ul (sau adresa) unui model VFX gratuit din Creator Store. Scripturile din model se șterg înainte de orice, "
+		.. "apoi particulele, trail-urile și luminile devin un efect LostCube.", { dim = true, size = 11, wrap = true })
+	local idBox = UI.textbox(UI.row(body, "ID asset"), self.importId or "", function(text)
+		self.importId = text
+	end, { placeholder = "ex. 123456789 sau adresa paginii" })
+	local nameBox = UI.textbox(UI.row(body, "Nume efect"), self.importName or "", function(text)
+		self.importName = text
+	end, { placeholder = "gol = Import <ID>" })
+	local row = UI.hstack(body)
+	UI.button(row, self.importing and "Se importă…" or "Importă", function()
+		if self.importing then
+			return
+		end
+		local id = assetIdOf(idBox.Text)
+		if not id then
+			self.importReport = { ok = false, lines = { "✗ Scrie ID-ul asset-ului: numărul din adresa paginii (…/store/asset/NUMĂR)." } }
+			self:refresh()
+			return
+		end
+		local name = trim(nameBox.Text)
+		self.importId, self.importName = idBox.Text, nameBox.Text
+		self.importing, self.importReport = true, nil
+		self:refresh()
+		task.spawn(function()
+			-- the download yields: the texts were read above, the boxes of this render are already gone
+			local ok, fx, report = pcall(Editor.importAsset, tonumber(id), name ~= "" and name or nil)
+			self.importing = false
+			if ok and fx then
+				self.effect, self.element = fx, nil
+			end
+			self.importReport = ok and report or { ok = false, lines = { "✗ " .. clean(fx) } }
+			self:refresh()
+		end)
+	end, { style = "primary", bold = true, tip = "descarcă modelul, șterge scripturile și creează efectul" })
+	UI.button(row, "Din selecție", function()
+		if not self.effect then
+			self.importReport = { ok = false, lines = { "✗ Alege mai întâi un efect (sau creează unul)." } }
+			self:refresh()
+			return
+		end
+		local picked = Selection:Get()[1]
+		if not picked then
+			self.importReport = { ok = false, lines = { "✗ Selectează în Explorer modelul cu particule (inserat din Toolbox)." } }
+			self:refresh()
+			return
+		end
+		local ok, result = pcall(Editor.importEmitters, self.effect, picked)
+		self.importReport = ok and { ok = true, lines = importLines(result) } or { ok = false, lines = { "✗ " .. clean(result) } }
+		self:refresh()
+	end, { tip = "copiază emitoarele din obiectul selectat în efectul ales (nu copiază scripturi)" })
+	local report = self.importReport
+	if report then
+		local color = report.ok and ((report.suspicious or 0) == 0 and C.good or C.warn) or C.warn
+		local lines = {}
+		for _, line in report.lines or {} do
+			table.insert(lines, plain(line))
+		end
+		UI.note(body, table.concat(lines, "\n"), color)
 	end
 end
 
@@ -415,10 +647,14 @@ function Panel:colorRow(body, data, element)
 end
 
 function Panel:textureRow(body, data, element)
-	local items = {}
-	for _, t in self.Editor.TEXTURES do
-		table.insert(items, { value = t.key, label = t.label })
-	end
+	local items = groupedItems(self.Editor.TEXTURES, function(t)
+		return t.group or "Altele"
+	end, function(t)
+		return t.key
+	end, function(t)
+		return t.label
+	end)
+	table.insert(items, { header = true, label = "Proprii" })
 	table.insert(items, { value = "CUSTOM", label = "ID propriu…" })
 	UI.dropdown(UI.row(body, "Textură"), items, data.texture, function(v)
 		if v == "CUSTOM" then
@@ -447,12 +683,19 @@ function Panel:renderElement(parent, element)
 			self:set(element, { name = text })
 		end
 	end)
-	local presetItems = {}
+	local ofKind = {}
 	for _, p in Editor.PRESETS do
 		if p.kind == kind then
-			table.insert(presetItems, { value = p.key, label = p.label })
+			table.insert(ofKind, p)
 		end
 	end
+	local presetItems = groupedItems(ofKind, function(p)
+		return p.group or KIND_LABEL[p.kind]
+	end, function(p)
+		return p.key
+	end, function(p)
+		return p.label
+	end)
 	UI.dropdown(UI.row(body, "Preset"), presetItems, data.preset, function(v)
 		self:try(Editor.applyPreset, element, v)
 	end, { placeholder = "alege…", menuWidth = 210 })

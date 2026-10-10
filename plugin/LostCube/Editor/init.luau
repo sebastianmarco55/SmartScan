@@ -6,6 +6,9 @@ Used by the LostCube plugin's panels and by Claude (through Studio):
 	local s = Editor.addElement(fx, "SPARKLES", { position = Vector3.new(0, 3, 0), bursts = { { 0.1, 40 } } })
 	Editor.setProps(s, { color = { Color3.new(1, 1, 1), Color3.fromRGB(158, 92, 255) }, speed = { 18, 30 } })
 	Editor.preview(fx)  -- plays it in Studio, in front of the camera (or on the selection)
+	Editor.newFromTemplate("Boom 2", "FIRE_EXPLOSION", { color = Color3.fromRGB(80, 160, 255), scale = 1.5 })  -- Editor.TEMPLATES
+	Editor.importAsset(123456789, "Free VFX")  -- free Creator Store model -> effect (its scripts are deleted first)
+	Editor.importEmitters(fx, workspace.SomeModel)  -- the emitters / trails / lights of a model -> elements of fx
 
 Format (the same the Blender exporter writes; LostCube.VFX plays it in the game):
 	Model <effect>  attributes LC_Duration (s), LC_Attach
@@ -29,18 +32,54 @@ Editor.VERSION = "1.6.0"
 local P = "rbxasset://textures/particles/"
 -- the ground crack streak (Textures/ground_crack_trail.png), uploaded as one asset
 Editor.GROUND_CRACK_URL = "rbxassetid://105887359860913" -- rotated 90 degrees: Trail maps image height along the length
+-- Textures. Only paths that were checked (docs/vfx-sources.md): the particles folder of Roblox's own content (ships with every
+-- client, no upload, no ownership) and the image ids Roblox itself publishes in its official VFX tutorials (creator-docs).
+-- Keys stay stable (saved effects store the url, not the key); `group` is only used to organise the pickers.
+local GROUP_BUILTIN = "Încorporate în Roblox (fără upload)"
+local GROUP_DOCS = "Roblox oficial (ID-uri din tutoriale)"
+local GROUP_OTHER = "Altele"
+local function docs(id)
+	return "rbxassetid://" .. id
+end
 Editor.TEXTURES = {
-	{ key = "SPARKLES", label = "Scântei (stea)", url = P .. "sparkles_main.dds" },
-	{ key = "GLOW", label = "Glow (bilă moale)", url = P .. "explosion01_implosion_main.dds" },
-	{ key = "RING", label = "Inel (undă)", url = P .. "explosion01_shockwave_main.dds" },
-	{ key = "CIRCLE", label = "Cerc magic", url = P .. "forcefield_vortex_main.dds" },
-	{ key = "SMOKE", label = "Fum", url = P .. "smoke_main.dds" },
-	{ key = "SMOKE_SOFT", label = "Fum moale", url = P .. "explosion01_smoke_main.dds" },
-	{ key = "FIRE", label = "Foc", url = P .. "fire_main.dds" },
-	{ key = "EXPLOSION", label = "Explozie", url = P .. "explosion01_core_main.dds" },
-	{ key = "SQUARE", label = "Pătrat", url = P .. "SquareParticle.png" },
-	{ key = "GROUND_CRACK", label = "Urmă crăpată (pe sol)", url = Editor.GROUND_CRACK_URL },
-	{ key = "NONE", label = "Fără (alb)", url = "" },
+	{ key = "SPARKLES", label = "Scântei (stea)", url = P .. "sparkles_main.dds", group = GROUP_BUILTIN },
+	{ key = "GLOW", label = "Glow (bilă moale)", url = P .. "explosion01_implosion_main.dds", group = GROUP_BUILTIN },
+	{ key = "RING", label = "Inel (undă)", url = P .. "explosion01_shockwave_main.dds", group = GROUP_BUILTIN },
+	{ key = "CIRCLE", label = "Cerc magic", url = P .. "forcefield_vortex_main.dds", group = GROUP_BUILTIN },
+	{ key = "SMOKE", label = "Fum", url = P .. "smoke_main.dds", group = GROUP_BUILTIN },
+	{ key = "SMOKE_SOFT", label = "Fum moale", url = P .. "explosion01_smoke_main.dds", group = GROUP_BUILTIN },
+	{ key = "FIRE", label = "Foc", url = P .. "fire_main.dds", group = GROUP_BUILTIN },
+	{ key = "EXPLOSION", label = "Explozie", url = P .. "explosion01_core_main.dds", group = GROUP_BUILTIN },
+	{ key = "SQUARE", label = "Pătrat", url = P .. "SquareParticle.png", group = GROUP_BUILTIN },
+	{ key = "FIRE_SPARKS", label = "Jar mărunt (puncte de foc)", url = P .. "fire_sparks_main.dds", group = GROUP_BUILTIN },
+	{ key = "FORCEFIELD_GLOW", label = "Aură difuză (forcefield)", url = P .. "forcefield_glow_main.dds", group = GROUP_BUILTIN },
+	-- the "starter pack" of textures in Roblox's official tutorials ("Work with particle emitters", "Build It Play It"): each id is
+	-- printed under its picture, the same on four pages
+	{ key = "STAR4", label = "Stea cu 4 raze", url = docs(5860841663), group = GROUP_DOCS },
+	{ key = "STAR_BURST", label = "Stea strălucitoare (cu raze)", url = docs(5860841737), group = GROUP_DOCS },
+	{ key = "STAR_SOLID", label = "Stea plină", url = docs(6772783963), group = GROUP_DOCS },
+	{ key = "SWIRL", label = "Spirală / vârtej", url = docs(5857851812), group = GROUP_DOCS },
+	{ key = "RING_SOFT", label = "Inel moale", url = docs(6711256324), group = GROUP_DOCS },
+	{ key = "DISC_SOFT", label = "Disc moale", url = docs(5857892330), group = GROUP_DOCS },
+	{ key = "SMOKE_WISP", label = "Fum (nor ușor)", url = docs(5833235272), group = GROUP_DOCS },
+	{ key = "ELECTRIC_CRACKLE", label = "Descărcare electrică (rețea)", url = docs(5833323391), group = GROUP_DOCS },
+	{ key = "LIGHTNING_LINE", label = "Fulger (linie)", url = docs(5857931724), group = GROUP_DOCS },
+	{ key = "SCRATCH", label = "Zgârieturi (tăietură)", url = docs(5857892405), group = GROUP_DOCS },
+	-- tutorials "Use particles for explosions", "Custom particle effects" and "Create basic visual effects"
+	{ key = "ELECTRIC_SPARK", label = "Scântei electrice", url = docs(6101261905), group = GROUP_DOCS },
+	{ key = "SOFT_CIRCLE", label = "Cerc cu margini moi", url = docs(3845808160), group = GROUP_DOCS },
+	{ key = "FLARE_BIG", label = "Flare mare (lumină aditivă)", url = docs(8983307836), group = GROUP_DOCS },
+	{ key = "DUST_MOTES", label = "Particule de praf", url = docs(14302399641), group = GROUP_DOCS },
+	{ key = "CLOUD", label = "Nor mare", url = docs(10714362544), group = GROUP_DOCS },
+	-- tutorials "Create waterfalls" and "Create volcanoes" (water, foam, mist and embers)
+	{ key = "SPLASH_DENSE", label = "Stropi denși de apă", url = docs(16829556885), group = GROUP_DOCS },
+	{ key = "DROPLETS", label = "Picături fine", url = docs(17082061238), group = GROUP_DOCS },
+	{ key = "WHITEWATER", label = "Apă spumoasă (plasă)", url = docs(16808075391), group = GROUP_DOCS },
+	{ key = "FOAM_RING", label = "Spumă (inel de ondulații)", url = docs(16811365086), group = GROUP_DOCS },
+	{ key = "MIST", label = "Ceață / abur", url = docs(16830667309), group = GROUP_DOCS },
+	{ key = "EMBERS", label = "Jar (scântei alungite)", url = docs(17581858560), group = GROUP_DOCS },
+	{ key = "GROUND_CRACK", label = "Urmă crăpată (pe sol)", url = Editor.GROUND_CRACK_URL, group = GROUP_OTHER },
+	{ key = "NONE", label = "Fără (alb)", url = "", group = GROUP_OTHER },
 }
 local TEXTURE_URL, TEXTURE_KEY = {}, {}
 for _, t in Editor.TEXTURES do
@@ -176,9 +215,520 @@ Editor.PRESETS = {
 		transparency = { { 0, 0 }, { 0.1, 0.1 }, { 0.5, 0.4 }, { 0.88, 1 }, { 1, 1 } }, LightEmission = 1,
 		Brightness = 2.5, lifetime = 3.2, window = { 0, 0.45 } } },
 }
+-- More presets (grouped for the pickers). Texture sizes are chosen for the visible part of each image: several of the
+-- official textures only fill the middle ~50% of their canvas, so their Size is about twice the wanted look.
+do
+	local GOLD = Color3.fromRGB(255, 214, 92)
+	local ELECTRIC = Color3.fromRGB(140, 215, 255)
+	local ICE = Color3.fromRGB(176, 228, 255)
+	local WATER = Color3.fromRGB(150, 205, 255)
+	local WATER_LIGHT = Color3.fromRGB(232, 245, 255)
+	local HEAL = Color3.fromRGB(110, 255, 150)
+	local HEAL_LIGHT = Color3.fromRGB(218, 255, 224)
+	local TOXIC = Color3.fromRGB(130, 220, 70)
+	local TOXIC_DEEP = Color3.fromRGB(58, 120, 44)
+
+	local more = {
+		-- electricity ------------------------------------------------------------------------------------------------
+		{ key = "ELECTRIC_SPARKS", group = "Electricitate", label = "Scântei electrice", kind = "PARTICLES", props = {
+			texture = "ELECTRIC_SPARK", color = { WHITE, ELECTRIC }, size = { 2.4, 1.8, 0.5 }, transparency = { 0, 0.2, 1 },
+			LightEmission = 1, lifetime = { 0.2, 0.5 }, speed = { 18, 36 }, spread = { 180, 180 }, Drag = 8,
+			rotation = { 0, 360 }, rotSpeed = { -140, 140 }, bursts = { { 0, 14 } } } },
+		{ key = "ELECTRIC_ARC", group = "Electricitate", label = "Arcuri electrice (fulgere scurte)", kind = "PARTICLES", props = {
+			texture = "LIGHTNING_LINE", color = { WHITE, ELECTRIC }, size = { 7, 8, 6, mid = 0.3 },
+			transparency = { 0, 0.1, 1, mid = 0.3 }, LightEmission = 1, ZOffset = 1.5, lifetime = { 0.1, 0.2 }, speed = 0,
+			rotation = { 0, 360 }, bursts = { { 0, 3 }, { 0.07, 3 }, { 0.14, 2 } } } },
+		-- the bolt is about half of the image tall and sits a bit above its middle: the height of the emitter puts its tip on the floor
+		{ key = "LIGHTNING_BOLT", group = "Electricitate", label = "Trăznet vertical", kind = "PARTICLES", props = {
+			texture = "LIGHTNING_LINE", Orientation = "FacingCameraWorldUp", color = { WHITE, ELECTRIC }, size = { 36, 36, 34 },
+			transparency = { 0, 0.05, 1 }, LightEmission = 1, Brightness = 2, ZOffset = 1, lifetime = { 0.12, 0.2 }, speed = 0,
+			rotation = { -6, 6 }, position = Vector3.new(0, 5.4, 0), bursts = { { 0, 1 }, { 0.07, 1 }, { 0.15, 1 } } } },
+		{ key = "ELECTRIC_CRACKLE", group = "Electricitate", label = "Descărcări electrice (continuu)", kind = "PARTICLES", props = {
+			texture = "ELECTRIC_CRACKLE", color = { WHITE, ELECTRIC }, size = { 3.5, 3, 2 }, transparency = { 0.1, 0.2, 1 },
+			LightEmission = 1, lifetime = { 0.08, 0.2 }, Rate = 14, speed = 0, rotation = { 0, 360 }, shape = "Sphere",
+			partSize = Vector3.new(3, 4, 3), window = { 0, 1 } } },
+		-- water and ice ----------------------------------------------------------------------------------------------
+		{ key = "WATER_SPLASH", group = "Apă și gheață", label = "Stropi de apă (splash)", kind = "PARTICLES", props = {
+			texture = "SPLASH_DENSE", color = { WATER_LIGHT, WATER }, size = { 2.5, 6, 8, mid = 0.4 },
+			transparency = { 0.1, 0.35, 1, mid = 0.4 }, LightEmission = 0.15, LightInfluence = 0.8, lifetime = { 0.45, 0.75 },
+			speed = { 4, 9 }, spread = { 30, 30 }, Drag = 4, rotation = { 0, 360 }, rotSpeed = { -50, 50 },
+			position = Vector3.new(0, 0.5, 0), bursts = { { 0, 4 } } } },
+		{ key = "WATER_DROPLETS", group = "Apă și gheață", label = "Picături de apă", kind = "PARTICLES", props = {
+			texture = "DROPLETS", color = { WATER_LIGHT, Color3.fromRGB(190, 225, 255) }, size = { 2.5, 5, 6.5 },
+			transparency = { 0.05, 0.2, 1 }, LightEmission = 0.2, LightInfluence = 0.8, lifetime = { 0.7, 1.1 },
+			speed = { 10, 18 }, spread = { 35, 35 }, Drag = 0.8, acceleration = Vector3.new(0, -22, 0), rotation = { 0, 360 },
+			position = Vector3.new(0, 0.4, 0), bursts = { { 0, 6 } } } },
+		{ key = "WATER_RING", group = "Apă și gheață", label = "Ondulații pe apă (inel)", kind = "PARTICLES", props = {
+			texture = "FOAM_RING", Orientation = "VelocityPerpendicular", color = { WATER_LIGHT, WATER },
+			size = { 1.5, 9, 13, mid = 0.5 }, transparency = { 0.25, 0.4, 1, mid = 0.5 }, LightEmission = 0.1, LightInfluence = 0.8,
+			lifetime = 0.8, speed = 0.01, rotation = { 0, 360 }, position = Vector3.new(0, 0.1, 0), bursts = { { 0, 1 } } } },
+		{ key = "FROST_MIST", group = "Apă și gheață", label = "Ceață rece (la sol)", kind = "PARTICLES", props = {
+			texture = "MIST", color = { Color3.fromRGB(205, 236, 255), Color3.fromRGB(170, 215, 250) }, size = { 4, 7, 9 },
+			transparency = { 0.65, 0.72, 1 }, LightEmission = 0.2, LightInfluence = 0.6, lifetime = { 1, 1.6 }, Rate = 16,
+			speed = { 1, 3 }, spread = { 180, 180 }, shape = "Disc", partSize = Vector3.new(4, 0.2, 4),
+			acceleration = Vector3.new(0, 0.6, 0), rotation = { 0, 360 }, rotSpeed = { -18, 18 },
+			position = Vector3.new(0, 0.3, 0), window = { 0, 0.8 } } },
+		{ key = "FROST_SPARKLE", group = "Apă și gheață", label = "Cristale care sclipesc", kind = "PARTICLES", props = {
+			texture = "STAR4", color = { WHITE, ICE }, size = { 0, 1.8, 0 }, transparency = { 0.1, 0.1, 1 }, LightEmission = 1,
+			lifetime = { 0.6, 1.1 }, Rate = 30, speed = { 0.5, 2 }, spread = { 180, 180 }, shape = "Sphere",
+			partSize = Vector3.new(3.5, 4.5, 3.5), rotation = { 0, 45 }, rotSpeed = { -80, 80 },
+			position = Vector3.new(0, 2.5, 0), window = { 0, 1 } } },
+		{ key = "SNOWFALL", group = "Apă și gheață", label = "Fulgi care cad", kind = "PARTICLES", props = {
+			texture = "SOFT_CIRCLE", color = WHITE, size = { 0.5, 0.5, 0.4 }, transparency = { 0.15, 0.15, 1, mid = 0.8 },
+			LightEmission = 0.4, LightInfluence = 0.5, lifetime = { 1.6, 2.4 }, Rate = 40, speed = { 0, 1 },
+			spread = { 180, 180 }, acceleration = Vector3.new(0, -3.5, 0), shape = "Box", partSize = Vector3.new(7, 0.2, 7),
+			position = Vector3.new(0, 7, 0), window = { 0, 1 } } },
+		{ key = "ICE_SHARDS", group = "Apă și gheață", label = "Cioburi de gheață (3D)", kind = "MESH", props = {
+			mode = "Debris", shape = "Wedge", material = "Ice", color = Color3.fromRGB(196, 236, 255),
+			colorEnd = Color3.fromRGB(120, 190, 240), size = Vector3.new(0.3, 0.75, 0.3), grow = { 1, 0.4 },
+			transparency = { 0.05, 1 }, lifetime = { 1, 1.5 }, speed = { 11, 20 }, spread = { 38, 38 }, direction = "Top",
+			spin = 16, jitter = 0.5, position = Vector3.new(0, 0.3, 0), bursts = { { 0, 9 } } } },
+		{ key = "ICE_CRACKS", group = "Apă și gheață", label = "Crăpături de gheață (pe sol)", kind = "MESH", props = {
+			ground = true, mode = "Crack", shape = "Block", material = "Ice", color = Color3.fromRGB(214, 242, 255),
+			colorEnd = Color3.fromRGB(120, 190, 240), size = Vector3.new(0.2, 0.08, 1), transparency = { 0.05, 1 },
+			lifetime = { 1.4, 1.9 }, count = 9, radius = { 1.5, 3.6 }, position = Vector3.new(0, 0.03, 0), bursts = { { 0, 1 } } } },
+		{ key = "WATER_DROPS3D", group = "Apă și gheață", label = "Picături 3D (cad cu fizică)", kind = "MESH", props = {
+			mode = "Debris", shape = "Ball", material = "Glass", color = Color3.fromRGB(170, 220, 255), size = Vector3.new(0.22, 0.22, 0.22),
+			grow = { 1, 0.5 }, transparency = { 0.25, 1 }, lifetime = { 0.9, 1.3 }, speed = { 7, 14 }, spread = { 35, 35 },
+			direction = "Top", spin = 0, jitter = 0.5, position = Vector3.new(0, 0.4, 0), bursts = { { 0, 14 } } } },
+		{ key = "ICE_LIGHT", group = "Lumini", label = "Lumină rece (gheață)", kind = "LIGHT", props = {
+			Color = ICE, keys = { { 0, 0, 10 }, { 0.1, 3, 18 }, { 1, 2, 16 }, { 1.6, 0, 10 } }, position = Vector3.new(0, 2, 0) } },
+		-- healing and holy light -------------------------------------------------------------------------------------
+		{ key = "HEAL_MOTES", group = "Vindecare și lumină", label = "Sclipiri verzi care urcă", kind = "PARTICLES", props = {
+			texture = "STAR4", color = { HEAL_LIGHT, HEAL }, size = { 1.6, 1.4, 0 }, transparency = { 0.1, 0.1, 1 },
+			LightEmission = 1, lifetime = { 1, 1.6 }, Rate = 22, speed = { 2, 4.5 }, spread = { 10, 10 },
+			acceleration = Vector3.new(0, 2, 0), Drag = 0.5, rotation = { 0, 360 }, rotSpeed = { -60, 60 }, shape = "Cylinder",
+			partSize = Vector3.new(3, 0.2, 3), ShapeStyle = "Surface", position = Vector3.new(0, 0.2, 0), window = { 0, 0.9 } } },
+		{ key = "HEAL_RING", group = "Vindecare și lumină", label = "Inel care urcă (scanare)", kind = "PARTICLES", props = {
+			texture = "RING_SOFT", Orientation = "VelocityPerpendicular", color = { HEAL_LIGHT, HEAL },
+			size = { 5, 5.5, 4.5 }, transparency = { 1, 0.15, 1, mid = 0.25 }, LightEmission = 1, lifetime = 0.9, speed = 3.2,
+			spread = { 0, 0 }, position = Vector3.new(0, 0.1, 0), bursts = { { 0, 1 } } } },
+		{ key = "HOLY_FLARE", group = "Vindecare și lumină", label = "Flare sfânt (stea mare)", kind = "PARTICLES", props = {
+			texture = "STAR_BURST", color = { Color3.fromRGB(255, 250, 222), GOLD }, size = { 2, 14, 18, mid = 0.35 },
+			transparency = { 0.1, 0.25, 1, mid = 0.35 }, LightEmission = 1, Brightness = 1.5, lifetime = 0.7, speed = 0,
+			rotation = { 0, 30 }, rotSpeed = 25, ZOffset = 2, bursts = { { 0, 1 } } } },
+		{ key = "HOLY_PILLAR", group = "Vindecare și lumină", label = "Coloană de lumină", kind = "MESH", props = {
+			mode = "Pulse", shape = "Block", material = "Neon", color = Color3.fromRGB(255, 234, 160),
+			colorEnd = Color3.fromRGB(255, 196, 80), size = Vector3.new(1.6, 14, 1.6), grow = { 0.9, 1.3 },
+			transparency = { 0.3, 1 }, lifetime = 1, position = Vector3.new(0, 6.3, 0), bursts = { { 0, 1 } } } },
+		{ key = "HEAL_LIGHT", group = "Lumini", label = "Lumină verde (vindecare)", kind = "LIGHT", props = {
+			Color = HEAL, keys = { { 0, 0, 8 }, { 0.3, 2.5, 16 }, { 1.1, 2.5, 16 }, { 1.6, 0, 10 } }, position = Vector3.new(0, 2, 0) } },
+		{ key = "HOLY_LIGHT", group = "Lumini", label = "Lumină sfântă (aurie)", kind = "LIGHT", props = {
+			Color = GOLD, keys = { { 0, 0, 10 }, { 0.25, 4, 24 }, { 0.9, 2.5, 20 }, { 1.6, 0, 12 } }, position = Vector3.new(0, 3, 0) } },
+		-- darkness and poison ----------------------------------------------------------------------------------------
+		{ key = "DARK_SMOKE", group = "Întuneric și otravă", label = "Fum întunecat (energie)", kind = "PARTICLES", props = {
+			texture = "SMOKE_SOFT", color = { Color3.fromRGB(55, 22, 86), Color3.fromRGB(14, 8, 22) }, size = { 2, 4, 6 },
+			transparency = { 0.25, 0.5, 1 }, LightEmission = 0, LightInfluence = 0.2, lifetime = { 0.9, 1.5 }, Rate = 28,
+			speed = { 1, 3 }, spread = { 180, 180 }, Drag = 1.5, acceleration = Vector3.new(0, 2.5, 0), rotation = { 0, 360 },
+			rotSpeed = { -35, 35 }, shape = "Sphere", partSize = Vector3.new(2.4, 3, 2.4), position = Vector3.new(0, 2, 0),
+			window = { 0, 1 } } },
+		{ key = "DARK_WISPS", group = "Întuneric și otravă", label = "Aburi violet (energie)", kind = "PARTICLES", props = {
+			texture = "SMOKE_WISP", color = { Color3.fromRGB(190, 110, 255), Color3.fromRGB(60, 20, 120) }, size = { 3.6, 5.2, 6.8 },
+			transparency = { 0.35, 0.55, 1 }, LightEmission = 0.8, lifetime = { 0.7, 1.2 }, Rate = 16, speed = { 2, 5 },
+			acceleration = Vector3.new(0, 4, 0), rotation = { 0, 360 }, rotSpeed = { -60, 60 }, shape = "Cylinder",
+			partSize = Vector3.new(3, 0.2, 3), ShapeStyle = "Surface", position = Vector3.new(0, 0.2, 0), window = { 0, 1 } } },
+		{ key = "POISON_BUBBLES", group = "Întuneric și otravă", label = "Bule otrăvitoare", kind = "PARTICLES", props = {
+			texture = "RING_SOFT", color = { Color3.fromRGB(150, 255, 90), TOXIC_DEEP }, size = { 1.4, 2, 2.6 },
+			transparency = { 0.25, 0.4, 1 }, LightEmission = 0.6, lifetime = { 0.9, 1.5 }, Rate = 14, speed = { 1.5, 3.5 },
+			spread = { 20, 20 }, acceleration = Vector3.new(0, 3, 0), Drag = 1, shape = "Disc", partSize = Vector3.new(3, 0.1, 3),
+			position = Vector3.new(0, 0.3, 0), window = { 0, 1 } } },
+		{ key = "POISON_CLOUD", group = "Întuneric și otravă", label = "Nor toxic", kind = "PARTICLES", props = {
+			texture = "SMOKE", color = { TOXIC, TOXIC_DEEP }, size = { 3, 5, 7 }, transparency = { 0.45, 0.6, 1 },
+			LightEmission = 0.35, LightInfluence = 0.4, lifetime = { 1.2, 1.8 }, Rate = 10, speed = { 0.5, 2 },
+			spread = { 180, 180 }, Drag = 1, acceleration = Vector3.new(0, 0.8, 0), rotation = { 0, 360 }, rotSpeed = { -25, 25 },
+			shape = "Disc", partSize = Vector3.new(3.5, 0.2, 3.5), position = Vector3.new(0, 0.4, 0), window = { 0, 1 } } },
+		-- combat -----------------------------------------------------------------------------------------------------
+		{ key = "HIT_SPARK", group = "Luptă", label = "Scântei de lovitură (dungi)", kind = "PARTICLES", props = {
+			texture = "GLOW", Orientation = "VelocityParallel", squash = -2.6, color = { Color3.fromRGB(255, 248, 215), Color3.fromRGB(255, 150, 50) },
+			size = { 0.8, 0.6, 0 }, transparency = { 0, 0.1, 1 }, LightEmission = 1, lifetime = { 0.1, 0.25 },
+			speed = { 25, 50 }, spread = { 180, 180 }, Drag = 2, bursts = { { 0, 14 } } } },
+		{ key = "SLASH_MARK", group = "Luptă", label = "Tăietură (urmă de lamă)", kind = "PARTICLES", props = {
+			texture = "SCRATCH", color = { WHITE, Color3.fromRGB(170, 215, 255) }, size = { 4, 10, 11, mid = 0.18 },
+			transparency = { 0, 0.1, 1, mid = 0.18 }, LightEmission = 1, Brightness = 1.5, ZOffset = 1.5, lifetime = 0.22,
+			speed = 0, rotation = { -20, 20 }, bursts = { { 0, 1 } } } },
+		{ key = "SLASH_TRAIL", group = "Luptă", label = "Dâră de sabie (în mână)", kind = "TRAIL", props = {
+			texture = "GLOW", color = { WHITE, Color3.fromRGB(160, 215, 255) }, transparency = { 0, 1 }, LightEmission = 1,
+			lifetime = 0.22, widthEnd = 0, height = 3.6, window = { 0, 0.5 } } },
+		-- movement ---------------------------------------------------------------------------------------------------
+		{ key = "SPEED_LINES", group = "Mișcare", label = "Linii de viteză (în spate)", kind = "PARTICLES", props = {
+			texture = "GLOW", Orientation = "VelocityParallel", squash = -2.6, color = { WHITE, Color3.fromRGB(190, 225, 255) },
+			size = { 0.55, 0.45, 0 }, transparency = { 0.35, 0.45, 1 }, LightEmission = 0.9, lifetime = { 0.15, 0.3 }, Rate = 50,
+			speed = { 38, 60 }, spread = { 5, 5 }, EmissionDirection = "Back", shape = "Box", partSize = Vector3.new(3.5, 4.5, 1),
+			window = { 0, 1 } } },
+		{ key = "AIR_RING", group = "Mișcare", label = "Inel de aer (în spate)", kind = "PARTICLES", props = {
+			texture = "RING_SOFT", Orientation = "VelocityPerpendicular", EmissionDirection = "Back",
+			color = { WHITE, Color3.fromRGB(200, 230, 255) }, size = { 2, 7, 10, mid = 0.5 }, transparency = { 0.3, 0.45, 1, mid = 0.5 },
+			LightEmission = 0.8, lifetime = 0.35, speed = { 7, 10 }, spread = { 0, 0 }, position = Vector3.new(0, 0.2, 0.8),
+			bursts = { { 0, 1 } } } },
+		{ key = "DASH_WIND", group = "Mișcare", label = "Vânt (fum în spate)", kind = "PARTICLES", props = {
+			texture = "SMOKE_WISP", color = { Color3.fromRGB(235, 242, 250), Color3.fromRGB(200, 215, 230) }, size = { 2.5, 5, 7 },
+			transparency = { 0.5, 0.65, 1 }, LightEmission = 0.2, LightInfluence = 0.9, lifetime = { 0.3, 0.55 }, Rate = 36,
+			speed = { 6, 13 }, spread = { 22, 22 }, EmissionDirection = "Back", shape = "Box", partSize = Vector3.new(2.5, 4, 1),
+			rotation = { 0, 360 }, rotSpeed = { -40, 40 }, window = { 0, 0.4 } } },
+		{ key = "DASH_TRAIL", group = "Mișcare", label = "Dâră de viteză", kind = "TRAIL", props = {
+			texture = "GLOW", color = { WHITE, Color3.fromRGB(190, 225, 255) }, transparency = { 0.25, 1 }, LightEmission = 0.9,
+			lifetime = 0.4, widthEnd = 0.05, height = 3.2, window = { 0, 0.5 } } },
+		{ key = "LAND_DUST", group = "Mișcare", label = "Praf la aterizare (greu)", kind = "PARTICLES", props = {
+			texture = "SMOKE_SOFT", color = Color3.fromRGB(176, 164, 148), size = { 1.6, 3.6, 4.8 }, transparency = { 0.45, 0.65, 1 },
+			LightEmission = 0, LightInfluence = 1, lifetime = { 0.5, 0.9 }, speed = { 9, 15 }, spread = { 180, 0 }, Drag = 5,
+			rotation = { 0, 360 }, rotSpeed = { -40, 40 }, shape = "Disc", partSize = Vector3.new(2.6, 0.1, 2.6),
+			acceleration = Vector3.new(0, 1.2, 0), position = Vector3.new(0, 0.25, 0), bursts = { { 0, 26 } } } },
+		{ key = "PORTAL_SWIRL", group = "Mișcare", label = "Vârtej de portal (pe sol)", kind = "PARTICLES", props = {
+			texture = "SWIRL", Orientation = "VelocityPerpendicular", color = { Color3.fromRGB(140, 100, 255), Color3.fromRGB(90, 210, 255) },
+			size = { 2, 13, 14, mid = 0.15 }, transparency = { 1, 0.1, 1, mid = 0.2 }, LightEmission = 1, Brightness = 1.5,
+			lifetime = 1.4, speed = 0.01, rotSpeed = 200, LockedToPart = true, position = Vector3.new(0, 0.1, 0), bursts = { { 0, 1 } } } },
+		{ key = "PORTAL_STANDING", group = "Mișcare", label = "Portal vertical (în față)", kind = "PARTICLES", props = {
+			texture = "SWIRL", Orientation = "VelocityPerpendicular", EmissionDirection = "Front",
+			color = { Color3.fromRGB(140, 100, 255), Color3.fromRGB(90, 210, 255) }, size = { 3, 13, 14, mid = 0.2 },
+			transparency = { 1, 0.1, 1, mid = 0.2 }, LightEmission = 1, Brightness = 1.5, lifetime = 1.6, speed = 0.01, rotSpeed = 160,
+			LockedToPart = true, position = Vector3.new(0, 4, 0), bursts = { { 0, 1 } } } },
+		{ key = "COLUMN_STREAKS", group = "Mișcare", label = "Raze verticale (coloană)", kind = "PARTICLES", props = {
+			texture = "GLOW", Orientation = "VelocityParallel", squash = -2.6, color = { WHITE, VIOLET }, size = { 0.7, 0.5, 0 },
+			transparency = { 0.1, 0.2, 1 }, LightEmission = 1, lifetime = { 0.3, 0.55 }, Rate = 90, speed = { 22, 38 },
+			spread = { 2, 2 }, shape = "Cylinder", partSize = Vector3.new(3.2, 0.2, 3.2), ShapeStyle = "Surface",
+			window = { 0, 0.5 } } },
+		-- fire, impact, fun ------------------------------------------------------------------------------------------
+		{ key = "FIREBALL", group = "Foc, fum și praf", label = "Minge de foc (explozie)", kind = "PARTICLES", props = {
+			texture = "EXPLOSION", color = { Color3.fromRGB(255, 236, 170), Color3.fromRGB(255, 128, 30), Color3.fromRGB(70, 24, 12), mid = 0.35 },
+			size = { 2, 7, 10, mid = 0.35 }, transparency = { 0.1, 0.35, 1, mid = 0.5 }, LightEmission = 0.85,
+			lifetime = { 0.4, 0.7 }, speed = { 3, 9 }, spread = { 180, 180 }, Drag = 3, rotation = { 0, 360 },
+			rotSpeed = { -60, 60 }, position = Vector3.new(0, 1, 0), bursts = { { 0, 7 } } } },
+		{ key = "EMBERS", group = "Foc, fum și praf", label = "Jar care zboară", kind = "PARTICLES", props = {
+			texture = "EMBERS", color = { Color3.fromRGB(255, 190, 80), Color3.fromRGB(255, 70, 15) }, size = { 1.1, 1, 0 },
+			transparency = { 0.05, 0.1, 1 }, LightEmission = 1, lifetime = { 0.8, 1.6 }, Rate = 26, speed = { 3, 9 },
+			spread = { 25, 25 }, acceleration = Vector3.new(0, 5, 0), Drag = 0.4, rotation = { 0, 360 }, rotSpeed = { -60, 60 },
+			shape = "Disc", partSize = Vector3.new(2.2, 0.1, 2.2), position = Vector3.new(0, 0.2, 0), window = { 0, 1 } } },
+		{ key = "FIRE_LIGHT", group = "Lumini", label = "Lumină de foc (se stinge)", kind = "LIGHT", props = {
+			Color = Color3.fromRGB(255, 150, 60), keys = { { 0, 0, 10 }, { 0.05, 6, 22 }, { 0.25, 3.5, 18 }, { 0.6, 1.5, 14 }, { 1, 0, 10 } },
+			position = Vector3.new(0, 2, 0) } },
+		{ key = "ELECTRIC_LIGHT", group = "Lumini", label = "Lumină electrică (pâlpâie)", kind = "LIGHT", props = {
+			Color = Color3.fromRGB(130, 210, 255), keys = { { 0, 0, 14 }, { 0.03, 8, 20 }, { 0.07, 1, 14 }, { 0.11, 9, 22 },
+				{ 0.17, 2, 15 }, { 0.23, 7, 18 }, { 0.4, 0, 12 } }, position = Vector3.new(0, 3, 0) } },
+		{ key = "CONFETTI", group = "Sărbătoare", label = "Confetti", kind = "PARTICLES", props = {
+			texture = "SQUARE", color = { Color3.fromRGB(255, 92, 170), Color3.fromRGB(255, 225, 90), Color3.fromRGB(90, 200, 255) },
+			size = { 0.5, 0.5, 0.45 }, transparency = { 0, 0, 1, mid = 0.8 }, LightEmission = 0.15, LightInfluence = 0.6,
+			lifetime = { 1.3, 2.1 }, speed = { 16, 28 }, spread = { 45, 45 }, Drag = 1.8, acceleration = Vector3.new(0, -16, 0),
+			rotation = { 0, 360 }, rotSpeed = { -420, 420 }, position = Vector3.new(0, 1, 0), bursts = { { 0, 36 } } } },
+		{ key = "COINS_BURST", group = "Sărbătoare", label = "Monede (explozie 3D)", kind = "MESH", props = {
+			mode = "Debris", shape = "Cylinder", material = "Neon", color = Color3.fromRGB(255, 205, 50),
+			colorEnd = Color3.fromRGB(255, 160, 20), size = Vector3.new(0.12, 0.8, 0.8), grow = { 1, 0.6 }, transparency = { 0, 1 },
+			lifetime = { 1.5, 2.1 }, speed = { 13, 23 }, spread = { 32, 32 }, direction = "Top", spin = 14, jitter = 0.2,
+			position = Vector3.new(0, 1, 0), bursts = { { 0, 12 } } } },
+		-- shields and auras ------------------------------------------------------------------------------------------
+		-- 3D pieces stay where they were spawned (they are anchored), so a shield that must follow a character is made of particles
+		{ key = "SHIELD_AURA", group = "Scut și aură", label = "Scut: contur luminos (urmărește)", kind = "PARTICLES", props = {
+			texture = "RING_SOFT", color = { Color3.fromRGB(190, 235, 255), Color3.fromRGB(100, 200, 255) }, size = 10.5,
+			transparency = { { 0, 1 }, { 0.08, 0.35 }, { 0.85, 0.5 }, { 1, 1 } }, LightEmission = 1, ZOffset = 0.5, lifetime = 2,
+			speed = 0, LockedToPart = true, bursts = { { 0, 1 } } } },
+		{ key = "SHIELD_GLOW", group = "Scut și aură", label = "Scut: strălucire interioară (urmărește)", kind = "PARTICLES", props = {
+			texture = "GLOW", color = { Color3.fromRGB(150, 215, 255), Color3.fromRGB(80, 170, 255) }, size = 8.4,
+			transparency = { { 0, 1 }, { 0.08, 0.78 }, { 0.85, 0.86 }, { 1, 1 } }, LightEmission = 0.8, lifetime = 2, speed = 0,
+			LockedToPart = true, bursts = { { 0, 1 } } } },
+		{ key = "SHIELD_BUBBLE", group = "Scut și aură", label = "Bulă de scut (ForceField)", kind = "MESH", props = {
+			mode = "Pulse", shape = "Ball", material = "ForceField", color = Color3.fromRGB(100, 200, 255),
+			colorEnd = Color3.fromRGB(60, 130, 255), size = Vector3.new(1, 1, 1), grow = { 6.4, 7.2 }, transparency = { 0.35, 1 },
+			lifetime = 1.6, position = Vector3.new(0, 3, 0), bursts = { { 0, 1 } } } },
+	}
+	local GROUPS = {
+		SPARKLES = "Magie și energie", RISING = "Magie și energie", MAGIC_CIRCLE = "Magie și energie", STAR_FLASH = "Magie și energie",
+		IMPLOSION = "Magie și energie", MOTES = "Magie și energie", MAGIC_TRAIL = "Magie și energie",
+		SHOCKWAVE = "Impact", FLASH = "Impact", STREAKS = "Impact", RING3D = "Impact", DOME3D = "Impact",
+		SMOKE = "Foc, fum și praf", DUST = "Foc, fum și praf", FIRE = "Foc, fum și praf", PUFF3D = "Foc, fum și praf",
+		CRACK3D = "Sol (urme și pietre)", GROOVE3D = "Sol (urme și pietre)", SCAR3D = "Sol (urme și pietre)",
+		DEBRIS3D = "Sol (urme și pietre)", GROUND_RIBBON = "Sol (urme și pietre)", GROUND_SCORCH = "Sol (urme și pietre)",
+		GROUND_CORE = "Sol (urme și pietre)", FLASH_LIGHT = "Lumini", GLOW_LIGHT = "Lumini",
+	}
+	for _, p in Editor.PRESETS do
+		p.group = p.group or GROUPS[p.key]
+	end
+	for _, p in more do
+		table.insert(Editor.PRESETS, p)
+	end
+end
+
 local PRESET_BY_KEY = {}
 for _, p in Editor.PRESETS do
 	PRESET_BY_KEY[p.key] = p
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- templates: complete multi-element effects (Editor.newFromTemplate builds one in a single undo step)
+--   { key, label, category, desc, duration, attach, main = the template's hero colour (what a recolour replaces),
+--     elements = { { preset = KEY, props = { overrides of the preset: name, position, bursts, window... } } } }
+-- Times are seconds from the start of the effect; `window = false` switches the preset's continuous emission off.
+-- ---------------------------------------------------------------------------------------------
+Editor.TEMPLATES = {}
+do
+	local C = Color3.fromRGB
+	local V = Vector3.new
+	local function el(preset, props)
+		return { preset = preset, props = props or {} }
+	end
+	local HIT = V(0, 0.4, -1.1) -- in front of the chest of a target (attach TORSO)
+
+	local list = {
+		{ key = "PUNCH", label = "Lovitură de pumn", category = "Luptă", duration = 0.5, attach = "TORSO", main = C(255, 176, 80),
+			desc = "Impact scurt pe trunchiul țintei: flash, stea, scântei, undă și puțin fum. Pune-l pe un marker de animație.",
+			elements = {
+				el("FLASH", { name = "Flash", color = { C(255, 242, 214), C(255, 160, 70) }, size = { 2, 6, 7, mid = 0.3 }, lifetime = 0.18,
+					position = HIT }),
+				el("STAR_FLASH", { name = "Stea impact", color = { WHITE, C(255, 190, 90) }, size = { 1, 11, 3, mid = 0.3 }, lifetime = 0.2,
+					position = HIT }),
+				el("HIT_SPARK", { name = "Scântei", position = HIT }),
+				el("AIR_RING", { name = "Undă impact", EmissionDirection = "Front", color = { WHITE, C(255, 200, 140) },
+					size = { 1, 5, 8, mid = 0.5 }, lifetime = 0.28, speed = { 3, 5 }, position = HIT }),
+				el("SMOKE", { name = "Fum mic", color = { C(120, 108, 100), C(52, 46, 44) }, size = { 0.8, 2, 3 }, lifetime = { 0.35, 0.6 },
+					speed = { 2, 5 }, bursts = { { 0.02, 5 } }, position = HIT }),
+				el("FLASH_LIGHT", { name = "Lumină impact", Color = C(255, 170, 80), position = V(0, 0.5, -1.4),
+					keys = { { 0, 0, 10 }, { 0.03, 5, 14 }, { 0.2, 0, 8 } } }),
+			} },
+		{ key = "SLASH", label = "Tăietură de sabie", category = "Luptă", duration = 0.6, attach = "TORSO", main = C(150, 210, 255),
+			desc = "Două tăieturi încrucișate pe țintă, cu scântei și o sclipire. Pentru dâra din mâna atacatorului vezi „Dâră de sabie”.",
+			elements = {
+				el("SLASH_MARK", { name = "Tăietură 1", rotation = { -20, -10 }, position = HIT }),
+				el("SLASH_MARK", { name = "Tăietură 2", rotation = { 70, 80 }, size = { 3, 9, 10, mid = 0.18 }, position = HIT,
+					bursts = { { 0.08, 1 } } }),
+				el("HIT_SPARK", { name = "Scântei 1", position = HIT, bursts = { { 0.02, 10 } } }),
+				el("HIT_SPARK", { name = "Scântei 2", position = HIT, bursts = { { 0.1, 8 } } }),
+				el("STAR_FLASH", { name = "Sclipire", color = { WHITE, C(150, 210, 255) }, size = { 1, 9, 2, mid = 0.3 }, lifetime = 0.18,
+					position = HIT, bursts = { { 0.02, 1 } } }),
+				el("FLASH_LIGHT", { name = "Lumină", Color = C(150, 210, 255), position = V(0, 0.5, -1.4),
+					keys = { { 0, 0, 10 }, { 0.03, 4, 14 }, { 0.12, 0, 8 }, { 0.14, 4, 14 }, { 0.3, 0, 8 } } }),
+			} },
+		{ key = "SWORD_TRAIL", label = "Dâră de sabie", category = "Luptă", duration = 0.7, attach = "RIGHT_HAND", main = C(150, 210, 255),
+			desc = "Dâră luminoasă prinsă de mâna dreaptă: se vede cât timp mâna se mișcă (pune-o pe animația loviturii). Mută „Poziție” pe lamă.",
+			elements = {
+				el("SLASH_TRAIL", { name = "Dâră lamă", height = 4.5, window = { 0, 0.55 } }),
+				el("SLASH_TRAIL", { name = "Miez alb", color = WHITE, lifetime = 0.12, height = 4.5, window = { 0, 0.55 } }),
+				el("MOTES", { name = "Sclipiri", color = { WHITE, C(150, 210, 255) }, size = { 0, 0.4, 0 }, Rate = 40, speed = { 0.5, 2 },
+					lifetime = { 0.3, 0.6 }, shape = "Box", partSize = V(0.6, 4, 0.6), window = { 0, 0.55 } }),
+			} },
+		{ key = "GROUND_SLAM", label = "Ground Slam", category = "Luptă", duration = 1.1, attach = "GROUND", main = C(255, 150, 60),
+			desc = "Lovitură în sol: undă, inel 3D, crăpături, pietre, praf, raze și un dom de energie.",
+			elements = {
+				el("SHOCKWAVE", { name = "Undă pe sol", color = { WHITE, C(255, 160, 70) } }),
+				el("RING3D", { name = "Inel 3D", color = C(255, 170, 70), colorEnd = C(150, 60, 20) }),
+				el("CRACK3D", { name = "Crăpături", count = 9, radius = { 2, 5 } }),
+				el("DEBRIS3D", { name = "Pietre", bursts = { { 0, 8 } }, window = { 0, 0.3 } }),
+				el("LAND_DUST", { name = "Praf", size = { 2, 4.4, 6 }, bursts = { { 0, 30 } } }),
+				el("STREAKS", { name = "Raze", color = { WHITE, C(255, 160, 70) } }),
+				el("FLASH", { name = "Flash", color = { C(255, 240, 210), C(255, 150, 60) }, size = { 2, 9, 10, mid = 0.3 },
+					position = V(0, 1, 0) }),
+				el("DOME3D", { name = "Dom de energie", color = C(255, 150, 50), colorEnd = C(120, 40, 10), grow = { 1.5, 9 },
+					transparency = { 0.2, 1 }, lifetime = 0.3 }),
+				el("FLASH_LIGHT", { name = "Lumină", Color = C(255, 160, 70), keys = { { 0, 0, 12 }, { 0.04, 6, 18 }, { 0.4, 0, 12 } } }),
+			} },
+		{ key = "LIGHTNING", label = "Fulger", category = "Elemente", duration = 1, attach = "GROUND", main = C(125, 210, 255),
+			desc = "Trăznet care lovește solul: fulgere în stroboscop, arcuri, scântei, undă, fum și lumină electrică.",
+			elements = {
+				el("LIGHTNING_BOLT", { name = "Trăznet", bursts = { { 0, 1 }, { 0.07, 1 }, { 0.15, 1 }, { 0.3, 1 } } }),
+				el("FLASH", { name = "Flash cer", color = { WHITE, C(140, 215, 255) }, size = { 4, 16, 20, mid = 0.3 }, lifetime = 0.25,
+					position = V(0, 3, 0), bursts = { { 0, 1 }, { 0.15, 1 } } }),
+				el("ELECTRIC_ARC", { name = "Arcuri", position = V(0, 0.8, 0), bursts = { { 0, 3 }, { 0.07, 3 }, { 0.14, 2 }, { 0.28, 3 } } }),
+				el("ELECTRIC_SPARKS", { name = "Scântei", position = V(0, 0.5, 0), bursts = { { 0, 18 } } }),
+				el("SHOCKWAVE", { name = "Undă", color = { WHITE, C(140, 215, 255) }, size = { 1, 6, 9, mid = 0.45 }, lifetime = 0.35 }),
+				el("SMOKE", { name = "Fum", color = { C(90, 90, 100), C(40, 40, 50) }, size = { 1, 2.6, 4 }, speed = { 1, 3 },
+					bursts = { { 0.05, 6 } }, position = V(0, 0.3, 0) }),
+				el("CRACK3D", { name = "Urmă arsă", count = 6, radius = { 1, 2.4 } }),
+				el("ELECTRIC_LIGHT", { name = "Lumină" }),
+			} },
+		{ key = "FIRE_EXPLOSION", label = "Explozie de foc", category = "Elemente", duration = 1.3, attach = "GROUND", main = C(255, 140, 40),
+			desc = "Minge de foc cu flash, undă, jar, fum negru, pietre, dom de foc și lumină care se stinge.",
+			elements = {
+				el("FIREBALL", { name = "Minge de foc", bursts = { { 0, 7 }, { 0.08, 5 } } }),
+				el("FLASH", { name = "Flash", color = { C(255, 245, 215), C(255, 160, 60) }, size = { 3, 12, 14, mid = 0.3 },
+					position = V(0, 1.5, 0) }),
+				el("SHOCKWAVE", { name = "Undă", color = { WHITE, C(255, 150, 60) }, size = { 1, 11, 16, mid = 0.45 } }),
+				el("EMBERS", { name = "Jar", window = false, speed = { 8, 20 }, spread = { 70, 70 }, acceleration = V(0, -6, 0),
+					position = V(0, 1, 0), bursts = { { 0, 26 } } }),
+				el("SMOKE", { name = "Fum negru", color = { C(80, 70, 66), C(26, 24, 24) }, size = { 3, 6, 9 }, transparency = { 0.3, 0.5, 1 },
+					lifetime = { 1.1, 1.7 }, speed = { 2, 6 }, acceleration = V(0, 2.5, 0), LightEmission = 0, position = V(0, 1.5, 0),
+					bursts = { { 0.1, 9 } } }),
+				el("DEBRIS3D", { name = "Pietre", bursts = { { 0, 10 } }, window = { 0, 0.2 } }),
+				el("DOME3D", { name = "Dom de foc", color = C(255, 150, 50), colorEnd = C(140, 50, 10), grow = { 1.5, 10 },
+					transparency = { 0.25, 1 }, lifetime = 0.35 }),
+				el("FIRE_LIGHT", { name = "Lumină" }),
+			} },
+		{ key = "HEAL", label = "Vindecare", category = "Suport", duration = 1.8, attach = "GROUND_FOLLOW", main = C(110, 255, 150),
+			desc = "Cerc pe sol, inele care urcă, sclipiri verzi și o lumină blândă. Urmărește personajul.",
+			elements = {
+				el("MAGIC_CIRCLE", { name = "Cerc", color = C(110, 255, 150), size = { 3, 5.5, 5.8, mid = 0.25 }, lifetime = 1.2 }),
+				el("HEAL_RING", { LockedToPart = true, name = "Inel care urcă", bursts = { { 0.1, 1 }, { 0.5, 1 }, { 0.9, 1 } } }),
+				el("HEAL_MOTES", { LockedToPart = true, name = "Sclipiri", window = { 0, 1.4 } }),
+				el("FLASH", { LockedToPart = true, name = "Strălucire", color = { C(220, 255, 230), C(110, 255, 150) }, size = { 2, 5, 6, mid = 0.3 },
+					transparency = { 0.5, 0.7, 1, mid = 0.3 }, lifetime = 0.5, position = V(0, 1.5, 0), bursts = { { 0.05, 1 } } }),
+				el("HEAL_LIGHT", { name = "Lumină" }),
+			} },
+		{ key = "TELEPORT", label = "Teleport", category = "Mișcare", duration = 1.4, attach = "GROUND", main = C(158, 92, 255),
+			desc = "Cerc magic și vârtej, raze care urcă, apoi implozie, flash și explozie de scântei în momentul plecării.",
+			elements = {
+				el("MAGIC_CIRCLE", { name = "Cerc magic", lifetime = 1.2 }),
+				el("PORTAL_SWIRL", { name = "Vârtej", bursts = { { 0.05, 1 } } }),
+				el("COLUMN_STREAKS", { name = "Raze", window = { 0.15, 0.8 } }),
+				el("IMPLOSION", { name = "Implozie", position = V(0, 2, 0), bursts = { { 0.6, 1 } } }),
+				el("FLASH", { name = "Flash", size = { 2, 9, 10, mid = 0.3 }, position = V(0, 2.5, 0), bursts = { { 0.75, 1 } } }),
+				el("STAR_FLASH", { name = "Stea", position = V(0, 2.5, 0), bursts = { { 0.75, 1 } } }),
+				el("SHOCKWAVE", { name = "Undă", bursts = { { 0.75, 1 } } }),
+				el("SPARKLES", { name = "Scântei", position = V(0, 2.5, 0), bursts = { { 0.75, 26 } } }),
+				el("FLASH_LIGHT", { name = "Lumină", position = V(0, 2, 0),
+					keys = { { 0, 0, 8 }, { 0.3, 3, 14 }, { 0.7, 4, 16 }, { 0.78, 8, 20 }, { 1.1, 0, 10 } } }),
+			} },
+		{ key = "DASH", label = "Dash", category = "Mișcare", duration = 0.6, attach = "ROOT", main = C(190, 230, 255),
+			desc = "Linii de viteză și vânt în spate, un inel de aer la start, dâră și praf la picioare. Pune-l pe personaj, în direcția mișcării.",
+			elements = {
+				el("SPEED_LINES", { name = "Linii de viteză", window = { 0, 0.45 } }),
+				el("AIR_RING", { name = "Inel de aer" }),
+				el("DASH_WIND", { name = "Vânt" }),
+				el("DASH_TRAIL", { name = "Dâră" }),
+				el("LAND_DUST", { name = "Praf la picioare", size = { 1, 2.4, 3.2 }, position = V(0, -2.9, 0), bursts = { { 0, 14 } } }),
+			} },
+		{ key = "POWER_AURA", label = "Aură de putere (loop)", category = "Suport", duration = 3, attach = "GROUND_FOLLOW", main = C(255, 190, 60),
+			desc = "Aură continuă de 3 s: raze, flăcări, scântei și un puls pe sol în fiecare secundă. În joc o repeți din cod (VFX.play la fiecare ~2,8 s); aici, cu 🔁 Repetă.",
+			elements = {
+				el("COLUMN_STREAKS", { name = "Raze aură", Rate = 55, speed = { 5, 10 }, lifetime = { 0.4, 0.8 }, partSize = V(3.6, 0.2, 3.6),
+					size = { 0.6, 0.5, 0 }, color = { WHITE, C(255, 190, 60) }, LockedToPart = true, window = { 0, 3 } }),
+				el("FIRE", { name = "Flăcări", color = { C(255, 190, 70), C(255, 90, 20) }, size = { 1.8, 1.4, 0.5 }, transparency = { 0.35, 0.4, 1 },
+					lifetime = { 0.5, 0.9 }, speed = { 3, 6 }, acceleration = V(0, 7, 0), shape = "Cylinder", partSize = V(3, 0.2, 3),
+					ShapeStyle = "Surface", LockedToPart = true, window = { 0, 3 } }),
+				el("RISING", { name = "Scântei", color = { WHITE, C(255, 190, 60) }, partSize = V(3.6, 0.3, 3.6), LockedToPart = true,
+					window = { 0, 3 } }),
+				el("SHOCKWAVE", { name = "Puls pe sol", color = { WHITE, C(255, 190, 60) }, size = { 2, 9, 11, mid = 0.45 }, lifetime = 0.9,
+					bursts = { { 0, 1 }, { 1, 1 }, { 2, 1 } } }),
+				el("GLOW_LIGHT", { name = "Lumină", Color = C(255, 190, 60), Brightness = 2, Range = 14, position = V(0, 3, 0) }),
+			} },
+		{ key = "SHIELD", label = "Scut", category = "Suport", duration = 2.2, attach = "ROOT", main = C(90, 190, 255),
+			desc = "Bulă de energie în jurul personajului (conturul și strălucirea urmăresc personajul), cu o apariție bruscă, scântei și o undă pe sol.",
+			elements = {
+				el("SHIELD_AURA", { name = "Contur scut", lifetime = 2.2 }),
+				el("SHIELD_GLOW", { name = "Strălucire scut", lifetime = 2.2 }),
+				el("SHIELD_BUBBLE", { name = "Bulă la activare", position = V(0, 0, 0), grow = { 5, 7.6 }, lifetime = 0.5 }),
+				el("SPARKLES", { name = "Scântei", color = { WHITE, C(100, 200, 255) }, position = V(0, 0, 0), speed = { 8, 16 },
+					bursts = { { 0, 24 } } }),
+				el("SHOCKWAVE", { name = "Undă pe sol", color = { WHITE, C(100, 200, 255) }, position = V(0, -2.9, 0), size = { 1, 7, 10, mid = 0.45 } }),
+				el("GLOW_LIGHT", { name = "Lumină", Color = C(90, 190, 255), position = V(0, 0, 0),
+					keys = { { 0, 0, 8 }, { 0.2, 3, 18 }, { 1.8, 2, 16 }, { 2.2, 0, 10 } } }),
+			} },
+		{ key = "FREEZE", label = "Înghețare", category = "Elemente", duration = 2, attach = "GROUND", main = C(140, 215, 255),
+			desc = "Crăpături și cioburi de gheață, ceață rece, cristale care sclipesc și fulgi care cad.",
+			elements = {
+				el("ICE_CRACKS", { name = "Crăpături de gheață" }),
+				el("ICE_SHARDS", { name = "Cioburi", bursts = { { 0, 10 }, { 0.1, 7 } } }),
+				el("FROST_MIST", { name = "Ceață rece", window = { 0, 1 } }),
+				el("FROST_SPARKLE", { name = "Cristale", window = { 0, 1.6 } }),
+				el("SNOWFALL", { name = "Fulgi", window = { 0, 1.6 } }),
+				el("SHOCKWAVE", { name = "Undă", color = { WHITE, C(140, 215, 255) }, size = { 1, 8, 12, mid = 0.45 }, lifetime = 0.45 }),
+				el("FLASH", { name = "Flash", color = { WHITE, C(140, 215, 255) }, size = { 2, 8, 9, mid = 0.3 }, position = V(0, 1.5, 0) }),
+				el("ICE_LIGHT", { name = "Lumină" }),
+			} },
+		{ key = "POISON", label = "Otrăvire", category = "Elemente", duration = 2.2, attach = "GROUND_FOLLOW", main = C(120, 230, 70),
+			desc = "Nor toxic și bule care urcă din sol, aburi, picături care cad și o lumină verzuie.",
+			elements = {
+				el("POISON_CLOUD", { LockedToPart = true, name = "Nor toxic", window = { 0, 1.8 } }),
+				el("POISON_BUBBLES", { LockedToPart = true, name = "Bule", window = { 0, 2 } }),
+				el("DARK_WISPS", { LockedToPart = true, name = "Aburi", color = { C(150, 240, 90), C(40, 90, 30) }, window = { 0, 1.8 } }),
+				el("WATER_DROPS3D", { name = "Picături toxice", color = C(140, 230, 80), bursts = { { 0.1, 8 }, { 0.7, 6 } } }),
+				el("SHOCKWAVE", { name = "Undă toxică", color = { C(190, 255, 130), C(90, 190, 60) }, size = { 1, 7, 10, mid = 0.45 }, lifetime = 0.5 }),
+				el("GLOW_LIGHT", { name = "Lumină", Color = C(120, 230, 70), Brightness = 1.5, Range = 12, position = V(0, 2, 0),
+					keys = { { 0, 0, 8 }, { 0.3, 2, 14 }, { 1.9, 2, 14 }, { 2.2, 0, 8 } } }),
+			} },
+		{ key = "LEVEL_UP", label = "Level Up", category = "Evenimente", duration = 2.2, attach = "GROUND_FOLLOW", main = C(255, 215, 90),
+			desc = "Coloană de lumină aurie, cerc magic, raze și sclipiri care urcă, un flare mare și scântei.",
+			elements = {
+				el("HOLY_PILLAR", { name = "Coloană de lumină" }),
+				el("MAGIC_CIRCLE", { name = "Cerc magic", color = C(255, 215, 90), size = { 3, 6.5, 6.8, mid = 0.25 }, lifetime = 1.4 }),
+				el("COLUMN_STREAKS", { LockedToPart = true, name = "Raze", color = { WHITE, C(255, 215, 90) }, window = { 0.1, 1 } }),
+				el("HEAL_MOTES", { LockedToPart = true, name = "Sclipiri aurii", color = { C(255, 250, 222), C(255, 214, 92) }, window = { 0.1, 1.8 } }),
+				el("HOLY_FLARE", { LockedToPart = true, name = "Flare", position = V(0, 3, 0), bursts = { { 0.15, 1 } } }),
+				el("RING3D", { name = "Inel 3D", color = C(255, 214, 92), colorEnd = C(255, 160, 40), radius = { 1, 8 }, lifetime = 0.6 }),
+				el("SPARKLES", { LockedToPart = true, name = "Scântei", color = { WHITE, C(255, 214, 92) }, position = V(0, 2.5, 0), bursts = { { 0.2, 30 } } }),
+				el("HOLY_LIGHT", { name = "Lumină" }),
+			} },
+		{ key = "LANDING", label = "Aterizare", category = "Mișcare", duration = 0.7, attach = "GROUND", main = C(190, 180, 160),
+			desc = "Praf, o undă mică, crăpături fine, pietricele și bile de fum la aterizare.",
+			elements = {
+				el("LAND_DUST", { name = "Praf" }),
+				el("SHOCKWAVE", { name = "Undă mică", color = { C(235, 230, 220), C(190, 180, 160) }, size = { 1, 6, 9, mid = 0.45 },
+					transparency = { 0.4, 0.55, 1, mid = 0.45 }, lifetime = 0.35 }),
+				el("CRACK3D", { name = "Crăpături mici", count = 6, radius = { 1, 2.2 } }),
+				el("DEBRIS3D", { name = "Pietricele", size = V(0.2, 0.18, 0.2), speed = { 5, 10 }, bursts = { { 0, 5 } }, window = { 0, 0.1 } }),
+				el("PUFF3D", { name = "Bile de praf", bursts = { { 0, 6 } } }),
+			} },
+		{ key = "WATER_SPLASH", label = "Splash de apă", category = "Elemente", duration = 1.2, attach = "GROUND", main = C(120, 190, 255),
+			desc = "Ondulații, stropi denși, picături fine și picături 3D care cad cu fizică, plus puțină ceață.",
+			elements = {
+				el("WATER_RING", { name = "Ondulații", bursts = { { 0, 1 }, { 0.2, 1 } } }),
+				el("WATER_SPLASH", { name = "Stropi", bursts = { { 0, 4 }, { 0.08, 3 } } }),
+				el("WATER_DROPLETS", { name = "Picături", bursts = { { 0, 6 }, { 0.1, 5 } } }),
+				el("WATER_DROPS3D", { name = "Picături 3D" }),
+				el("FROST_MIST", { name = "Ceață de stropi", color = { C(235, 246, 255), C(190, 225, 255) }, partSize = V(2.5, 0.2, 2.5),
+					lifetime = { 0.6, 1 }, window = { 0, 0.5 } }),
+			} },
+		{ key = "COINS", label = "Monede (recompensă)", category = "Evenimente", duration = 1.8, attach = "GROUND_FOLLOW", main = C(255, 205, 50),
+			desc = "Monede aurii aruncate în sus, cu o stea, scântei și o lumină caldă.",
+			elements = {
+				el("COINS_BURST", { name = "Monede", bursts = { { 0, 14 }, { 0.25, 10 } } }),
+				el("STAR_FLASH", { LockedToPart = true, name = "Stea", color = { WHITE, C(255, 205, 50) }, position = V(0, 3, 0) }),
+				el("SPARKLES", { LockedToPart = true, name = "Scântei", color = { WHITE, C(255, 205, 50) }, position = V(0, 3, 0), bursts = { { 0, 24 } } }),
+				el("HOLY_LIGHT", { name = "Lumină", Color = C(255, 205, 50), position = V(0, 3, 0),
+					keys = { { 0, 0, 10 }, { 0.15, 3, 18 }, { 1.2, 0, 12 } } }),
+			} },
+		{ key = "CONFETTI", label = "Confetti", category = "Evenimente", duration = 2.2, attach = "GROUND", main = C(255, 92, 170),
+			desc = "Trei culori de confetti aruncate în două valuri, cu o stea și scântei de sărbătoare.",
+			elements = {
+				el("CONFETTI", { name = "Confetti roz", color = C(255, 92, 170), bursts = { { 0, 30 }, { 0.4, 24 } } }),
+				el("CONFETTI", { name = "Confetti galben", color = C(255, 225, 90), bursts = { { 0, 30 }, { 0.4, 24 } } }),
+				el("CONFETTI", { name = "Confetti albastru", color = C(90, 200, 255), bursts = { { 0, 30 }, { 0.4, 24 } } }),
+				el("STAR_FLASH", { name = "Stea", color = { WHITE, C(255, 225, 90) }, position = V(0, 2, 0) }),
+				el("SPARKLES", { name = "Scântei", color = { WHITE, C(255, 225, 90) }, position = V(0, 2, 0), bursts = { { 0, 24 } } }),
+			} },
+		{ key = "DARK_ENERGY", label = "Energie întunecată", category = "Elemente", duration = 2.4, attach = "GROUND_FOLLOW", main = C(150, 70, 225),
+			desc = "Fum și aburi violet care urcă, un vârtej negru pe sol, o undă și o lumină slabă.",
+			elements = {
+				el("DARK_SMOKE", { LockedToPart = true, name = "Fum", window = { 0, 2 } }),
+				el("DARK_WISPS", { LockedToPart = true, name = "Aburi", window = { 0, 2 } }),
+				el("PORTAL_SWIRL", { name = "Vârtej negru", color = { C(120, 50, 200), C(30, 10, 60) }, bursts = { { 0, 1 }, { 1, 1 } } }),
+				el("SHOCKWAVE", { name = "Undă", color = { C(190, 120, 255), C(70, 20, 140) }, size = { 1, 8, 12, mid = 0.45 }, lifetime = 0.5 }),
+				el("GLOW_LIGHT", { name = "Lumină", Color = C(150, 70, 225), Brightness = 1.5, Range = 14, position = V(0, 2, 0),
+					keys = { { 0, 0, 8 }, { 0.4, 2, 14 }, { 2, 2, 14 }, { 2.4, 0, 8 } } }),
+			} },
+		{ key = "HOLY_RAY", label = "Rază sfântă", category = "Suport", duration = 1.8, attach = "GROUND", main = C(255, 225, 140),
+			desc = "Coloană de lumină, flare mare, sclipiri aurii care urcă și un cerc pe sol.",
+			elements = {
+				el("HOLY_PILLAR", { name = "Coloană de lumină", lifetime = 1.4, color = C(255, 240, 190) }),
+				el("HOLY_FLARE", { name = "Flare", position = V(0, 3, 0), bursts = { { 0.1, 1 } } }),
+				el("HEAL_MOTES", { name = "Sclipiri aurii", color = { C(255, 250, 222), C(255, 214, 92) }, window = { 0, 1.4 } }),
+				el("MAGIC_CIRCLE", { name = "Cerc", color = C(255, 225, 140), lifetime = 1.4 }),
+				el("HOLY_LIGHT", { name = "Lumină" }),
+			} },
+		{ key = "PORTAL", label = "Portal", category = "Mișcare", duration = 3, attach = "GROUND", main = C(120, 110, 255),
+			desc = "Portal vertical care se rotește în fața efectului, cu cerc pe sol, sclipiri și lumină. Durează 3 s; repetă-l din cod sau cu 🔁 Repetă.",
+			elements = {
+				el("PORTAL_STANDING", { name = "Portal", lifetime = 1.8, bursts = { { 0, 1 }, { 1.2, 1 } } }),
+				el("PORTAL_STANDING", { name = "Portal (strat 2)", size = { 2, 10, 11, mid = 0.2 }, rotSpeed = -220, lifetime = 1.8,
+					bursts = { { 0.1, 1 }, { 1.3, 1 } } }),
+				el("MAGIC_CIRCLE", { name = "Cerc pe sol", color = C(120, 110, 255), lifetime = 1.6, bursts = { { 0, 1 }, { 1.4, 1 } } }),
+				el("MOTES", { name = "Sclipiri", window = { 0, 3 }, position = V(0, 4, -0.5) }),
+				el("GLOW_LIGHT", { name = "Lumină", Color = C(120, 110, 255), position = V(0, 4, -1), Brightness = 2, Range = 16 }),
+			} },
+	}
+
+	-- a template that names a missing preset would fail half way through: it is left out (and reported) instead
+	for _, tpl in list do
+		local ok = true
+		for _, item in tpl.elements do
+			if not PRESET_BY_KEY[item.preset] then
+				ok = false
+				warn("LostCube: șablonul " .. tpl.key .. " folosește presetul necunoscut " .. tostring(item.preset))
+			end
+		end
+		if ok then
+			table.insert(Editor.TEMPLATES, tpl)
+		end
+	end
+end
+local TEMPLATE_BY_KEY = {}
+for _, tpl in Editor.TEMPLATES do
+	TEMPLATE_BY_KEY[tpl.key] = tpl
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -1230,6 +1780,636 @@ function Editor.length(effect)
 		end
 	end
 	return (effect:GetAttribute("LC_Duration") or 1) + tail
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- new effect from a template (one undo step), recoloured and scaled
+-- ---------------------------------------------------------------------------------------------
+local function trim(s)
+	return (s:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+-- a name that is valid and free for a new effect (the message says what is wrong)
+local function checkNewName(name)
+	assert(type(name) == "string", "LostCube: numele efectului trebuie să fie text")
+	name = trim(name)
+	assert(#name <= 100, "LostCube: numele efectului e prea lung (maxim 100 de caractere)")
+	assertFreeName(Editor.folder(false), name)
+	return name
+end
+
+-- the empty effect model (Root part + attributes); it is parented by the caller when it is finished
+local function buildEffectModel(name, duration, attach)
+	local model = Instance.new("Model")
+	model.Name = name
+	local root = invisiblePart("Root", Vector3.new(0.2, 0.2, 0.2), CFrame.new())
+	root.Parent = model
+	model.PrimaryPart = root
+	model:SetAttribute("LC_Duration", duration)
+	model:SetAttribute("LC_Attach", attach)
+	model:SetAttribute("LC_Tool", "LostCube")
+	return model
+end
+
+-- recolour: the template's main colour -> the chosen one. Hue moves by the same angle for every colour (the accent
+-- colours keep their relation to the main one), saturation follows the ratio; whites, greys and near-blacks stay.
+local function shiftColor(c, from, to)
+	local h, s, v = c:ToHSV()
+	if s < 0.12 or v < 0.16 then
+		return c
+	end
+	local fh, fs, fv = from:ToHSV()
+	local th, ts, tv = to:ToHSV()
+	local ns = math.clamp(s * (ts / math.max(fs, 0.1)), 0, 1)
+	local nv = math.clamp(v * math.clamp((tv / math.max(fv, 0.1)) ^ 0.5, 0.6, 1.1), 0, 1)
+	return Color3.fromHSV((h + th - fh) % 1, ns, nv)
+end
+
+-- a colour value as the props accept it (Color3, list of Color3 with optional mid, { { t, Color3 } } keypoints, ColorSequence)
+local function mapColors(v, fn)
+	local kind = typeof(v)
+	if kind == "Color3" then
+		return fn(v)
+	elseif kind == "ColorSequence" then
+		local points = {}
+		for _, kp in v.Keypoints do
+			table.insert(points, ColorSequenceKeypoint.new(kp.Time, fn(kp.Value)))
+		end
+		return ColorSequence.new(points)
+	elseif type(v) == "table" then
+		local out = {}
+		for key, item in v do
+			if typeof(item) == "Color3" then
+				out[key] = fn(item)
+			elseif type(item) == "table" and typeof(item[2]) == "Color3" then
+				out[key] = { item[1], fn(item[2]) }
+			else
+				out[key] = item
+			end
+		end
+		return out
+	end
+	return v -- hex strings and RGB triplets are left as they are
+end
+
+local COLOR_KEYS = { "color", "Color", "colorEnd" }
+
+local function recolorProps(props, from, to)
+	local fn = function(c)
+		return shiftColor(c, from, to)
+	end
+	for _, key in COLOR_KEYS do
+		if props[key] ~= nil then
+			props[key] = mapColors(props[key], fn)
+		end
+	end
+end
+
+-- spatial scale of a value: number, Vector3, list of numbers (mid stays), list of { t, value } keypoints
+local function mulSpec(v, k)
+	if type(v) == "number" then
+		return v * k
+	elseif typeof(v) == "Vector3" then
+		return v * k
+	elseif typeof(v) == "NumberRange" then
+		return NumberRange.new(v.Min * k, v.Max * k)
+	elseif typeof(v) == "NumberSequence" then
+		local points = {}
+		for _, kp in v.Keypoints do
+			table.insert(points, NumberSequenceKeypoint.new(kp.Time, kp.Value * k, kp.Envelope * k))
+		end
+		return NumberSequence.new(points)
+	elseif type(v) == "table" then
+		local out = {}
+		for key, item in v do
+			if type(item) == "number" then
+				out[key] = key == "mid" and item or item * k
+			elseif type(item) == "table" then
+				out[key] = { item[1], (item[2] or 0) * k }
+			else
+				out[key] = item
+			end
+		end
+		return out
+	end
+	return v
+end
+
+local function scaleProps(kind, props, k)
+	local function mul(key)
+		if props[key] ~= nil then
+			props[key] = mulSpec(props[key], k)
+		end
+	end
+	mul("position")
+	mul("partSize")
+	if kind == "PARTICLES" then
+		mul("size")
+		mul("speed")
+		mul("acceleration")
+	elseif kind == "TRAIL" then
+		mul("height")
+	elseif kind == "LIGHT" then
+		mul("Range")
+		if props.keys then
+			local keys = {}
+			for i, key in props.keys do
+				keys[i] = { key[1], key[2], key[3] * k }
+			end
+			props.keys = keys
+		end
+	elseif kind == "MESH" then
+		mul("size")
+		mul("radius")
+		mul("speed")
+		mul("rise")
+	end
+end
+
+--- newFromTemplate(name, templateKey, opts?) -> the new effect (Model), in one undo step.
+--- opts: color (Color3: replaces the template's main colour in every element), scale (number: sizes, distances and
+--- speeds are baked in), attach / duration (override the template's).
+function Editor.newFromTemplate(name, templateKey, opts)
+	opts = opts or {}
+	local tpl = TEMPLATE_BY_KEY[templateKey]
+	assert(tpl, "LostCube: nu există șablonul " .. tostring(templateKey))
+	name = checkNewName(name)
+	local scale = opts.scale == nil and 1 or opts.scale
+	assert(type(scale) == "number" and scale >= 0.05 and scale <= 20, "LostCube: scara trebuie să fie între 0.05 și 20")
+	assert(opts.color == nil or typeof(opts.color) == "Color3", "LostCube: culoarea trebuie să fie un Color3")
+	local duration = opts.duration or tpl.duration
+	assert(type(duration) == "number" and duration > 0, "LostCube: durata trebuie să fie un număr > 0")
+	return record("efect din șablon " .. tpl.label .. " -> " .. name, function()
+		local folder = Editor.folder(true)
+		assertFreeName(folder, name)
+		local model = buildEffectModel(name, math.max(0.01, duration), opts.attach or tpl.attach)
+		model:SetAttribute("LC_Template", tpl.key)
+		local ok, err = pcall(function()
+			for _, item in tpl.elements do
+				local preset = PRESET_BY_KEY[item.preset]
+				assert(preset, "LostCube: preset necunoscut " .. tostring(item.preset))
+				local props = table.clone(preset.props)
+				for key, value in item.props do
+					props[key] = value
+				end
+				local elementName = uniqueName(model, props.name or preset.label)
+				props.name = nil
+				if opts.color then
+					recolorProps(props, tpl.main, opts.color)
+				end
+				if scale ~= 1 then
+					scaleProps(preset.kind, props, scale)
+				end
+				local element = create(model, preset.kind, elementName)
+				applyProps(element, props)
+				element:SetAttribute("LC_Preset", preset.key)
+			end
+		end)
+		if not ok then
+			model:Destroy()
+			error(err, 0)
+		end
+		model.Parent = folder -- last: the panels never see a half-built effect
+		return model
+	end)
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- import: ParticleEmitters / Trails / lights of a free model -> LostCube elements (never scripts)
+-- ---------------------------------------------------------------------------------------------
+local MAX_IMPORT = 80 -- elements per import (a few "VFX packs" hold hundreds of emitters)
+local PARTICLE_COPY = { "Texture", "Color", "Size", "Transparency", "Squash", "Lifetime", "Speed", "SpreadAngle", "Rate",
+	"Acceleration", "Drag", "LightEmission", "LightInfluence", "Brightness", "Rotation", "RotSpeed", "Orientation", "ZOffset",
+	"LockedToPart", "EmissionDirection", "ShapeStyle", "ShapeInOut", "ShapePartial", "VelocityInheritance", "VelocitySpread",
+	"WindAffectsDrag", "FlipbookLayout", "FlipbookMode", "FlipbookFramerate", "FlipbookStartRandom", "FlipbookSizeX",
+	"FlipbookSizeY", "FlipbookBlendFrames" }
+local TRAIL_COPY = { "Texture", "Color", "Transparency", "LightEmission", "LightInfluence", "Brightness", "Lifetime", "MinLength",
+	"MaxLength", "WidthScale", "FaceCamera", "TextureMode", "TextureLength" }
+
+local function copyProps(to, from, list)
+	for _, prop in list do
+		pcall(function() -- a property this Studio does not know is simply skipped
+			to[prop] = from[prop]
+		end)
+	end
+end
+
+-- the frame an emitter / light sits in (its Attachment or Part), nil when it hangs from something without a position
+local function holderFrame(inst)
+	local parent = inst.Parent
+	if parent and parent:IsA("Attachment") then
+		local ok, cf = pcall(function()
+			return parent.WorldCFrame
+		end)
+		return ok and cf or nil
+	elseif parent and parent:IsA("BasePart") then
+		return parent.CFrame
+	end
+	return nil
+end
+
+-- where the imported effect is centred: the pivot of a model / part, else the centre of the parts found inside
+local function importOrigin(source)
+	if source:IsA("Model") then
+		local ok, cf = pcall(source.GetPivot, source)
+		if ok and cf then
+			return cf
+		end
+	elseif source:IsA("BasePart") then
+		return source.CFrame
+	elseif source:IsA("Attachment") then
+		local ok, cf = pcall(function()
+			return source.WorldCFrame
+		end)
+		if ok then
+			return cf
+		end
+	end
+	local lo, hi
+	for _, d in source:GetDescendants() do
+		if d:IsA("BasePart") then
+			local p = d.Position
+			lo = lo and Vector3.new(math.min(lo.X, p.X), math.min(lo.Y, p.Y), math.min(lo.Z, p.Z)) or p
+			hi = hi and Vector3.new(math.max(hi.X, p.X), math.max(hi.Y, p.Y), math.max(hi.Z, p.Z)) or p
+		end
+	end
+	return lo and CFrame.new((lo + hi) / 2) or CFrame.new()
+end
+
+-- when an imported emitter plays: the attributes many VFX packs use (EmitCount / EmitDelay / EmitDuration) win; else an enabled
+-- emitter gets an emission window and a disabled one (made to be Emit()-ed by a script) a burst at t = 0
+local function importTimeline(d, windowLength)
+	local delay = math.max(0, tonumber(d:GetAttribute("EmitDelay")) or 0)
+	local count = tonumber(d:GetAttribute("EmitCount"))
+	local length = tonumber(d:GetAttribute("EmitDuration"))
+	local window, bursts
+	local guessed = false
+	if count then
+		bursts = { { delay, math.clamp(math.floor(count + 0.5), 1, 300) } }
+	end
+	if length and length > 0 then
+		window = { delay, delay + length }
+	end
+	if not window and not bursts then
+		local rate = d:IsA("ParticleEmitter") and d.Rate or 0
+		if d.Enabled and (rate > 0 or d:IsA("Trail")) then
+			window = { 0, windowLength }
+		else
+			bursts = { { 0, rate > 0 and math.clamp(math.floor(rate + 0.5), 1, 60) or 10 } }
+			guessed = true
+		end
+	end
+	return window, bursts, guessed
+end
+
+local function importParticles(effect, d, origin, windowLength)
+	local element = create(effect, "PARTICLES", uniqueName(effect, d.Name ~= "" and d.Name or "Particule"))
+	copyProps(element, d, PARTICLE_COPY)
+	element.Enabled = false
+	local holder = holderFrame(d)
+	local rel = holder and origin:ToObjectSpace(holder) or CFrame.new()
+	local parent = d.Parent
+	if parent and parent:IsA("BasePart") then -- an emitter on a part emits from its shape: the part (size, turn) is kept
+		local size = Vector3.new(math.clamp(parent.Size.X, 0.05, 100), math.clamp(parent.Size.Y, 0.05, 100),
+			math.clamp(parent.Size.Z, 0.05, 100))
+		setPosition(element, rel.Position)
+		setShape(element, d.Shape.Name, size)
+		element.Parent.CFrame = rootOf(effect).CFrame * rel
+	else
+		element.Parent.CFrame = rel -- the Attachment under Root: position and turn (EmissionDirection follows it)
+	end
+	local window, bursts, guessed = importTimeline(d, windowLength)
+	if window then
+		setTimeline(element, "window", window)
+	end
+	if bursts then
+		setTimeline(element, "bursts", bursts)
+	end
+	local last = window and window[2] or 0
+	for _, b in bursts or {} do
+		last = math.max(last, b[1])
+	end
+	return element, last, guessed
+end
+
+local function importTrail(effect, d, origin, windowLength)
+	local element = create(effect, "TRAIL", uniqueName(effect, d.Name ~= "" and d.Name or "Trail"))
+	copyProps(element, d, TRAIL_COPY)
+	element.Enabled = false
+	local a, b = trailAttachments(element)
+	local function where(att)
+		if not att then
+			return nil
+		end
+		local ok, cf = pcall(function()
+			return att.WorldCFrame
+		end)
+		return ok and origin:PointToObjectSpace(cf.Position) or nil
+	end
+	local p0, p1 = where(d.Attachment0), where(d.Attachment1)
+	if p0 and p1 and (p0 - p1).Magnitude > 0.01 then
+		a.Position, b.Position = p0, p1
+	end
+	local window = select(1, importTimeline(d, windowLength))
+	window = window or { 0, windowLength }
+	setTimeline(element, "window", window)
+	return element, window[2]
+end
+
+local function importLight(effect, d, origin)
+	local element = create(effect, "LIGHT", uniqueName(effect, d.Name ~= "" and d.Name or "Lumină"))
+	copyProps(element, d, { "Color", "Brightness", "Range", "Shadows" })
+	local holder = holderFrame(d)
+	setPosition(element, holder and origin:PointToObjectSpace(holder.Position) or Vector3.zero)
+	if not d.Enabled then
+		element:SetAttribute("LC_Muted", true)
+	end
+	return element
+end
+
+-- the work of importEmitters without recording: returns { elements, particles, trails, lights, skipped, notes }
+local function importInto(effect, source, opts)
+	opts = opts or {}
+	local origin = opts.origin or importOrigin(source)
+	local windowLength = math.max(0.1, opts.window or 2)
+	local result = { elements = {}, particles = 0, trails = 0, lights = 0, skipped = 0, notes = {}, unsupported = 0, burstGuess = 0 }
+	local last = 0
+	local found = source:GetDescendants()
+	table.insert(found, 1, source)
+	for _, d in found do
+		local kind = d:IsA("ParticleEmitter") and "particles" or (d:IsA("Trail") and "trails")
+			or ((d:IsA("PointLight") or d:IsA("SpotLight")) and "lights") or nil
+		if kind then
+			if #result.elements >= MAX_IMPORT then
+				result.skipped += 1
+			else
+				local created
+				local ok, element, t, guessed = pcall(function()
+					if kind == "particles" then
+						return importParticles(effect, d, origin, windowLength)
+					elseif kind == "trails" then
+						return importTrail(effect, d, origin, windowLength)
+					end
+					return importLight(effect, d, origin), 0
+				end)
+				if ok then
+					created = element
+					table.insert(result.elements, created)
+					result[kind] += 1
+					last = math.max(last, t or 0)
+					if guessed then
+						result.burstGuess += 1
+					end
+				else
+					result.skipped += 1
+					table.insert(result.notes, "„" .. d.Name .. "” nu a putut fi importat: " .. tostring(element))
+				end
+			end
+		elseif d:IsA("Beam") or d:IsA("Fire") or d:IsA("Smoke") or d:IsA("Sparkles") or d:IsA("Explosion") then
+			result.unsupported += 1
+		end
+	end
+	if result.skipped > 0 then
+		table.insert(result.notes, result.skipped .. " elemente au fost omise (maxim " .. MAX_IMPORT .. " per import sau erori).")
+	end
+	if result.unsupported > 0 then
+		table.insert(result.notes, result.unsupported .. " obiecte Beam / Fire / Smoke / Sparkles / Explosion nu se pot importa.")
+	end
+	if result.burstGuess > 0 then
+		table.insert(result.notes, result.burstGuess .. " emițătoare dezactivate au primit un burst la t = 0 (în original le pornea un script).")
+	end
+	if last + 0.05 > (effect:GetAttribute("LC_Duration") or 1) then
+		effect:SetAttribute("LC_Duration", round(last + 0.05, 2))
+	end
+	return result
+end
+
+--- importEmitters(effect, source, opts?) -> { elements, particles, trails, lights, skipped, notes }
+--- Copies every ParticleEmitter / Trail / PointLight (and SpotLight, as a point light) found under `source` (a model, part,
+--- folder or the emitter itself) into LostCube elements of `effect`, keeping their relative positions. Scripts are never
+--- touched. opts: window (s, emission window of enabled emitters, default 2), origin (CFrame that becomes the effect's root).
+function Editor.importEmitters(effect, source, opts)
+	effect = Editor.effect(effect)
+	assert(typeof(source) == "Instance", "LostCube: sursa trebuie să fie un obiect din scenă (model, part, folder)")
+	assert(source ~= effect and not source:IsDescendantOf(effect), "LostCube: sursa e chiar efectul")
+	return record("importat emitoare din " .. source.Name .. " în " .. effect.Name, function()
+		return importInto(effect, source, opts)
+	end)
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- import a free model from the Creator Store by asset id (scripts are deleted before anything else)
+-- ---------------------------------------------------------------------------------------------
+local SUSPECT = {
+	{ "require%s*%(%s*%d+", "require(ID)" }, { "loadstring", "loadstring" }, { "getfenv", "getfenv" }, { "setfenv", "setfenv" },
+	{ "HttpService", "HttpService" }, { "MarketplaceService", "MarketplaceService" },
+}
+
+-- deletes every Script / LocalScript / ModuleScript; reads each one's text first (inert) to flag backdoor-like code
+local function stripScripts(roots)
+	local out = { total = 0, byClass = {}, suspicious = 0, examples = {} }
+	local all = {}
+	for _, root in roots do
+		table.insert(all, root)
+		for _, d in root:GetDescendants() do
+			table.insert(all, d)
+		end
+	end
+	for _, d in all do
+		if d:IsA("LuaSourceContainer") then
+			out.total += 1
+			out.byClass[d.ClassName] = (out.byClass[d.ClassName] or 0) + 1
+			local ok, text = pcall(function()
+				return (d :: any).Source
+			end)
+			if ok and type(text) == "string" then
+				local flags = {}
+				for _, pattern in SUSPECT do
+					if string.find(text, pattern[1]) then
+						table.insert(flags, pattern[2])
+					end
+				end
+				if #flags > 0 then
+					out.suspicious += 1
+					if #out.examples < 5 then
+						table.insert(out.examples, d.Name .. " (" .. table.concat(flags, ", ") .. ")")
+					end
+				end
+			end
+			d:Destroy()
+		end
+	end
+	return out
+end
+
+local function loadAssetRoots(id)
+	local okObjects, objects = pcall(function()
+		return game:GetObjects("rbxassetid://" .. id)
+	end)
+	if okObjects and type(objects) == "table" and #objects > 0 then
+		local holder = Instance.new("Model")
+		holder.Name = "LostCubeImport"
+		for _, obj in objects do
+			obj.Parent = holder
+		end
+		return holder, "GetObjects"
+	end
+	local okLoad, loaded = pcall(function()
+		return game:GetService("InsertService"):LoadAsset(id)
+	end)
+	if okLoad and typeof(loaded) == "Instance" then
+		return loaded, "InsertService"
+	end
+	return nil, tostring(okObjects and "asset gol" or objects) .. " | " .. tostring(okLoad and "asset gol" or loaded)
+end
+
+local function findAnalyzer()
+	for _, place in { script, script.Parent, script.Parent and script.Parent.Parent } do
+		local module = place and place:FindFirstChild("Analyzer")
+		if module and module:IsA("ModuleScript") then
+			return module
+		end
+	end
+	return nil
+end
+
+local ANALYZER_LEVEL = { high = "mare", medium = "medie", low = "mică" }
+
+-- Analyzer.scanInstance(root) -> issues (another module of the plugin; optional): findings as plain lines
+local function analyzerLines(root)
+	local module = findAnalyzer()
+	if not module then
+		return nil
+	end
+	local ok, issues = pcall(function()
+		return require(module).scanInstance(root)
+	end)
+	if not ok or type(issues) ~= "table" then
+		return nil
+	end
+	local lines = {}
+	for i, issue in issues do
+		if i > 8 then
+			table.insert(lines, "… și încă " .. (#issues - 8) .. " observații")
+			break
+		end
+		if type(issue) == "table" then
+			-- Analyzer issues: { severity = "high" | "medium" | "low", kind, path?, line?, message }
+			local text = issue.message or issue.msg or issue.text or issue.title or issue.description or issue.what
+			local level = issue.severity or issue.level
+			level = ANALYZER_LEVEL[level] or level
+			table.insert(lines, (level and ("[" .. tostring(level) .. "] ") or "") .. tostring(text or issue.kind or "observație")
+				.. (type(issue.path) == "string" and issue.path ~= "" and (" (" .. issue.path .. ")") or ""))
+		else
+			table.insert(lines, tostring(issue))
+		end
+	end
+	return lines
+end
+
+--- importAsset(assetId, effectName) -> (Model?, report)
+--- Loads a Creator Store model, DELETES every script in it, copies its emitters / trails / lights into a new effect and
+--- destroys the loaded model. report = { ok, assetId, error?, scriptsRemoved, scriptsByClass, suspicious, particles, trails,
+--- lights, skipped, notes, analyzer?, lines } where `lines` is the report as plain Romanian text lines (one per line).
+function Editor.importAsset(assetId, effectName)
+	local id = tonumber(assetId)
+	local report = { ok = false, assetId = id, scriptsRemoved = 0, scriptsByClass = {}, suspicious = 0, particles = 0, trails = 0,
+		lights = 0, skipped = 0, notes = {}, lines = {} }
+	local function fail(text)
+		report.error = text
+		table.insert(report.lines, 1, "✗ " .. text)
+		return nil, report
+	end
+	if not id or id <= 0 or id % 1 ~= 0 or id > 2 ^ 53 then
+		return fail("ID invalid: scrie doar numărul din adresa asset-ului (create.roblox.com/store/asset/NUMĂR).")
+	end
+	if effectName == nil or trim(tostring(effectName)) == "" then
+		effectName = "Import " .. id
+		local folder, n = Editor.folder(false), 1
+		while folder and folder:FindFirstChild(effectName) do
+			n += 1
+			effectName = "Import " .. id .. " " .. n
+		end
+	end
+	local okName, name = pcall(checkNewName, effectName)
+	if not okName then
+		return fail((tostring(name):gsub("^.-:%d+: ", "")))
+	end
+
+	local holder, how = loadAssetRoots(id)
+	if not holder then
+		return fail("Nu am putut încărca asset-ul " .. id .. " (nu e model, e privat sau fără acces). " .. tostring(how))
+	end
+	local effect
+	local ok, err = pcall(function()
+		-- 1) scripts first: free models often carry backdoors, and nothing below needs a script
+		local removed = stripScripts({ holder })
+		report.scriptsRemoved, report.scriptsByClass, report.suspicious = removed.total, removed.byClass, removed.suspicious
+		report.suspiciousExamples = removed.examples
+		-- 2) optional analysis of what is left
+		report.analyzer = analyzerLines(holder)
+		-- 3) the emitters
+		local count = 0
+		for _, d in holder:GetDescendants() do
+			if d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("PointLight") or d:IsA("SpotLight") then
+				count += 1
+			end
+		end
+		if count == 0 then
+			error("Asset-ul " .. id .. " nu conține niciun ParticleEmitter, Trail sau PointLight de importat.", 0)
+		end
+		effect = record("import VFX " .. id .. " -> " .. name, function()
+			local folder = Editor.folder(true)
+			assertFreeName(folder, name)
+			local model = buildEffectModel(name, 1, "GROUND")
+			model:SetAttribute("LC_Source", "rbxassetid://" .. id)
+			local done, result = pcall(importInto, model, holder, {})
+			if not done then
+				model:Destroy()
+				error(result, 0)
+			end
+			report.particles, report.trails, report.lights, report.skipped = result.particles, result.trails, result.lights, result.skipped
+			report.notes = result.notes
+			model.Parent = folder
+			return model
+		end)
+	end)
+	holder:Destroy() -- whatever happened, the loaded copy never stays in the place
+	local lines = report.lines
+	if report.scriptsRemoved > 0 then
+		local parts = {}
+		for className, n in report.scriptsByClass do
+			table.insert(parts, n .. " " .. className)
+		end
+		table.sort(parts)
+		table.insert(lines, "Scripturi șterse: " .. report.scriptsRemoved .. " (" .. table.concat(parts, ", ") .. ")")
+		if report.suspicious > 0 then
+			table.insert(lines, "⚠ " .. report.suspicious .. " din ele aveau cod care merită privit cu neîncredere ("
+				.. table.concat(report.suspiciousExamples or {}, "; ") .. "): nu folosi modelul original în joc.")
+		end
+	else
+		table.insert(lines, "Scripturi șterse: 0 (modelul nu conținea scripturi)")
+	end
+	if not ok then
+		local text = (tostring(err):gsub("^.-:%d+: ", ""))
+		report.error = text
+		table.insert(lines, 1, "✗ " .. text)
+		return nil, report
+	end
+	report.ok = true
+	table.insert(lines, 1, "✓ Efectul „" .. name .. "” a fost creat din asset-ul " .. id)
+	table.insert(lines, "Importate: " .. report.particles .. " particule, " .. report.trails .. " trail-uri, " .. report.lights .. " lumini")
+	for _, note in report.notes do
+		table.insert(lines, "• " .. note)
+	end
+	if report.analyzer then
+		table.insert(lines, #report.analyzer > 0 and "Analizor:" or "Analizor: nimic de semnalat")
+		for _, line in report.analyzer do
+			table.insert(lines, "• " .. line)
+		end
+	end
+	table.insert(lines, "Verifică efectul în previzualizare: texturile și timpii vin din modelul original.")
+	return effect, report
 end
 
 Editor.VFX = VFX
