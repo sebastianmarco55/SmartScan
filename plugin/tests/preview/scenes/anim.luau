@@ -1,4 +1,5 @@
--- Anim tab: the real AnimPanel + AnimGen on the DataModel mock: a rig, KeyframeSequences with poses and markers, a chosen clip.
+-- Anim tab: the real AnimPanel + AnimGen on the DataModel mock: a rig, KeyframeSequences with poses and markers, a chosen clip
+-- that is playing (a still track at 0.42 s), a generated animation chosen.
 local LC, P, ARGS, common = ...
 local S = LC.run("tests/preview/scenes/game.luau", nil, LC, P, ARGS, common)
 
@@ -73,5 +74,9 @@ if ARGS.state ~= "empty" then
 			panel.picked[kf] = true
 		end
 	end
+	-- a generated animation chosen and the clip playing (a still track: the scene does not step animations)
+	panel.genKey = "heavy_punch"
+	panel.track = { TimePosition = 0.42, Length = 0.8, IsPlaying = true, Looped = true }
+	panel.playing = true
 end
 return scene

@@ -1,4 +1,5 @@
--- Library tab: the real LibraryPanel + AnimLibrary (the real catalogue of Roblox animations) with a pack opened and an animation chosen.
+-- Library tab: the real LibraryPanel + AnimLibrary (the real catalogue of Roblox animations) with a pack opened and an animation chosen
+-- and playing (a still track at 1.1 s).
 local LC, P, ARGS, common = ...
 local S = LC.run("tests/preview/scenes/game.luau", nil, LC, P, ARGS, common)
 
@@ -36,5 +37,9 @@ if ARGS.state ~= "empty" then
 	panel.openGroup = pack.key
 	panel.sel = pack.entries[2] or pack.entries[1]
 	panel.owner[panel.sel.id] = { ok = true, name = panel.sel.label, creator = "Roblox", roblox = true, assetType = 24 }
+	-- the animation playing (a still track: the scene does not step animations)
+	panel.track = { TimePosition = 1.1, Length = 2.4, IsPlaying = true, Looped = true }
+	panel.animator = { StepAnimations = function() end }
+	panel.playing = true
 end
 return scene

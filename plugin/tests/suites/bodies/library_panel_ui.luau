@@ -66,7 +66,8 @@ co = runThread(function()
 end)
 resume(co)
 check(opened == before and panel.rig == nil and panel.notice ~= nil, "failed download: no recording, a notice")
-check(string.find(panel.notice.text, "nu am putut crea", 1, true) ~= nil, "notice text: " .. tostring(panel.notice.text))
+check(string.find(panel.notice.text, "Nu am putut crea dummy-ul", 1, true) ~= nil and panel.notice.kind == "error",
+	"notice text: " .. tostring(panel.notice.text))
 failCreate = false
 failFinish = true
 co = runThread(function()
@@ -168,12 +169,12 @@ local function boxByPlaceholder(c, start)
 		end
 	end
 end
-local b1 = boxByPlaceholder(c1, "caută")
+local b1 = boxByPlaceholder(c1, "Caută")
 check(b1 ~= nil, "search box")
 b1.Text = "nin"
 methods.GetPropertyChangedSignal(b1, "Text"):Fire()
 local c2 = renderPanel()
-local b2 = boxByPlaceholder(c2, "caută")
+local b2 = boxByPlaceholder(c2, "Caută")
 check(b2 ~= b1 and b2.Text == "nin", "typed search text survives a redraw: " .. tostring(b2 and b2.Text))
 check(panel.query == "", "but is not applied yet")
 -- focus lost applies it
@@ -199,3 +200,135 @@ methods.GetPropertyChangedSignal(cb, "Text"):Fire()
 local c4 = renderPanel()
 check(boxByPlaceholder(c4, "ID sau").Text == "12345", "custom id text survives a redraw")
 
+
+-- 5. the 2.1 look: filters as chips, packs as rows with badges, the detail with the owner status, toasts -----------------
+local function allTexts(c)
+	local out = {}
+	for _, d in c:GetDescendants() do
+		local t = rawget(d, "_data").Text
+		if type(t) == "string" and t ~= "" then table.insert(out, t) end
+	end
+	return out
+end
+local function byName(c, name)
+	local out = {}
+	for _, d in c:GetDescendants() do
+		if rawget(d, "_data").Name == name then table.insert(out, d) end
+	end
+	return out
+end
+local function click(c, text)
+	for _, d in c:GetDescendants() do
+		local data = rawget(d, "_data")
+		if data.ClassName == "TextButton" and data.Text == text and data._signals and data._signals.MouseButton1Click then
+			data._signals.MouseButton1Click:Fire()
+			return true
+		end
+	end
+	return false
+end
+local function symbolIn(text)
+	for _, cp in utf8.codes(text) do
+		if (cp >= 0x2190 and cp <= 0x21FF) or (cp >= 0x2300 and cp <= 0x23FF) or cp >= 0x25A0 or cp == 0x2713 or cp == 0x2717 then
+			return utf8.char(cp)
+		end
+	end
+	return nil
+end
+panel:stop()
+panel.query, panel.queryDraft, panel.kind, panel.rigFilter = "", nil, "all", "all"
+local ninja = AnimLibraryModule.group("ninja")
+panel.sel = ninja.entries[3]
+panel.openGroup = "ninja"
+panel.owner[panel.sel.id] = { ok = true, name = "Ninja", creator = "Roblox", roblox = true, assetType = 24 }
+for _, key in { "lib.rig", "lib.list", "lib.sel", "lib.code", "lib.custom", "lib.about" } do
+	UIModule.collapsed[key] = false
+end
+local view = renderPanel()
+local texts = allTexts(view)
+local offenders = {}
+for _, t in texts do
+	if symbolIn(t) then table.insert(offenders, t) end
+end
+check(#offenders == 0, "no emoji / symbol glyphs: " .. table.concat(offenders, " | "))
+local joined = table.concat(texts, "\n")
+for _, old in { "▶", "⏸", "⏹", "✓", "✗", "⚠", "▼", "►", "+ Animația aleasă", "+ Dummy", "(%d pachete" } do
+	check(not string.find(joined, old, 1, true), "old label gone: " .. old)
+end
+-- filters are chips: one kind selected, no rig chip selected (all rigs)
+local chips = byName(view, "Chip")
+local selectedChips = {}
+for _, c in chips do
+	if c:GetAttribute("Selected") then table.insert(selectedChips, c.Text) end
+end
+check(#chips == 5 and #selectedChips == 1 and selectedChips[1] == "Toate", "chips: " .. #chips .. ", selected " .. table.concat(selectedChips, ","))
+check(click(view, "R6") and panel.rigFilter == "R6", "rig chip filters")
+view = renderPanel()
+check(click(view, "R6") and panel.rigFilter == "all", "the selected rig chip again: all rigs")
+check(click(view, "Emote") and panel.kind == "emote", "kind chip")
+panel.kind = "all"
+view = renderPanel()
+-- the open pack: its rows Selected / not, a play button on each state, badges with the rig and the count
+local selectedRows, playButtons = 0, #byName(view, "IconButton_play")
+for _, item in byName(view, "Item") do
+	if item:GetAttribute("Selected") then selectedRows += 1 end
+end
+check(selectedRows == 1, "one selected row: " .. selectedRows)
+check(playButtons == #ninja.entries, "a play button per state: " .. playButtons)
+check(string.find(joined, tostring(#ninja.entries), 1, true) ~= nil, "pack count badge")
+-- owner status is a pill, with a refresh button; the code section and the transport are there
+check(string.find(joined, "Roblox", 1, true) ~= nil and #byName(view, "IconButton_refresh") >= 1, "owner pill + check button")
+check(#byName(view, "PlayButton") == 1 and #byName(view, "Timeline") == 1, "transport + timeline")
+local stepBack = byName(view, "IconButton_stepBack")
+local stepSignals = stepBack[1] and rawget(stepBack[1], "_data")._signals
+check(#stepBack == 1 and not (stepSignals and stepSignals.MouseButton1Click), "step buttons disabled until a track is loaded")
+-- add to game: a success toast with an action, the notice remembered
+check(click(view, "Adaugă în joc"), "add button")
+check(panel.notice and panel.notice.kind == "success" and string.find(panel.notice.text, "1 animație adăugată", 1, true) ~= nil,
+	"added: " .. tostring(panel.notice and panel.notice.text))
+local anim = game:GetService("ReplicatedStorage"):FindFirstChild("LostCube")
+check(anim and anim:FindFirstChild("Animations") and anim.Animations:FindFirstChild(ninja.folder)
+	and anim.Animations[ninja.folder]:FindFirstChild(panel.sel.name) ~= nil, "Animation instance created")
+local toastFound = false
+for _, d in root:GetDescendants() do
+	if rawget(d, "_data").Name == "Toast" and d:GetAttribute("Kind") == "success" then toastFound = true end
+end
+check(toastFound, "a success toast in the window")
+-- the search rebuilds only the list (no full redraw while typing)
+view = renderPanel()
+local rf3 = refreshes
+local searchBox = boxByPlaceholder(view, "Caută")
+searchBox.Text = "ninja run"
+methods.GetPropertyChangedSignal(searchBox, "Text"):Fire()
+advance(0.2) -- the search's pause
+check(panel.query == "ninja run" and refreshes == rf3, "applied after the pause, without a redraw: " .. panel.query)
+local rowsNow = {}
+for _, item in byName(view, "Item") do
+	if rawget(item, "_data").Parent ~= nil then
+		for _, l in item:GetDescendants() do
+			local t = rawget(l, "_data").Text
+			if type(t) == "string" and t ~= "" then table.insert(rowsNow, t) end
+		end
+	end
+end
+check(string.find(table.concat(rowsNow, ","), "Alergare", 1, true) ~= nil and not string.find(table.concat(rowsNow, ","), "Repaus", 1, true),
+	"the list shows only the match: " .. table.concat(rowsNow, ","))
+panel.query = "zzzz"
+view = renderPanel()
+check(#byName(view, "Empty") == 1, "no match: an empty state")
+panel.query = ""
+-- seek / step on a loaded track (the timeline drags through seek)
+local fakeTrack = { TimePosition = 0, Length = 2, IsPlaying = false, speed = 1 }
+function fakeTrack:Play() self.IsPlaying = true end
+function fakeTrack:AdjustSpeed(s) self.speed = s end
+function fakeTrack:Stop() self.IsPlaying = false end
+function fakeTrack:Destroy() end
+panel.track, panel.animator = fakeTrack, { StepAnimations = function() end }
+panel.playing = true
+panel:seek(1.5)
+check(fakeTrack.TimePosition == 1.5 and fakeTrack.speed == 0 and not panel.playing, "seek pauses at the time")
+panel:step(-30)
+check(math.abs(fakeTrack.TimePosition - 1) < 1e-6, "step back half a second: " .. fakeTrack.TimePosition)
+panel:seek(9)
+check(fakeTrack.TimePosition < 2, "seek clamps to the length")
+panel.track, panel.animator, panel.playing = nil, nil, false

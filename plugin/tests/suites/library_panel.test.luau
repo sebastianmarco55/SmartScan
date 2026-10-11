@@ -122,14 +122,34 @@ p.codeMode = "pack"
 p:render(parentFrame())
 p.owner[656118852] = { ok = true, name = "Ninja Run", creator = "Roblox", assetType = 24, roblox = true }
 p:render(parentFrame())
-local text, color = p:ownerLine(p.sel)
-check(text:find("✓"), text)
+local function described(st)
+	return st.kind .. " | " .. st.label .. " | " .. tostring(st.glyph) .. " | " .. tostring(st.detail)
+end
+local st = p:ownerStatus(p.sel)
+check(st.kind == "success" and st.label == "Roblox" and st.glyph == "check" and st.detail == nil, described(st))
 p.owner[656118852] = { ok = true, name = "x", creator = "Someone", assetType = 24, roblox = false }
-text = p:ownerLine(p.sel); check(text:find("✗"), text)
+st = p:ownerStatus(p.sel); check(st.kind == "danger" and st.label == "Alt creator" and st.detail:find("Someone"), described(st))
 p.owner[656118852] = { ok = true, name = "x", creator = "Roblox", assetType = 61, roblox = true }
-text = p:ownerLine(p.sel); check(text:find("61"), text)
+st = p:ownerStatus(p.sel); check(st.kind == "warning" and st.detail:find("61"), described(st))
+p.owner[656118852] = { ok = true, name = "x", creator = "Roblox", assetType = 13, roblox = true }
+st = p:ownerStatus(p.sel); check(st.kind == "warning" and st.label == "Nu e animație" and st.detail:find("13"), described(st))
 p.owner[656118852] = { ok = false, err = "HTTP 403" }
-text = p:ownerLine(p.sel); check(text:find("403"), text)
+st = p:ownerStatus(p.sel); check(st.kind == "warning" and st.detail:find("403"), described(st))
+p.owner[656118852] = nil
+st = p:ownerStatus(p.sel); check(st.kind == "neutral" and st.label == "Neverificat" and st.detail == nil, described(st))
+p.checking = "1/10"
+st = p:ownerStatus(p.sel); check(st.kind == "neutral" and st.label:find("verifică"), described(st))
+p.checking = nil
+-- statuses and their texts carry no emoji / symbol glyphs
+for _, owner in { { ok = true, name = "x", creator = "Someone", assetType = 24, roblox = false }, { ok = false, err = "e" } } do
+	p.owner[656118852] = owner
+	st = p:ownerStatus(p.sel)
+	local clean = true
+	for _, cp in utf8.codes(st.label .. (st.detail or "")) do
+		if cp >= 0x25A0 or cp == 0x2713 or cp == 0x2717 then clean = false end
+	end
+	check(clean, "no symbol in " .. described(st))
+end
 p.track = nil; p.playing = false
 
 -- 6. addToGame / installDefault / removeDefault run end to end against proxies
