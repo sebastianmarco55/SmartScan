@@ -3,3 +3,6 @@ plugin/tests/.cache/
 plugin/tests/**/__pycache__/
 __pycache__/
 *.pyc
+# GUI preview: screenshots and HTML pages (render.py), your own Builder Sans files
+plugin/tests/preview/out/
+plugin/tests/preview/fonts/

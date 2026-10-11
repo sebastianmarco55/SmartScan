@@ -1,0 +1,11 @@
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{overflow:hidden;font-family:'LC Sans',sans-serif}
+.n{margin:0;isolation:isolate}
+.tx{margin:0;min-width:0;font-synthesis:none;-webkit-font-smoothing:antialiased}
+.ph{display:flex;align-items:center;justify-content:center;background:repeating-linear-gradient(45deg,rgba(128,128,128,.28) 0 6px,rgba(128,128,128,.12) 6px 12px);
+    outline:1px dashed rgba(200,200,200,.55);outline-offset:-1px;overflow:hidden}
+.ph span{font:9px/10px 'LC Sans',sans-serif;color:rgba(255,255,255,.75);padding:2px;text-align:center;word-break:break-all;max-height:100%;overflow:hidden}
+.sbar{position:absolute;display:none;pointer-events:none;border-radius:99px;z-index:2147483000}
+.sf>.cv{will-change:auto}
+.im{background-repeat:no-repeat}
