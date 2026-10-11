@@ -165,7 +165,7 @@ check("s1 system agent prompt", has(b1.system[1].text, "act in Studio through to
 check("s1 system untrusted note", has(b1.system[1].text, "untrusted data"))
 check("s1 system context", has(b1.system[1].text, "Un joc de luptă."))
 check("s1 system live block", b1.system[2] and has(b1.system[2].text, "Selecția: nimic"))
-check("s1 tools count", #b1.tools == #Tools.LIST and #b1.tools == 17, #b1.tools)
+check("s1 tools count", #b1.tools == #Tools.LIST and #b1.tools > 0, #b1.tools)
 check("s1 no empty properties array", not has(list[1], '"properties":[]'))
 check("s1 empty properties object", has(list[1], '"name":"get_selection","description":') and has(list[1], '"properties":{}'))
 local strictCount, byName = 0, {}
@@ -181,7 +181,7 @@ for _, t in b1.tools do
 		end
 	end
 end
-check("s1 strict count", strictCount == 15, strictCount)
+check("s1 strict count", strictCount == #Tools.LIST - 2, strictCount) -- (add_element and set_element_props are not strict)
 check("s1 add_element not strict", byName.add_element.strict == nil and byName.set_element_props.strict == nil)
 check("s1 run_luau strict + required", byName.run_luau.strict == true and #byName.run_luau.input_schema.required == 2)
 check("s1 enum attach", byName.create_effect_from_template.input_schema.properties.attach.enum[1] == "GROUND")

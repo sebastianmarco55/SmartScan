@@ -337,4 +337,36 @@ end
 check(history.active == nil, "recording left open after importAsset")
 
 
+-- 8. share codes on this mock too (its CFrame has no rotation and its HttpService is a stub: the codes use neither) -----------------
+do
+	for _, fx in Editor.effects() do
+		Editor.removeEffect(fx)
+	end
+	local count = 0
+	for _, tpl in Editor.TEMPLATES do
+		local fx = Editor.newFromTemplate("Share " .. tpl.key, tpl.key, { color = Color3.fromRGB(40, 200, 120), scale = 1.3 })
+		local code = Editor.exportEffect(fx)
+		local steps = #history.log
+		Editor.removeEffect(fx)
+		local back = Editor.importEffect(code)
+		check(back.Name == "Share " .. tpl.key and #Editor.elements(back) == #tpl.elements, "share " .. tpl.key .. ": rebuilt")
+		check(Editor.exportEffect(back) == code, "share " .. tpl.key .. ": the second export is the same code")
+		local begins = 0
+		for i = steps + 1, #history.log do
+			if string.find(history.log[i], "^begin") then begins += 1 end
+		end
+		check(begins == 2 and history.log[#history.log] == "finish Commit" and history.active == nil, "share " .. tpl.key .. ": removing and importing are one undo step each")
+		for _, el in Editor.elements(back) do
+			Editor.read(el)
+		end
+		Editor.removeEffect(back)
+		count += 1
+	end
+	check(count == #Editor.TEMPLATES and #Editor.effects() == 0, "all templates shared")
+	for _, bad in { "", "LC1:", "LC2:AAAA", "nu e cod", "LC1:AAAAAAAAAAAAAAAAAAAA" } do
+		expectError(function() Editor.importEffect(bad) end, "LostCube: ", "refused: " .. bad)
+	end
+	check(#Editor.effects() == 0, "nothing created by the bad codes")
+end
+
 t.finish()

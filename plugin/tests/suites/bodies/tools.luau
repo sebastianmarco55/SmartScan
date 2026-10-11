@@ -20,6 +20,7 @@ Instance.new("RemoteEvent", { Name = "Damage", Parent = RS })
 
 -- mocks
 local calls = {}
+local IMPORT_NOTES, RECOLOR_NEUTRAL = {}, false
 local function makeEffect(name, duration, attach)
 	local fx = Instance.new("Model", { Name = name })
 	fx:SetAttribute("LC_Duration", duration)
@@ -78,6 +79,45 @@ local Editor = {
 	end,
 	setProps = function(el, props) table.insert(calls, { "setProps", el.Name, props }) end,
 	log = function(text) table.insert(calls, { "log", text }) end,
+	-- share codes, palette
+	exportEffect = function(fx)
+		table.insert(calls, { "exportEffect", fx.Name })
+		if fx.Name == "Mare" then return "LC1:" .. string.rep("A", 20000), { elements = 80 } end
+		return "LC1:QUJD" .. fx.Name, { elements = #effects[fx.Name].elements, chars = 8 + #fx.Name, ignored = fx.Name == "Boom 2" and 2 or 0 }
+	end,
+	importEffect = function(code, name, opts)
+		table.insert(calls, { "importEffect", code, name, opts })
+		assert(string.find(code, "LC1:", 1, true), "LostCube: asta nu arată ca un cod LostCube (un cod începe cu LC1:).")
+		assert(not (effects[name or "Din cod"] and not (opts and opts.replace)), "LostCube: există deja un efect numit " .. (name or "Din cod") .. " (alege alt nume)")
+		local fx, els = makeEffect(name or "Din cod", 0.9, "GROUND")
+		effects[fx.Name] = { fx = fx, elements = els }
+		return fx, { elements = #els, notes = IMPORT_NOTES }
+	end,
+	duplicateEffect = function(fx, name)
+		table.insert(calls, { "duplicateEffect", fx.Name, name })
+		local copy, els = makeEffect(name, 0.6, "GROUND")
+		effects[name] = { fx = copy, elements = els }
+		return copy
+	end,
+	recolorEffect = function(fx, color, opts)
+		table.insert(calls, { "recolorEffect", fx.Name, color, opts })
+		return fx, { changed = RECOLOR_NEUTRAL and 0 or 5, neutral = RECOLOR_NEUTRAL or nil }
+	end,
+	paletteOf = function(r)
+		assert(r.style, "LostCube: analiza jocului nu are partea de stil vizual")
+		local out = {}
+		for _, c in r.style.colors do table.insert(out, { color = Color3.fromHex(c.hex), share = c.share }) end
+		return out, { night = r.style.night == true }
+	end,
+	suggestColors = function(palette, opts)
+		table.insert(calls, { "suggestColors", palette, opts })
+		local out = {}
+		for i = 1, opts.count do
+			out[i] = { color = Color3.fromRGB(255 - i * 20, 40 * i, 200), reason = "Motiv " .. i .. "." }
+		end
+		return out
+	end,
+	colorName = function(c) return "violet" end,
 }
 MOCKS.Editor = Editor
 local report = nil
@@ -112,7 +152,7 @@ local function lastCall() return calls[#calls] end
 
 -- definitions
 local defs = Tools.definitions()
-check("17 tools", #defs == 17 and #Tools.LIST == 17)
+check("21 tools", #defs == 21 and #Tools.LIST == 21)
 check("definitions cached + deterministic", Tools.definitions() == defs and AI.Json.encode(defs) == AI.Json.encode(Tools.definitions()))
 local seen = {}
 for _, t in Tools.LIST do
@@ -121,11 +161,11 @@ for _, t in Tools.LIST do
 	check("summary " .. t.name, type(Tools.summary(t.name, {})) == "string")
 end
 for _, name in { "get_game_overview", "find_instances", "get_instance", "read_script", "get_selection", "list_effects",
-	"describe_effect", "list_templates_and_presets", "list_animations", "preview_effect" } do
+	"describe_effect", "list_templates_and_presets", "list_animations", "preview_effect", "export_effect", "suggest_effect_colors" } do
 	check("read-only " .. name, Tools.isWrite(name) == false)
 end
 for _, name in { "create_effect_from_template", "create_effect", "add_element", "set_element_props", "generate_animation",
-	"select_instances", "run_luau" } do
+	"select_instances", "run_luau", "import_effect", "recolor_effect" } do
 	check("write " .. name, Tools.isWrite(name) == true)
 end
 check("unknown tool is a write", Tools.isWrite("format_disk") == true)
@@ -319,6 +359,131 @@ runQueue(2000)
 check("timeout reported", result and result[1] == true and has(result[2], "încă rulează după 30 s"), result and result[2])
 check("timeout committed", CHS.log[2] == "finish Commit", table.concat(CHS.log, "; "))
 check("no recording left open", CHS.active == nil)
+
+-- share codes: export_effect (read), import_effect (write)
+local callsBefore = #calls
+ok, text = run("export_effect", { name = "Boom" })
+check("export ok", ok and has(text, "Cod de partajare pentru efectul Boom (2 elemente)") and has(text, "\nLC1:QUJDBoom"), text)
+check("export is a read: no recording, one Editor call", lastCall()[1] == "exportEffect" and #calls == callsBefore + 1)
+effects["Boom 2"] = { fx = makeEffect("Boom 2", 1, "GROUND"), elements = {} }
+ok, text = run("export_effect", { name = "Boom 2" })
+check("export mentions what the code leaves out", ok and has(text, "Atenție: 2 obiecte din model (scripturi") and has(text, "\nLC1:QUJDBoom 2"), text)
+ok, text = run("export_effect", { name = "Boom" })
+check("...and nothing when all is in", ok and not has(text, "Atenție"), text)
+effects.Mare = { fx = makeEffect("Mare", 1, "GROUND"), elements = {} }
+ok, text = run("export_effect", { name = "Mare" })
+check("export too long for a tool result", ok == false and has(text, "prea lung") and has(text, "panoul VFX") and not has(text, "AAAAAAAAAA"), string.sub(text, 1, 200))
+ok, text = run("export_effect", { name = "Nope" })
+check("export unknown effect", ok == false and has(text, "list_effects"), text)
+ok, text = run("export_effect", {})
+check("export without a name", ok == false and has(text, "dă numele efectului"), text)
+ok, text = Tools.run("export_effect", { name = "Boom" }, { Editor = { effect = Editor.effect, exportEffect = function() error("LostCube: efectul Boom nu are piesa Root") end } })
+check("export failure is reported", ok == false and has(text, "nu are piesa Root"), text)
+
+CHS.log = {}
+ok, text = run("import_effect", { code = "LC1:QUJDRA", name = "Copie", replace = true })
+c = lastCall()
+check("import ok", ok and has(text, "Am importat efectul Copie") and has(text, "Elemente: Scântei (PARTICLES), Lumină (LIGHT)")
+	and has(text, "preview_effect"), text)
+check("import args", calls[#calls - 1][1] == "importEffect" and calls[#calls - 1][2] == "LC1:QUJDRA" and calls[#calls - 1][3] == "Copie"
+	and calls[#calls - 1][4].replace == true and c[1] == "log" and has(c[2], "Claude: efect importat din cod -> Copie"), c[1])
+check("import recorded", CHS.log[1] == "begin LostCube (Claude): Importă efect din cod" and CHS.log[2] == "finish Commit", table.concat(CHS.log, "; "))
+ok, text = run("import_effect", { code = "  LC1:QUJDRA\n" })
+check("import without a name uses the one in the code", ok and has(text, "Am importat efectul Din cod") and calls[#calls - 1][3] == nil
+	and calls[#calls - 1][4].replace == false, text)
+IMPORT_NOTES = { "3 valori erau în afara limitelor permise și au fost aduse în limite." }
+ok, text = run("import_effect", { code = "LC1:QUJDRA", name = "Cu note" })
+check("import notes are passed on", ok and has(text, "au fost aduse în limite"), text)
+IMPORT_NOTES = {}
+CHS.log = {}
+before = #calls
+ok, text = run("import_effect", { code = "salut" })
+check("a bad code is refused and rolled back", ok == false and has(text, "nu arată ca un cod LostCube") and has(text, "nu s-a schimbat nimic")
+	and CHS.log[2] == "finish Cancel", text)
+ok, text = run("import_effect", { code = "LC1:QUJDRA", name = "Boom" })
+check("a taken name is refused", ok == false and has(text, "există deja un efect numit Boom"), text)
+ok, text = run("import_effect", { code = "   " })
+check("empty code", ok == false and has(text, "dă codul"), text)
+ok, text = run("import_effect", {})
+check("missing code", ok == false and has(text, "dă codul"), text)
+
+-- recolor_effect (write)
+CHS.log = {}
+ok, text = run("recolor_effect", { name = "Boom", color = "#3DA5FF" })
+local rc = calls[#calls - 1]
+check("recolor ok", ok and has(text, "Am recolorat Boom spre #3DA5FF") and has(text, "5 culori schimbate") and has(text, "alb, gri și aproape negru"), text)
+check("recolor args", rc[1] == "recolorEffect" and rc[2] == "Boom" and typeof(rc[3]) == "Color3" and rc[3].ToHex() == "3DA5FF", rc[1])
+check("recolor recorded", CHS.log[1] == "begin LostCube (Claude): Recolorează efectul" and CHS.log[2] == "finish Commit", table.concat(CHS.log, "; "))
+ok, text = run("recolor_effect", { name = "Boom", color = "3DA5FF", accent = "#FF3366" })
+rc = calls[#calls - 1]
+check("recolor with an accent sends a list", ok and has(text, "#3DA5FF și #FF3366") and type(rc[3]) == "table" and #rc[3] == 2 and rc[3][2].ToHex() == "FF3366", text)
+before = #calls
+ok, text = run("recolor_effect", { name = "Boom", color = "#00FF88", new_name = "Boom verde" })
+check("recolor a copy", ok and has(text, "Boom verde (copie a lui Boom)") and calls[before + 1][1] == "duplicateEffect" and calls[before + 1][3] == "Boom verde"
+	and calls[before + 2][1] == "recolorEffect" and calls[before + 2][2] == "Boom verde", text)
+CHS.log = {}
+RECOLOR_NEUTRAL = true
+before = #calls
+ok, text = run("recolor_effect", { name = "Boom", color = "#00FF88", new_name = "Boom gri" })
+check("a grey effect: nothing to recolour, the copy is rolled back", ok == false and has(text, "doar alb, gri și negru") and CHS.log[2] == "finish Cancel", text)
+RECOLOR_NEUTRAL = false
+CHS.log = {}
+ok, text = run("recolor_effect", { name = "Boom", color = "verde" })
+check("bad colour", ok == false and has(text, "culoare invalidă") and has(text, "nu s-a schimbat nimic") and CHS.log[2] == "finish Cancel", text)
+ok, text = run("recolor_effect", { name = "Boom", color = "" })
+check("missing colour", ok == false and has(text, "dă culoarea ca hex"), text)
+ok, text = run("recolor_effect", { name = "Nope", color = "#FFFFFF" })
+check("recolor unknown effect", ok == false and has(text, "list_effects"), text)
+
+-- suggest_effect_colors (read)
+report = nil
+ok, text = run("suggest_effect_colors", {})
+check("no analysis", ok and has(text, "Nu există încă o analiză") and has(text, "tab-ul 🧠 Joc"), text)
+report = { name = "Arena" }
+ok, text = run("suggest_effect_colors", {})
+check("an analysis without a palette", ok and has(text, "nu are culorile hărții") and has(text, "stil vizual"), text)
+report = { name = "Arena", style = { colors = { { hex = "3C6E3A", share = 40.5 }, { hex = "6B4F2E", share = 15 } }, night = true } }
+before = #calls
+ok, text = run("suggest_effect_colors", {})
+local sc = calls[before + 1]
+check("suggestions", ok and has(text, "Paleta hărții (cele mai întâlnite culori): #3C6E3A 40.5%, #6B4F2E 15%. Harta e luminată ca noaptea.")
+	and has(text, "1. #EB28C8 (violet) — Motiv 1.") and has(text, "4. #AF a0" ) == false and has(text, "4. ") and not has(text, "5. "), text)
+check("suggest args", sc[1] == "suggestColors" and sc[3].count == 4 and sc[3].night == true and #sc[2] == 2, sc[1])
+check("a read: no recording", CHS.active == nil)
+ok, text = run("suggest_effect_colors", { count = 9 })
+check("count is limited to 5", ok and calls[#calls][3].count == 5 and has(text, "5. "), text)
+ok, text = run("suggest_effect_colors", { count = 1 })
+check("...and to at least 3", ok and calls[#calls][3].count == 3 and not has(text, "4. "), text)
+report = { name = "Arena", style = { colors = { { hex = "3C6E3A", share = 40.5 } } } }
+ok, text = run("suggest_effect_colors", {})
+check("daytime map", ok and not has(text, "noaptea") and calls[#calls][3].night == false, text)
+report = nil
+
+-- summaries of the new tools
+check("summary export", Tools.summary("export_effect", { name = "Boom" }) == "„Boom”")
+check("summary import", Tools.summary("import_effect", { code = "LC1:abcd", name = "Nou" }) == "„Nou” din cod (8 caractere)"
+	and Tools.summary("import_effect", { code = "LC1:abcd" }) == "efect din cod (8 caractere)" and Tools.summary("import_effect", {}) == "efect din cod (0 caractere)")
+check("summary recolor", Tools.summary("recolor_effect", { name = "Boom", color = "#3DA5FF" }) == "„Boom” → #3DA5FF"
+	and Tools.summary("recolor_effect", { name = "Boom", color = "#3DA5FF", accent = "#FF0000", new_name = "Albastru" })
+	== "„Boom” → #3DA5FF · accent #FF0000 · copie „Albastru”")
+check("summary suggest", Tools.summary("suggest_effect_colors", {}) == "paleta hărții")
+
+-- the schemas of the new tools are strict objects without surprises
+for _, name in { "export_effect", "import_effect", "recolor_effect", "suggest_effect_colors" } do
+	local def = Tools.get(name)
+	check("definition " .. name, def and type(def.description) == "string" and #def.description > 80 and type(def.label) == "string")
+	local schema
+	for _, d in defs do
+		if d.name == name then schema = d end
+	end
+	check("schema " .. name, schema and schema.strict == true and schema.input_schema.additionalProperties == false and next(schema.input_schema.properties) ~= nil)
+end
+local importSchema
+for _, d in defs do
+	if d.name == "import_effect" then importSchema = d.input_schema end
+end
+check("import_effect requires the code only", #importSchema.required == 1 and importSchema.required[1] == "code" and importSchema.properties.name.type == "string"
+	and importSchema.properties.replace.type == "boolean")
 
 -- never throws
 ok, text = Tools.run("get_instance", "garbage")

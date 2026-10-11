@@ -759,6 +759,62 @@ local function previewEffect(input, ctx): (boolean, string)
 		rig and ("pe " .. fullName(rig)) or "pe selecție sau pe sol, în fața camerei")
 end
 
+-- the code of an effect goes back to Claude as text: it must fit in one tool result or it would be cut (and useless)
+local function exportEffectCode(input, ctx): (boolean, string)
+	local Editor = editorOf(ctx)
+	local fx = findEffect(Editor, input.name)
+	local code, stats = Editor.exportEffect(fx)
+	local room = AI.MAX_TOOL_RESULT - 700
+	if #code > room then
+		return false, string.format("Codul efectului %s are %d de caractere: prea lung ca să-l trimit prin chat (maximum %d). "
+			.. "Dezvoltatorul îl poate exporta din panoul VFX, cu butonul de export.", fx.Name, #code, room)
+	end
+	local elements = type(stats) == "table" and stats.elements or nil
+	local ignored = type(stats) == "table" and tonumber(stats.ignored) or 0
+	return true, string.format("Cod de partajare pentru efectul %s%s, %d de caractere. Se importă cu import_effect sau din panoul "
+		.. "VFX (lipești codul întreg, de la LC1: până la capăt).%s\n%s", fx.Name,
+		elements and (string.format(" (%d elemente)", elements)) or "", #code,
+		ignored > 0 and string.format(" Atenție: %d obiecte din model (scripturi, directoare, piese care nu sunt elemente) nu intră în cod.",
+			ignored) or "", code)
+end
+
+local function suggestEffectColors(input, ctx): (boolean, string)
+	local Editor = editorOf(ctx)
+	local Analyzer = optionalModule("Analyzer")
+	if not Analyzer then
+		return true, "Această versiune de LostCube nu are analiza jocului, deci nu cunosc paleta hărții."
+	end
+	local okLoad, report = pcall(Analyzer.load)
+	if not okLoad or not report then
+		return true, "Nu există încă o analiză salvată a jocului, deci nu cunosc paleta hărții. Dezvoltatorul o poate porni din "
+			.. "tab-ul 🧠 Joc; până atunci alege culorile după tema jocului."
+	end
+	local okPalette, palette, mood = pcall(Editor.paletteOf, report)
+	if not okPalette then
+		return true, "Analiza salvată nu are culorile hărții (" .. cleanError(palette) .. "). Poate fi refăcută din tab-ul 🧠 Joc."
+	end
+	local count = math.clamp(math.floor(tonumber(input.count) or 4), 3, 5)
+	local suggestions = Editor.suggestColors(palette, { count = count, night = type(mood) == "table" and mood.night })
+	local map = {}
+	for i, entry in palette do
+		if i > 8 then
+			break
+		end
+		local share = tonumber(entry.share)
+		table.insert(map, string.format("%s%s", fmt(entry.color), share and string.format(" %s%%", round(share, 1)) or ""))
+	end
+	local lines = { "Paleta hărții (cele mai întâlnite culori): " .. table.concat(map, ", ") .. (type(mood) == "table" and mood.night
+		and ". Harta e luminată ca noaptea." or ".") }
+	table.insert(lines, "Culori de efect care se citesc bine pe ea (prima e cea mai bună; folosește-le în create_effect_from_template "
+		.. "sau recolor_effect):")
+	for i, s in suggestions do
+		local okName, name = pcall(Editor.colorName, s.color)
+		table.insert(lines, string.format("%d. %s%s — %s", i, fmt(s.color), okName and type(name) == "string" and (" (" .. name .. ")") or "",
+			tostring(s.reason)))
+	end
+	return true, table.concat(lines, "\n")
+end
+
 -- ---------------------------------------------------------------------------------------------
 -- tools that change the place (run inside one recording by Tools.run)
 -- ---------------------------------------------------------------------------------------------
@@ -837,6 +893,43 @@ local function setElementProps(input, ctx): (boolean, string)
 	end
 	return true, string.format("Am modificat %s din %s.%s", element.Name, fx.Name,
 		okJson and ("\nProprietăți acum: " .. AI.truncate(json, 3000)) or "")
+end
+
+local function importEffectCode(input, ctx): (boolean, string)
+	local Editor = editorOf(ctx)
+	local code = type(input.code) == "string" and input.code or ""
+	assert(trim(code) ~= "", "dă codul efectului (text care începe cu LC1:)")
+	local name = type(input.name) == "string" and trim(input.name) ~= "" and trim(input.name) or nil
+	local fx, info = Editor.importEffect(code, name, { replace = input.replace == true })
+	log(ctx, "efect importat din cod -> " .. fx.Name)
+	local notes = type(info) == "table" and type(info.notes) == "table" and #info.notes > 0 and ("\n" .. table.concat(info.notes, " ")) or ""
+	return true, string.format("Am importat efectul %s din cod (ReplicatedStorage.LostCube.Effects.%s). Elemente: %s. Îl poți arăta cu "
+		.. "preview_effect.%s", fx.Name, fx.Name, elementNames(Editor, fx), notes)
+end
+
+local function recolorEffectTool(input, ctx): (boolean, string)
+	local Editor = editorOf(ctx)
+	local fx = findEffect(Editor, input.name)
+	local main = parseColor(input.color)
+	assert(main, "dă culoarea ca hex, de exemplu #3DA5FF")
+	local targets = { main }
+	local accent = parseColor(input.accent)
+	if accent then
+		table.insert(targets, accent)
+	end
+	local copyName = type(input.new_name) == "string" and trim(input.new_name) ~= "" and trim(input.new_name) or nil
+	if copyName then -- the original stays: the copy is recoloured
+		fx = Editor.duplicateEffect(fx, copyName)
+	end
+	local _, info = Editor.recolorEffect(fx, #targets == 1 and targets[1] or targets)
+	if type(info) == "table" and info.neutral then
+		return false, string.format("Efectul %s are doar alb, gri și negru: nu are nicio culoare de schimbat, așa că n-am modificat nimic.",
+			input.name)
+	end
+	log(ctx, string.format("recolorat %s -> %s", fx.Name, fmt(main)))
+	return true, string.format("Am recolorat %s%s spre %s%s (%s culori schimbate). Culorile alb, gri și aproape negru au rămas. "
+		.. "Îl poți arăta cu preview_effect.", fx.Name, copyName and " (copie a lui " .. tostring(input.name) .. ")" or "", fmt(main),
+		accent and (" și " .. fmt(accent)) or "", tostring(type(info) == "table" and info.changed or "?"))
 end
 
 local function generateAnimation(input, ctx): (boolean, string)
@@ -1173,6 +1266,29 @@ local LIST = {
 		end,
 	},
 	{
+		name = "export_effect", label = "Exportă efectul (cod)", run = exportEffectCode,
+		description = "Returns the share code of a LostCube effect: a text starting with LC1: that holds the whole effect "
+			.. "(every element with its properties and timeline). The developer pastes it into the VFX tab (or you into "
+			.. "import_effect) to get an exact copy in another place or game. Show the code in a code block, complete, "
+			.. "without changing a character. It does not change the place.",
+		params = { { "name", str("Effect name."), true } },
+		summary = function(input)
+			return quote(input.name)
+		end,
+	},
+	{
+		name = "suggest_effect_colors", label = "Sugerează culori pentru efecte", run = suggestEffectColors,
+		description = "Reads the color palette of the developer's map from the stored analysis and returns 3-5 effect colors "
+			.. "(hex) that read well against it: far from the colors of the ground and walls, with enough contrast, in a "
+			.. "complementary / analogous relation to the main hue of the map, each with a short reason. Call it before "
+			.. "choosing the color of a new effect (create_effect_from_template color, recolor_effect) when the effect "
+			.. "must be seen well on this map. It does not change the place.",
+		params = { { "count", int("How many colors, 3 to 5 (default 4).") } },
+		summary = function()
+			return "paleta hărții"
+		end,
+	},
+	{
 		name = "create_effect_from_template", label = "Creează efect din șablon", write = true, run = createFromTemplate,
 		description = "Creates a new LostCube effect from a complete template, recolored and scaled: the fastest way to a "
 			.. "good-looking effect. Pick the template that matches the moment (hit, slash, spell, heal, dash...) and a "
@@ -1255,6 +1371,46 @@ local LIST = {
 		},
 		summary = function(input)
 			return string.format("%s din %s · %s", quote(input.element), quote(input.effect), keysOf(input.props))
+		end,
+	},
+	{
+		name = "import_effect", label = "Importă efect din cod", write = true, run = importEffectCode,
+		description = "Creates a LostCube effect from a share code (text starting with LC1: from export_effect or from the "
+			.. "VFX tab of another game). The code is checked completely first (version, checksum, every value; refused with "
+			.. "a clear message when anything is wrong) and no script is ever created. Pass the code exactly as given, "
+			.. "complete. Needs the developer's approval.",
+		params = {
+			{ "code", str("The complete share code, starting with LC1:."), true },
+			{ "name", str("Name for the new effect (default: the name inside the code).") },
+			{ "replace", bool("true deletes and replaces an existing effect with the same name.") },
+		},
+		summary = function(input)
+			local size = type(input.code) == "string" and #input.code or 0
+			return string.format("%s din cod (%d caractere)", input.name and quote(input.name) or "efect", size)
+		end,
+	},
+	{
+		name = "recolor_effect", label = "Recolorează efectul", write = true, run = recolorEffectTool,
+		description = "Moves a whole LostCube effect to another color: every colored particle, trail, beam, light, 3D piece "
+			.. "and camera flash turns by the same hue angle (accents keep their relation to the main color); whites, greys "
+			.. "and near-blacks stay. Give a second color (accent) to send the effect's second hue group to it. With "
+			.. "new_name the original stays and a recolored copy is made (team colors, rarities). Needs the developer's "
+			.. "approval.",
+		params = {
+			{ "name", str("Effect name."), true },
+			{ "color", str("New main color as hex, e.g. #3DA5FF."), true },
+			{ "accent", str("Optional second color as hex for the secondary hue group of the effect.") },
+			{ "new_name", str("If given, recolor a copy with this name and keep the original.") },
+		},
+		summary = function(input)
+			local parts = { quote(input.name) .. " → " .. tostring(input.color) }
+			if input.accent then
+				table.insert(parts, "accent " .. tostring(input.accent))
+			end
+			if input.new_name then
+				table.insert(parts, "copie " .. quote(input.new_name))
+			end
+			return table.concat(parts, " · ")
 		end,
 	},
 	{

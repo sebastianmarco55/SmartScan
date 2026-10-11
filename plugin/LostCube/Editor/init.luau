@@ -9,6 +9,11 @@ Used by the LostCube plugin's panels and by Claude (through Studio):
 	Editor.newFromTemplate("Boom 2", "FIRE_EXPLOSION", { color = Color3.fromRGB(80, 160, 255), scale = 1.5 })  -- Editor.TEMPLATES
 	Editor.importAsset(123456789, "Free VFX")  -- free Creator Store model -> effect (its scripts are deleted first)
 	Editor.importEmitters(fx, workspace.SomeModel)  -- the emitters / trails / lights of a model -> elements of fx
+	local code = Editor.exportEffect(fx)  -- "LC1:..." text to copy and send; Editor.importEffect(code, "Name") rebuilds it exactly
+	Editor.exportAll() / Editor.importMany(code)  -- a whole library in one code
+	Editor.recolorEffect(fx, Color3.fromRGB(80, 160, 255))  -- the whole effect to another colour (whites and greys stay)
+	local color, why = Editor.matchPalette(fx, Editor.paletteOf(Analyzer.load()))  -- a colour that reads well on the map
+	Editor.makeVariants(fx, { count = 3 })  -- copies in other colours (teams, rarities); Editor.scaleEffect(fx, 1.5) for size
 
 Format (the same the Blender exporter writes; LostCube.VFX plays it in the game):
 	Model <effect>  attributes LC_Duration (s), LC_Attach
@@ -2771,6 +2776,2211 @@ function Editor.importAsset(assetId, effectName)
 	end
 	table.insert(lines, "Verifică efectul în previzualizare: texturile și timpii vin din modelul original.")
 	return effect, report
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- share codes: "LC1:" + base64( crc32 + flag + compact JSON, LZ-compressed when that is smaller ). Pure Luau on purpose: the JSON
+-- of HttpService has no stable key order (two exports of one effect would differ) and tests must not depend on it.
+--   bytes   4 = CRC-32 of the JSON (a code cut or mangled while copying is refused), 1 = 0 (JSON as it is) or 1 (LZSS), then the data
+--   JSON    { g = Editor.VERSION, fx = effect } for one effect, { g = ..., lib = { effect, ... } } for a library. Short keys, a
+--           property equal to a fresh instance's is left out, numbers keep 6 digits (the engine stores 32-bit floats), Color3 is
+--           "RRGGBB" when it is an 8-bit colour. The layout is described at encodeElement / decodeElement below.
+--   limits  Editor.SHARE_LIMITS (sizes, elements, effects); every value read from a code is type-checked and clamped, resource
+--           urls must be rbxassetid:// or Roblox's own content, and nothing in a code can create a script.
+--   version the number after "LC". A field added later is simply ignored by older readers; a change in the meaning of existing
+--           fields becomes LC2, and an older plugin then refuses the code with a message asking for an update.
+-- ---------------------------------------------------------------------------------------------
+Editor.CODE_VERSION = 1
+Editor.CODE_PREFIX = "LC1:"
+Editor.SHARE_LIMITS = {
+	codeChars = 300000, -- characters of the code of one effect
+	libraryChars = 2500000, -- ... of a whole library
+	jsonBytes = 3000000, -- after decompression (a "zip bomb" cannot grow past it)
+	elements = 150, -- elements per effect
+	effects = 100, -- effects per library
+	nameChars = 100,
+	keypoints = 20, -- per sequence
+	attributes = 40, -- per instance
+	variants = 12,
+}
+local LIMITS = Editor.SHARE_LIMITS
+-- the CFrame of an Attachment / Part relative to the Root part of the effect
+local function frameIn(root, inst)
+	local ok, cf = pcall(function()
+		if inst:IsA("Attachment") then
+			if inst.Parent == root then
+				return inst.CFrame
+			end
+			return root.CFrame:ToObjectSpace(inst.WorldCFrame)
+		elseif inst:IsA("BasePart") then
+			return root.CFrame:ToObjectSpace(inst.CFrame)
+		end
+		return CFrame.new()
+	end)
+	return ok and cf or CFrame.new()
+end
+
+local function freeName(folder, base)
+	base = string.sub(base, 1, LIMITS.nameChars - 8)
+	if not folder or not folder:FindFirstChild(base) then
+		return base
+	end
+	local i = 2
+	while folder:FindFirstChild(base .. " " .. i) do
+		i += 1
+	end
+	return base .. " " .. i
+end
+
+-- the machinery of the codes lives in this block (locals are scoped: the file stays under the 200 locals limit)
+do
+	-- compact JSON (sorted keys) -------------------------------------------------------------------------------
+	local JSON_ESCAPES = { ['"'] = '\\"', ["\\"] = "\\\\", ["\n"] = "\\n", ["\r"] = "\\r", ["\t"] = "\\t" }
+	local JSON_UNESCAPES = { ['"'] = '"', ["\\"] = "\\", ["/"] = "/", b = "\b", f = "\f", n = "\n", r = "\r", t = "\t" }
+
+	local function jsonEscape(c)
+		return JSON_ESCAPES[c] or string.format("\\u%04x", string.byte(c))
+	end
+
+	local function jsonEncode(value)
+		local parts, n = {}, 0
+		local function put(s)
+			n += 1
+			parts[n] = s
+		end
+		local function enc(v, depth)
+			local kind = type(v)
+			if depth > 24 then
+				error("json: prea adânc", 0)
+			elseif kind == "string" then
+				put('"' .. string.gsub(v, '[%c"\\]', jsonEscape) .. '"')
+			elseif kind == "number" then
+				if v ~= v or v == math.huge or v == -math.huge then
+					error("json: număr invalid", 0)
+				end
+				put(v == 0 and "0" or string.format("%.12g", v))
+			elseif kind == "boolean" then
+				put(v and "true" or "false")
+			elseif kind == "table" then
+				if next(v) == nil or v[1] ~= nil then
+					put("[")
+					for i = 1, #v do
+						if i > 1 then
+							put(",")
+						end
+						enc(v[i], depth + 1)
+					end
+					put("]")
+				else
+					local keys = {}
+					for k in v do
+						assert(type(k) == "string", "json: cheie care nu e text")
+						table.insert(keys, k)
+					end
+					table.sort(keys)
+					put("{")
+					for i, k in keys do
+						if i > 1 then
+							put(",")
+						end
+						put('"' .. string.gsub(k, '[%c"\\]', jsonEscape) .. '":')
+						enc(v[k], depth + 1)
+					end
+					put("}")
+				end
+			else
+				error("json: tip neașteptat " .. kind, 0)
+			end
+		end
+		enc(value, 0)
+		return table.concat(parts)
+	end
+
+	-- strict reader: no null, depth and size limits; errors are plain strings
+	local function jsonDecode(text)
+		local pos, len, nodes = 1, #text, 0
+		local function fail(why)
+			error(string.format("json: %s (poziția %d)", why, pos), 0)
+		end
+		local function skip()
+			pos = string.find(text, "[^ \t\r\n]", pos) or (len + 1)
+		end
+		local function readString()
+			local i, buf, n = pos + 1, {}, 0
+			while true do
+				local j = string.find(text, '["\\]', i)
+				if not j then
+					fail("șir neterminat")
+				end
+				if j > i then
+					n += 1
+					buf[n] = string.sub(text, i, j - 1)
+				end
+				if string.byte(text, j) == 34 then
+					pos = j + 1
+					return table.concat(buf)
+				end
+				local c = string.sub(text, j + 1, j + 1)
+				local plain = JSON_UNESCAPES[c]
+				if plain then
+					n += 1
+					buf[n] = plain
+					i = j + 2
+				elseif c == "u" then
+					local hex = string.match(text, "^%x%x%x%x", j + 2)
+					if not hex then
+						fail("secvență \\u greșită")
+					end
+					local cp = tonumber(hex, 16) :: number
+					i = j + 6
+					if cp >= 0xD800 and cp <= 0xDBFF then
+						local low = string.match(text, "^\\u(%x%x%x%x)", i)
+						local lv = low and tonumber(low, 16)
+						if not lv or lv < 0xDC00 or lv > 0xDFFF then
+							fail("surogat nepereche")
+						end
+						cp = 0x10000 + (cp - 0xD800) * 0x400 + (lv - 0xDC00)
+						i += 6
+					elseif cp >= 0xDC00 and cp <= 0xDFFF then
+						fail("surogat nepereche")
+					end
+					n += 1
+					buf[n] = utf8.char(cp)
+				else
+					fail("secvență de escape necunoscută")
+				end
+			end
+		end
+		local readValue
+		readValue = function(depth)
+			nodes += 1
+			if nodes > 600000 then
+				fail("prea multe valori")
+			end
+			if depth > 24 then
+				fail("prea adânc")
+			end
+			skip()
+			local c = string.byte(text, pos)
+			if c == 34 then
+				return readString()
+			elseif c == 123 then -- {
+				pos += 1
+				local out = {}
+				skip()
+				if string.byte(text, pos) == 125 then
+					pos += 1
+					return out
+				end
+				while true do
+					skip()
+					if string.byte(text, pos) ~= 34 then
+						fail("cheie așteptată")
+					end
+					local key = readString()
+					skip()
+					if string.byte(text, pos) ~= 58 then
+						fail("':' așteptat")
+					end
+					pos += 1
+					out[key] = readValue(depth + 1)
+					skip()
+					local d = string.byte(text, pos)
+					pos += 1
+					if d == 125 then
+						return out
+					elseif d ~= 44 then
+						pos -= 1
+						fail("',' sau '}' așteptat")
+					end
+				end
+			elseif c == 91 then -- [
+				pos += 1
+				local out, n = {}, 0
+				skip()
+				if string.byte(text, pos) == 93 then
+					pos += 1
+					return out
+				end
+				while true do
+					n += 1
+					out[n] = readValue(depth + 1)
+					skip()
+					local d = string.byte(text, pos)
+					pos += 1
+					if d == 93 then
+						return out
+					elseif d ~= 44 then
+						pos -= 1
+						fail("',' sau ']' așteptat")
+					end
+				end
+			elseif c == 116 and string.sub(text, pos, pos + 3) == "true" then
+				pos += 4
+				return true
+			elseif c == 102 and string.sub(text, pos, pos + 4) == "false" then
+				pos += 5
+				return false
+			elseif c and (c == 45 or (c >= 48 and c <= 57)) then
+				local s = string.match(text, "^-?%d+%.?%d*[eE]?[+-]?%d*", pos)
+				local v = s and tonumber(s)
+				if not v or v ~= v or v == math.huge or v == -math.huge then
+					fail("număr greșit")
+				end
+				pos += #(s :: string)
+				return v
+			end
+			fail("valoare neașteptată")
+			return nil
+		end
+		local value = readValue(0)
+		skip()
+		if pos <= len then
+			fail("text în plus")
+		end
+		return value
+	end
+
+	-- CRC-32 (detects a code that was cut or mangled while copying) ---------------------------------------------------
+	local crcTable
+	local function crc32(s)
+		if not crcTable then
+			crcTable = {}
+			for i = 0, 255 do
+				local c = i
+				for _ = 1, 8 do
+					if bit32.band(c, 1) == 1 then
+						c = bit32.bxor(bit32.rshift(c, 1), 0xEDB88320)
+					else
+						c = bit32.rshift(c, 1)
+					end
+				end
+				crcTable[i] = c
+			end
+		end
+		local c = 0xFFFFFFFF
+		for i = 1, #s do
+			c = bit32.bxor(crcTable[bit32.band(bit32.bxor(c, string.byte(s, i)), 0xFF)], bit32.rshift(c, 8))
+		end
+		return bit32.bxor(c, 0xFFFFFFFF)
+	end
+
+	-- base64 (standard alphabet, no padding written; "=" and the URL-safe "-_" are accepted when reading) ----------------
+	local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	local B64_CHAR, B64_VALUE = {}, {}
+	for i = 1, 64 do
+		local ch = string.sub(B64, i, i)
+		B64_CHAR[i - 1] = ch
+		B64_VALUE[string.byte(ch)] = i - 1
+	end
+	B64_VALUE[string.byte("-")] = 62
+	B64_VALUE[string.byte("_")] = 63
+
+	local function base64Encode(s)
+		local out, n = {}, 0
+		local last = #s - #s % 3
+		for i = 1, last, 3 do
+			local a, b, c = string.byte(s, i, i + 2)
+			local v = a * 65536 + b * 256 + c
+			n += 1
+			out[n] = B64_CHAR[bit32.rshift(v, 18)] .. B64_CHAR[bit32.band(bit32.rshift(v, 12), 63)]
+				.. B64_CHAR[bit32.band(bit32.rshift(v, 6), 63)] .. B64_CHAR[bit32.band(v, 63)]
+		end
+		local rest = #s - last
+		if rest == 1 then
+			local v = string.byte(s, last + 1) * 65536
+			n += 1
+			out[n] = B64_CHAR[bit32.rshift(v, 18)] .. B64_CHAR[bit32.band(bit32.rshift(v, 12), 63)]
+		elseif rest == 2 then
+			local a, b = string.byte(s, last + 1, last + 2)
+			local v = a * 65536 + b * 256
+			n += 1
+			out[n] = B64_CHAR[bit32.rshift(v, 18)] .. B64_CHAR[bit32.band(bit32.rshift(v, 12), 63)]
+				.. B64_CHAR[bit32.band(bit32.rshift(v, 6), 63)]
+		end
+		return table.concat(out)
+	end
+
+	-- -> bytes, or nil when the text is not base64
+	local function base64Decode(text: string): string?
+		text = string.gsub(text, "=+$", "")
+		local len = #text
+		if len % 4 == 1 or string.find(text, "[^%w%+/_%-]") then
+			return nil
+		end
+		local out, n = {}, 0
+		local last = len - len % 4
+		for i = 1, last, 4 do
+			local a, b, c, d = string.byte(text, i, i + 3)
+			local v = B64_VALUE[a] * 262144 + B64_VALUE[b] * 4096 + B64_VALUE[c] * 64 + B64_VALUE[d]
+			n += 1
+			out[n] = string.char(bit32.rshift(v, 16), bit32.band(bit32.rshift(v, 8), 255), bit32.band(v, 255))
+		end
+		local rest = len - last
+		if rest == 2 then
+			local a, b = string.byte(text, last + 1, last + 2)
+			local v = B64_VALUE[a] * 4096 + B64_VALUE[b] * 64
+			n += 1
+			out[n] = string.char(bit32.rshift(v, 10))
+		elseif rest == 3 then
+			local a, b, c = string.byte(text, last + 1, last + 3)
+			local v = B64_VALUE[a] * 262144 + B64_VALUE[b] * 4096 + B64_VALUE[c] * 64
+			n += 1
+			out[n] = string.char(bit32.rshift(v, 16), bit32.band(bit32.rshift(v, 8), 255))
+		end
+		return table.concat(out)
+	end
+
+	-- LZSS (4 KB window, matches of 3..18 bytes): a flag byte (bit set = literal) then up to 8 items; JSON with its repeated keys
+	-- shrinks to about a third ---------------------------------------------------------------------------------------------
+	local function lzCompress(s)
+		local n = #s
+		local bytes = table.create(n)
+		for i = 1, n, 4000 do
+			local chunk = { string.byte(s, i, math.min(n, i + 3999)) }
+			table.move(chunk, 1, #chunk, i, bytes)
+		end
+		local head, prev = {}, table.create(n)
+		local out, outN = {}, 0
+		local group, groupN, flags = {}, 0, 0
+		local function flush()
+			if groupN == 0 then
+				return
+			end
+			outN += 1
+			out[outN] = string.char(flags) .. table.concat(group, "", 1, groupN)
+			groupN, flags = 0, 0
+			table.clear(group)
+		end
+		local function insert(p)
+			if p + 2 <= n then
+				local key = bytes[p] * 65536 + bytes[p + 1] * 256 + bytes[p + 2]
+				prev[p] = head[key]
+				head[key] = p
+			end
+		end
+		local i = 1
+		while i <= n do
+			local bestLen, bestPos = 0, 0
+			if i + 2 <= n then
+				local candidate = head[bytes[i] * 65536 + bytes[i + 1] * 256 + bytes[i + 2]]
+				local tries = 0
+				local maxLen = math.min(18, n - i + 1)
+				while candidate and i - candidate <= 4095 and tries < 40 do
+					local l = 0
+					while l < maxLen and bytes[candidate + l] == bytes[i + l] do
+						l += 1
+					end
+					if l > bestLen then
+						bestLen, bestPos = l, candidate
+						if l == maxLen then
+							break
+						end
+					end
+					candidate = prev[candidate]
+					tries += 1
+				end
+			end
+			groupN += 1
+			if bestLen >= 3 then
+				local v = (i - bestPos) * 16 + (bestLen - 3)
+				group[groupN] = string.char(bit32.rshift(v, 8), bit32.band(v, 255))
+				for p = i, i + bestLen - 1 do
+					insert(p)
+				end
+				i += bestLen
+			else
+				flags += bit32.lshift(1, groupN - 1)
+				group[groupN] = string.char(bytes[i])
+				insert(i)
+				i += 1
+			end
+			if groupN == 8 then
+				flush()
+			end
+		end
+		flush()
+		return table.concat(out)
+	end
+
+	-- -> text, or nil + reason when the data is damaged or would grow past `limit` bytes. Memory stays small however much the
+	-- data grows: only the last 4 KB (what a match can point to) and the finished chunks are kept.
+	local function lzDecompress(s, limit)
+		local out, outN, flushed = {}, 0, 0
+		local parts = {}
+		local len, i = #s, 1
+		while i <= len do
+			local flags = string.byte(s, i)
+			i += 1
+			for bitIndex = 0, 7 do
+				if i > len then
+					break
+				end
+				if bit32.band(bit32.rshift(flags, bitIndex), 1) == 1 then
+					outN += 1
+					out[outN] = string.byte(s, i)
+					i += 1
+				else
+					if i + 1 > len then
+						return nil, "date tăiate"
+					end
+					local hi, lo = string.byte(s, i, i + 1)
+					i += 2
+					local v = hi * 256 + lo
+					local offset, count = bit32.rshift(v, 4), bit32.band(v, 15) + 3
+					if offset == 0 or offset > flushed + outN then
+						return nil, "referință greșită"
+					end
+					for _ = 1, count do
+						outN += 1
+						out[outN] = out[outN - offset]
+					end
+				end
+			end
+			if flushed + outN > limit then
+				return nil, "date prea mari"
+			end
+			if outN >= 65536 then -- keep the last 4 KB, turn the rest into text
+				local keep = outN - 4096
+				for a = 1, keep, 4000 do
+					table.insert(parts, string.char(table.unpack(out, a, math.min(keep, a + 3999))))
+				end
+				table.move(out, keep + 1, outN, 1)
+				for k = 4097, outN do
+					out[k] = nil
+				end
+				flushed += keep
+				outN = 4096
+			end
+		end
+		for a = 1, outN, 4000 do
+			table.insert(parts, string.char(table.unpack(out, a, math.min(outN, a + 3999))))
+		end
+		return table.concat(parts)
+	end
+
+	-- the codec of values: Roblox datatypes <-> numbers / strings / short arrays ----------------------------------------------
+	--   number, bool, string       as they are (numbers keep 6 significant digits: the engine stores 32-bit floats)
+	--   Color3                     "RRGGBB" (8-bit colours) or { r, g, b }
+	--   ColorSequence              { color } (one colour) or { t, color, t, color, ... }
+	--   NumberSequence             n (one value) or { t, v, t, v, ... } or { "e", t, v, envelope, ... }
+	--   NumberRange / Vector2 / 3  n or { min, max } / { x, y } / { x, y, z }
+	--   CFrame (relative to Root)  { x, y, z } or { x, y, z, rx, ry, rz } (degrees)
+	--   enums                      their name
+	local function fl(x)
+		if x ~= x or x == math.huge or x == -math.huge then
+			return 0
+		end
+		local r = tonumber(string.format("%.6g", x)) :: number
+		return r == 0 and 0 or r
+	end
+
+	local function fl12(x)
+		if x ~= x or x == math.huge or x == -math.huge then
+			return 0
+		end
+		local r = tonumber(string.format("%.12g", x)) :: number
+		return r == 0 and 0 or r
+	end
+
+	local URL_SHORT = { { "rbxassetid://", "#" }, { "rbxasset://textures/particles/", "~p/" }, { "rbxasset://textures/", "~t/" },
+		{ "rbxasset://sounds/", "~s/" } }
+
+	local function encUrl(url)
+		for _, pair in URL_SHORT do
+			if string.sub(url, 1, #pair[1]) == pair[1] then
+				return pair[2] .. string.sub(url, #pair[1] + 1)
+			end
+		end
+		return url
+	end
+
+	local function encColor(c)
+		local r, g, b = c.R * 255, c.G * 255, c.B * 255
+		local ri, gi, bi = math.floor(r + 0.5), math.floor(g + 0.5), math.floor(b + 0.5)
+		if math.abs(r - ri) < 0.02 and math.abs(g - gi) < 0.02 and math.abs(b - bi) < 0.02 and ri >= 0 and ri <= 255 and gi >= 0
+			and gi <= 255 and bi >= 0 and bi <= 255 then
+			return string.format("%02X%02X%02X", ri, gi, bi)
+		end
+		return { fl(c.R), fl(c.G), fl(c.B) }
+	end
+
+	local function encColorSeq(cs)
+		local k = cs.Keypoints
+		if #k == 2 and jsonEncode(encColor(k[1].Value)) == jsonEncode(encColor(k[2].Value)) then
+			return { encColor(k[1].Value) }
+		end
+		local out = {}
+		for _, kp in k do
+			table.insert(out, fl(kp.Time))
+			table.insert(out, encColor(kp.Value))
+		end
+		return out
+	end
+
+	local function encNumberSeq(ns)
+		local k = ns.Keypoints
+		local envelope = false
+		for _, kp in k do
+			if kp.Envelope ~= 0 then
+				envelope = true
+			end
+		end
+		if #k == 2 and not envelope and fl(k[1].Value) == fl(k[2].Value) then
+			return fl(k[1].Value)
+		end
+		local out = envelope and { "e" } or {}
+		for _, kp in k do
+			table.insert(out, fl(kp.Time))
+			table.insert(out, fl(kp.Value))
+			if envelope then
+				table.insert(out, fl(kp.Envelope))
+			end
+		end
+		return out
+	end
+
+	local function encRange(nr)
+		if fl(nr.Min) == fl(nr.Max) then
+			return fl(nr.Min)
+		end
+		return { fl(nr.Min), fl(nr.Max) }
+	end
+
+	local function degrees3(x)
+		local r = tonumber(string.format("%.3f", x)) :: number
+		return r == 0 and 0 or r
+	end
+
+	local function encFrame(cf)
+		local at = cf.Position
+		local out = { fl(at.X), fl(at.Y), fl(at.Z) }
+		local ok, rx, ry, rz = pcall(function()
+			return cf:ToOrientation()
+		end)
+		if ok and type(rx) == "number" then
+			local a, b, c = degrees3(math.deg(rx)), degrees3(math.deg(ry)), degrees3(math.deg(rz))
+			if a ~= 0 or b ~= 0 or c ~= 0 then
+				out[4], out[5], out[6] = a, b, c
+			end
+		end
+		return out
+	end
+
+	local function encodeValue(kind, v)
+		if kind == "n" or kind == "i" then
+			return fl(v)
+		elseif kind == "b" or kind == "s" then
+			return v
+		elseif kind == "url" then
+			return encUrl(v)
+		elseif kind == "c" then
+			return encColor(v)
+		elseif kind == "cs" then
+			return encColorSeq(v)
+		elseif kind == "ns" then
+			return encNumberSeq(v)
+		elseif kind == "nr" then
+			return encRange(v)
+		elseif kind == "v2" then
+			return { fl(v.X), fl(v.Y) }
+		elseif kind == "v3" then
+			return { fl(v.X), fl(v.Y), fl(v.Z) }
+		end
+		return v.Name -- enums
+	end
+
+	-- decoding: every value is checked, out-of-range numbers are brought into range (and counted) -------------------------
+	local where = "" -- what is being read, for the error messages
+	local clamped = 0 -- values that had to be brought into range during this read
+
+	local function fail(why)
+		error("LostCube: cod invalid" .. (where ~= "" and (" (" .. where .. ")") or "") .. ": " .. why, 0)
+	end
+
+	local function validText(s, max, what)
+		if type(s) ~= "string" then
+			fail(what .. " trebuie să fie text")
+		end
+		if #s > max then
+			fail(what .. " e prea lung (maxim " .. max .. " caractere)")
+		end
+		if utf8.len(s) == nil or string.find(s, "%c") then
+			fail(what .. " conține caractere nepermise")
+		end
+		return s
+	end
+
+	-- at most n characters (the text of an error message may come from a hostile code)
+	local function shortenText(s, n)
+		s = tostring(s)
+		local length = utf8.len(s)
+		if length and length <= n then
+			return s
+		end
+		local ok, cut = pcall(utf8.offset, s, n + 1)
+		if length and ok and cut then
+			return string.sub(s, 1, cut - 1) .. "…"
+		end
+		return string.sub(s, 1, n) .. "…"
+	end
+
+	local function decNum(v, lo, hi, int)
+		if type(v) ~= "number" or v ~= v or v == math.huge or v == -math.huge then
+			fail("număr invalid")
+		end
+		local x = v
+		if lo and x < lo then
+			x = lo
+			clamped += 1
+		elseif hi and x > hi then
+			x = hi
+			clamped += 1
+		end
+		if int then
+			x = math.floor(x + 0.5)
+		end
+		return x
+	end
+
+	local function decUrl(v)
+		validText(v, 200, "adresa resursei")
+		local url = v
+		for _, pair in URL_SHORT do
+			if string.sub(v, 1, #pair[2]) == pair[2] then
+				url = pair[1] .. string.sub(v, #pair[2] + 1)
+				break
+			end
+		end
+		if url == "" or string.match(url, "^rbxassetid://%d+$") or string.match(url, "^https?://www%.roblox%.com/asset/%?id=%d+$")
+			or (string.match(url, "^rbxasset://[%w_%./%-]+$") and not string.find(url, "..", 1, true)) then
+			return url
+		end
+		fail("adresa „" .. shortenText(url, 40) .. "” nu e permisă (doar rbxassetid://… sau resurse Roblox)")
+		return ""
+	end
+
+	local function decColor(v: any): Color3
+		if type(v) == "string" then
+			local r, g, b = string.match(v, "^(%x%x)(%x%x)(%x%x)$")
+			if not r then
+				fail("culoare invalidă")
+			end
+			return Color3.fromRGB(tonumber(r, 16) :: number, tonumber(g, 16) :: number, tonumber(b, 16) :: number)
+		elseif type(v) == "table" and #v == 3 then
+			return Color3.new(decNum(v[1], 0, 1), decNum(v[2], 0, 1), decNum(v[3], 0, 1))
+		end
+		fail("culoare invalidă")
+		return WHITE
+	end
+
+	local function decColorSeq(v)
+		if type(v) ~= "table" then
+			fail("secvență de culori invalidă")
+		end
+		if #v == 1 then
+			return ColorSequence.new(decColor(v[1]))
+		end
+		if #v < 4 or #v % 2 == 1 or #v > LIMITS.keypoints * 2 then
+			fail("secvență de culori invalidă")
+		end
+		local points, last = {}, -1
+		for i = 1, #v, 2 do
+			local t = v[i]
+			if type(t) ~= "number" or t < 0 or t > 1 or t <= last then
+				fail("timpii secvenței de culori sunt greșiți")
+			end
+			last = t
+			table.insert(points, ColorSequenceKeypoint.new(t, decColor(v[i + 1])))
+		end
+		if points[1].Time ~= 0 or points[#points].Time ~= 1 then
+			fail("secvența de culori trebuie să înceapă la 0 și să se termine la 1")
+		end
+		return ColorSequence.new(points)
+	end
+
+	local function decNumberSeq(v, lo, hi)
+		if type(v) == "number" then
+			return NumberSequence.new(decNum(v, lo, hi))
+		elseif type(v) ~= "table" then
+			fail("secvență de numere invalidă")
+		end
+		local envelope = v[1] == "e"
+		local stride, first = envelope and 3 or 2, envelope and 2 or 1
+		local count = (#v - first + 1) / stride
+		if count % 1 ~= 0 or count < 2 or count > LIMITS.keypoints then
+			fail("secvență de numere invalidă")
+		end
+		local points, last = {}, -1
+		for i = 0, count - 1 do
+			local at = first + i * stride
+			local t = v[at]
+			if type(t) ~= "number" or t < 0 or t > 1 or t <= last then
+				fail("timpii secvenței de numere sunt greșiți")
+			end
+			last = t
+			local e = envelope and math.max(0, decNum(v[at + 2], 0, hi)) or 0
+			table.insert(points, NumberSequenceKeypoint.new(t, decNum(v[at + 1], lo, hi), e))
+		end
+		if points[1].Time ~= 0 or points[#points].Time ~= 1 then
+			fail("secvența de numere trebuie să înceapă la 0 și să se termine la 1")
+		end
+		return NumberSequence.new(points)
+	end
+
+	local function decRange(v, lo, hi)
+		if type(v) == "number" then
+			local x = decNum(v, lo, hi)
+			return NumberRange.new(x, x)
+		elseif type(v) == "table" and #v == 2 then
+			local a, b = decNum(v[1], lo, hi), decNum(v[2], lo, hi)
+			return NumberRange.new(math.min(a, b), math.max(a, b))
+		end
+		fail("interval invalid")
+		return NumberRange.new(0)
+	end
+
+	local function decVector(v, size, lo, hi)
+		if type(v) ~= "table" or #v ~= size then
+			fail("vector invalid")
+		end
+		local x, y = decNum(v[1], lo, hi), decNum(v[2], lo, hi)
+		if size == 2 then
+			return Vector2.new(x, y)
+		end
+		return Vector3.new(x, y, decNum(v[3], lo, hi))
+	end
+
+	local FRAME_RANGE = 5000
+
+	local function decFrame(v)
+		if type(v) ~= "table" or (#v ~= 3 and #v ~= 6) then
+			fail("poziție invalidă")
+		end
+		local cf = CFrame.new(Vector3.new(decNum(v[1], -FRAME_RANGE, FRAME_RANGE), decNum(v[2], -FRAME_RANGE, FRAME_RANGE),
+			decNum(v[3], -FRAME_RANGE, FRAME_RANGE)))
+		if #v == 6 then
+			local rx, ry, rz = decNum(v[4], -360, 360), decNum(v[5], -360, 360), decNum(v[6], -360, 360)
+			local ok, turned = pcall(function()
+				return cf * CFrame.fromOrientation(math.rad(rx), math.rad(ry), math.rad(rz))
+			end)
+			if ok then
+				cf = turned
+			end
+		end
+		return cf
+	end
+
+	local function decEnum(enumName, v)
+		if type(v) ~= "string" then
+			fail("valoare de enum invalidă")
+		end
+		local ok, item = pcall(function()
+			return (Enum :: any)[enumName][v]
+		end)
+		if not ok or typeof(item) ~= "EnumItem" then
+			fail("„" .. shortenText(v, 30) .. "” nu e o valoare cunoscută pentru " .. enumName)
+		end
+		return item
+	end
+
+	local function decodeValue(kind, v, lo, hi)
+		if kind == "n" then
+			return decNum(v, lo, hi)
+		elseif kind == "i" then
+			return decNum(v, lo, hi, true)
+		elseif kind == "b" then
+			if type(v) ~= "boolean" then
+				fail("valoarea trebuie să fie da / nu")
+			end
+			return v
+		elseif kind == "url" then
+			return decUrl(v)
+		elseif kind == "c" then
+			return decColor(v)
+		elseif kind == "cs" then
+			return decColorSeq(v)
+		elseif kind == "ns" then
+			return decNumberSeq(v, lo, hi)
+		elseif kind == "nr" then
+			return decRange(v, lo, hi)
+		elseif kind == "v2" then
+			return decVector(v, 2, lo, hi)
+		elseif kind == "v3" then
+			return decVector(v, 3, lo, hi)
+		end
+		return decEnum(string.sub(kind, 3), v)
+	end
+
+	-- the properties written for each class: { key in the code, Roblox property, kind, min, max } ----------------------------
+	-- A property equal to a fresh instance's is left out of the code; on import everything not in the code is set to the fresh
+	-- instance's value, so the code does not depend on the defaults of this version of the Editor.
+	local EMITTER_PROPS = {
+		{ "tx", "Texture", "url" }, { "co", "Color", "cs" }, { "sz", "Size", "ns", 0, 2000 }, { "tr", "Transparency", "ns", 0, 1 },
+		{ "sq", "Squash", "ns", -100, 100 }, { "lf", "Lifetime", "nr", 0, 60 }, { "rt", "Rate", "n", 0, 2000 },
+		{ "sp", "Speed", "nr", -2000, 2000 }, { "sa", "SpreadAngle", "v2", 0, 180 }, { "ac", "Acceleration", "v3", -2000, 2000 },
+		{ "dr", "Drag", "n", 0, 1000 }, { "le", "LightEmission", "n", 0, 1 }, { "li", "LightInfluence", "n", 0, 1 },
+		{ "br", "Brightness", "n", 0, 100 }, { "ro", "Rotation", "nr", -3600, 3600 }, { "rs", "RotSpeed", "nr", -3600, 3600 },
+		{ "or", "Orientation", "e:ParticleOrientation" }, { "zo", "ZOffset", "n", -100, 100 }, { "lp", "LockedToPart", "b" },
+		{ "ed", "EmissionDirection", "e:NormalId" }, { "ss", "ShapeStyle", "e:ParticleEmitterShapeStyle" },
+		{ "si", "ShapeInOut", "e:ParticleEmitterShapeInOut" }, { "sh", "Shape", "e:ParticleEmitterShape" },
+		{ "sr", "ShapePartial", "n", 0, 1 }, { "vi", "VelocityInheritance", "n", 0, 1 }, { "vs", "VelocitySpread", "n", -360, 360 },
+		{ "wd", "WindAffectsDrag", "b" }, { "ts", "TimeScale", "n", 0, 10 }, { "fl", "FlipbookLayout", "e:ParticleFlipbookLayout" },
+		{ "fm", "FlipbookMode", "e:ParticleFlipbookMode" }, { "ff", "FlipbookFramerate", "nr", 0, 120 },
+		{ "fr", "FlipbookStartRandom", "b" }, { "fx", "FlipbookSizeX", "i", 0, 64 }, { "fy", "FlipbookSizeY", "i", 0, 64 },
+		{ "fb", "FlipbookBlendFrames", "b" }, { "en", "Enabled", "b" },
+	}
+	local TRAIL_PROPS = {
+		{ "tx", "Texture", "url" }, { "co", "Color", "cs" }, { "tr", "Transparency", "ns", 0, 1 }, { "ws", "WidthScale", "ns", 0, 100 },
+		{ "lf", "Lifetime", "n", 0, 60 }, { "mn", "MinLength", "n", 0, 1000 }, { "mx", "MaxLength", "n", 0, 100000 },
+		{ "le", "LightEmission", "n", 0, 1 }, { "li", "LightInfluence", "n", 0, 1 }, { "br", "Brightness", "n", 0, 100 },
+		{ "fc", "FaceCamera", "b" }, { "tm", "TextureMode", "e:TextureMode" }, { "tl", "TextureLength", "n", 0.01, 1000 },
+		{ "en", "Enabled", "b" },
+	}
+	local BEAM_PROPS = {
+		{ "tx", "Texture", "url" }, { "co", "Color", "cs" }, { "tr", "Transparency", "ns", 0, 1 }, { "w0", "Width0", "n", 0, 1000 },
+		{ "w1", "Width1", "n", 0, 1000 }, { "c0", "CurveSize0", "n", -1000, 1000 }, { "c1", "CurveSize1", "n", -1000, 1000 },
+		{ "sg", "Segments", "i", 1, 300 }, { "ts", "TextureSpeed", "n", -100, 100 }, { "tl", "TextureLength", "n", 0.01, 1000 },
+		{ "tm", "TextureMode", "e:TextureMode" }, { "le", "LightEmission", "n", 0, 1 }, { "li", "LightInfluence", "n", 0, 1 },
+		{ "br", "Brightness", "n", 0, 100 }, { "fc", "FaceCamera", "b" }, { "zo", "ZOffset", "n", -100, 100 }, { "en", "Enabled", "b" },
+	}
+	local LIGHT_PROPS = {
+		{ "co", "Color", "c" }, { "br", "Brightness", "n", 0, 1000 }, { "rg", "Range", "n", 0, 120 }, { "sd", "Shadows", "b" },
+		{ "en", "Enabled", "b" }, { "an", "Angle", "n", 0, 180 }, { "fa", "Face", "e:NormalId" },
+	}
+	local PART_PROPS = {
+		{ "sh", "Shape", "e:PartType" }, { "ma", "Material", "e:Material" }, { "co", "Color", "c" }, { "sz", "Size", "v3", 0.001, 2048 },
+		{ "tr", "Transparency", "n", 0, 1 }, { "rf", "Reflectance", "n", 0, 1 }, { "an", "Anchored", "b" }, { "cc", "CanCollide", "b" },
+		{ "cq", "CanQuery", "b" }, { "ct", "CanTouch", "b" }, { "cs", "CastShadow", "b" }, { "ms", "Massless", "b" },
+	}
+	local SOUND_PROPS = {
+		{ "id", "SoundId", "url" }, { "vo", "Volume", "n", 0, 10 }, { "ps", "PlaybackSpeed", "n", 0.01, 20 }, { "lp", "Looped", "b" },
+		{ "rm", "RollOffMode", "e:RollOffMode" }, { "r0", "RollOffMinDistance", "n", 0, 10000 },
+		{ "r1", "RollOffMaxDistance", "n", 0, 10000 }, { "es", "EmitterSize", "n", 0, 1000 },
+	}
+	-- letter of each kind of element in a code, and its property list
+	local KIND_CODE = { PARTICLES = "P", LIGHT = "L", TRAIL = "T", MESH = "M", SOUND = "S", CAMERA = "C", BEAM = "B" }
+	local CODE_KIND = {}
+	for kind, code in KIND_CODE do
+		CODE_KIND[code] = kind
+	end
+	local KIND_PROPS = { PARTICLES = EMITTER_PROPS, TRAIL = TRAIL_PROPS, BEAM = BEAM_PROPS, LIGHT = LIGHT_PROPS, MESH = PART_PROPS,
+		SOUND = SOUND_PROPS }
+	-- fresh instances to compare with / copy defaults from (one per class, destroyed when the operation ends)
+	local function newRefs()
+		return {}
+	end
+
+	local function refOf(refs, class)
+		local ref = refs[class]
+		if not ref then
+			ref = Instance.new(class)
+			refs[class] = ref
+		end
+		return ref
+	end
+
+	local function dropRefs(refs)
+		for _, ref in refs do
+			pcall(function()
+				ref:Destroy()
+			end)
+		end
+	end
+
+	local function encodeProps(inst, list, refs, always)
+		local ref = refOf(refs, inst.ClassName)
+		local out
+		for _, entry in list do
+			local key, prop, kind = entry[1], entry[2], entry[3]
+			local okValue, value = pcall(function()
+				return (inst :: any)[prop]
+			end)
+			if okValue and value ~= nil then
+				local enc = encodeValue(kind, value)
+				local okRef, default = pcall(function()
+					return (ref :: any)[prop]
+				end)
+				if not okRef or default == nil or (always and always[key]) or jsonEncode(enc) ~= jsonEncode(encodeValue(kind, default)) then
+					out = out or {}
+					out[key] = enc
+				end
+			end
+		end
+		return out
+	end
+
+	local function decodeProps(raw, list)
+		local out = {}
+		if raw == nil then
+			return out
+		elseif type(raw) ~= "table" then
+			fail("proprietățile trebuie să fie un obiect")
+		end
+		for _, entry in list do
+			local v = raw[entry[1]]
+			if v ~= nil then
+				local saved = where
+				where = saved .. "." .. entry[2]
+				out[entry[2]] = decodeValue(entry[3], v, entry[4], entry[5])
+				where = saved
+			end
+		end
+		return out
+	end
+
+	-- Roblox properties that exist in this Studio (an older or newer one may lack some): set one by one, ignoring the unknown ones
+	local function assignProps(inst, list, values, refs)
+		local ref = refOf(refs, inst.ClassName)
+		for _, entry in list do
+			local prop = entry[2]
+			local value = values[prop]
+			if value == nil then
+				local okRef, default = pcall(function()
+					return (ref :: any)[prop]
+				end)
+				if okRef then
+					value = default -- (false is a value too: no `and / or` here)
+				end
+			end
+			if value ~= nil then
+				pcall(function()
+					(inst :: any)[prop] = value
+				end)
+			end
+		end
+	end
+
+	-- LC_* attributes: written without the prefix ("Bursts"), a Color3 as { "c", colour } --------------------------------------
+	local ATTR_NUMBER = { Duration = { 0.01, 3600 }, Rate = { 0, 2000 }, Count = { 0, 500 }, Rise = { -1000, 1000 },
+		Spin = { -3600, 3600 }, Jitter = { 0, 1000 }, Shake = { 0, 50 }, Freq = { 0, 200 }, ShakeTime = { 0, 30 }, FOV = { -120, 120 },
+		FovTime = { 0, 30 }, FlashAlpha = { 0, 1 }, FlashTime = { 0, 30 }, Radius = { 0, 5000 }, Fade = { 0, 30 }, Lift = { -100, 100 },
+		Flow = { 0, 100 } }
+	-- "t,t;t,t" lists (LC_Radius is one on a 3D piece and a plain number on a camera): name -> { most items, fewest fields, most fields, { { min, max } of each field } }
+	local ATTR_LIST = {
+		On = { 50, 1, 2, { { 0, 3600 }, { 0, 3600 } } }, Bursts = { 300, 1, 2, { { 0, 3600 }, { 0, 2000 } } },
+		Keys = { 150, 3, 3, { { 0, 3600 }, { 0, 1000 }, { 0, 200 } } }, Life = { 1, 1, 2, { { 0, 600 }, { 0, 600 } } },
+		Grow = { 1, 1, 2, { { 0, 1000 }, { 0, 1000 } } }, Alpha = { 1, 1, 2, { { 0, 1 }, { 0, 1 } } },
+		Speed = { 1, 1, 2, { { -2000, 2000 }, { -2000, 2000 } } }, Spread = { 1, 1, 2, { { 0, 360 }, { 0, 360 } } },
+		Radius = { 1, 1, 2, { { 0, 5000 }, { 0, 5000 } } }, Pitch = { 1, 1, 2, { { 0, 20 }, { 0, 20 } } },
+	}
+	local ATTR_FLAGS = { Muted = true, Ground = true, Studio = true }
+	local ATTR_WORDS = { Mode = { Ring = true, Crack = true, Pulse = true, Puff = true, Trail = true, Debris = true },
+		Kind = { CAMERA = true } }
+
+	local function encodeAttrs(inst)
+		local out
+		for name, v in inst:GetAttributes() do
+			if string.sub(name, 1, 3) == "LC_" and #name > 3 and #name <= 33 and string.match(name, "^[%w_]+$") then
+				local kind, enc = type(v), nil
+				if kind == "number" then
+					enc = fl12(v)
+				elseif kind == "string" then
+					enc = #v <= 8000 and v or nil
+				elseif kind == "boolean" then
+					enc = v
+				elseif typeof(v) == "Color3" then
+					enc = { "c", encColor(v) }
+				end
+				if enc ~= nil then
+					out = out or {}
+					out[string.sub(name, 4)] = enc
+				end
+			end
+		end
+		return out
+	end
+
+	local function checkAttrList(name, s)
+		local rule = ATTR_LIST[name]
+		if #s > 8000 or string.find(s, "[^%d%.eE%+%-,:;]") then
+			fail("atributul LC_" .. name .. " are un format necunoscut")
+		end
+		local items = 0
+		for item in string.gmatch(s, "[^;]+") do
+			items += 1
+			if items > rule[1] then
+				fail("atributul LC_" .. name .. " are prea multe valori")
+			end
+			local fields = 0
+			for x in string.gmatch(item, "[^,:]+") do
+				fields += 1
+				local v = tonumber(x)
+				local range = rule[4][math.min(fields, #rule[4])]
+				if not v or v ~= v or v < range[1] or v > range[2] then
+					fail("atributul LC_" .. name .. " are valori în afara limitelor")
+				end
+			end
+			if fields < rule[2] or fields > rule[3] then
+				fail("atributul LC_" .. name .. " are un format necunoscut")
+			end
+		end
+	end
+
+	local ATTACH_SET = {}
+	for _, a in Editor.ATTACH do
+		ATTACH_SET[a.key] = true
+	end
+
+	local function decodeAttrs(raw)
+		local out = {}
+		if raw == nil then
+			return out
+		elseif type(raw) ~= "table" then
+			fail("atributele trebuie să fie un obiect")
+		end
+		local count = 0
+		for key, v in raw do
+			count += 1
+			if count > LIMITS.attributes then
+				fail("prea multe atribute")
+			end
+			if type(key) ~= "string" or #key > 30 or not string.match(key, "^[%w_]+$") then
+				fail("nume de atribut invalid")
+			end
+			local full = "LC_" .. key
+			if (ATTR_NUMBER[key] and not ATTR_LIST[key] and type(v) ~= "number") or (ATTR_FLAGS[key] and type(v) ~= "boolean") then
+				fail("atributul " .. full .. " are o valoare de alt tip decât cel așteptat")
+			end
+			if type(v) == "number" then
+				local range = ATTR_NUMBER[key]
+				out[full] = range and decNum(v, range[1], range[2]) or decNum(v, -1000000, 1000000)
+			elseif type(v) == "boolean" then
+				out[full] = v
+			elseif type(v) == "string" then
+				validText(v, ATTR_LIST[key] and 8000 or 400, "atributul " .. full)
+				if ATTR_LIST[key] then
+					checkAttrList(key, v)
+				elseif ATTR_WORDS[key] and not ATTR_WORDS[key][v] then
+					fail("valoarea „" .. shortenText(v, 20) .. "” nu e permisă pentru " .. full)
+				elseif key == "Attach" and not ATTACH_SET[v] then
+					fail("punct de atașare necunoscut „" .. shortenText(v, 20) .. "”")
+				end
+				out[full] = v
+			elseif type(v) == "table" and v[1] == "c" and #v == 2 then
+				out[full] = decColor(v[2])
+			else
+				fail("atributul " .. full .. " are o valoare neașteptată")
+			end
+		end
+		return out
+	end
+
+	-- elements and effects <-> tables ------------------------------------------------------------------------------------------
+	-- code of an effect:  { n = name, a = { attributes }, e = { element, ... } }
+	-- code of an element: { k = kind letter, n = name, f = frame, g = second frame (trail / beam), hs = size of the Part an emitter
+	--                       sits on, hn = name of its mount, c = "S" for a SpotLight, p = { properties }, a = { attributes } }
+	-- Only what LostCube itself builds is written (see the header of this file): scripts, and anything else a model may hold, never.
+
+	local function encodeElement(root, d, kind, refs, covered)
+		local out = { k = KIND_CODE[kind], n = d.Name }
+		local mount = d.Parent
+		covered[d] = true
+		covered[mount] = true
+		local always
+		if kind == "TRAIL" or kind == "BEAM" then
+			for _, att in { d.Attachment0 or false, d.Attachment1 or false } do
+				if att then
+					covered[att] = true
+				end
+			end
+			out.f = encFrame(d.Attachment0 and frameIn(root, d.Attachment0) or CFrame.new())
+			out.g = encFrame(d.Attachment1 and frameIn(root, d.Attachment1) or CFrame.new())
+		elseif kind == "MESH" then
+			out.f = encFrame(frameIn(root, d))
+		else
+			local onPart = kind == "PARTICLES" and mount:IsA("BasePart") and mount ~= root
+			local framed = onPart or mount:IsA("Attachment")
+			out.f = encFrame(framed and frameIn(root, mount) or CFrame.new())
+			if onPart then
+				out.hs = encodeValue("v3", mount.Size)
+				always = { sh = true } -- the shape of the emitter matters when it sits on a Part
+			end
+			if framed and mount.Name ~= d.Name then
+				out.hn = mount.Name
+			end
+		end
+		if kind == "LIGHT" and d:IsA("SpotLight") then
+			out.c = "S"
+		end
+		local list = KIND_PROPS[kind]
+		if list then
+			out.p = encodeProps(d, list, refs, always)
+		end
+		out.a = encodeAttrs(d)
+		return out
+	end
+
+	local function encodeEffect(effect, refs)
+		local root = rootOf(effect)
+		assert(root, "LostCube: efectul " .. effect.Name .. " nu are piesa Root")
+		local out = { n = effect.Name, a = encodeAttrs(effect) }
+		local list, covered = {}, { [root] = true }
+		local all = effect:GetDescendants()
+		for _, d in all do
+			local kind = Editor.kindOf(d)
+			if kind then
+				table.insert(list, encodeElement(root, d, kind, refs, covered))
+			end
+		end
+		local ignored = 0 -- scripts, folders, parts that are not elements...: they are not part of a code
+		for _, d in all do
+			if not covered[d] then
+				ignored += 1
+			end
+		end
+		assert(#list <= LIMITS.elements, string.format("LostCube: efectul %s are %d elemente; un cod poate avea cel mult %d",
+			effect.Name, #list, LIMITS.elements))
+		out.e = #list > 0 and list or nil
+		return out, ignored
+	end
+
+	local function decodeElement(raw)
+		if type(raw) ~= "table" then
+			fail("element invalid")
+		end
+		local kind = CODE_KIND[raw.k]
+		if not kind then
+			fail("tip de element necunoscut „" .. shortenText(raw.k, 10) .. "”")
+		end
+		local name = validText(raw.n, LIMITS.nameChars, "numele elementului")
+		if name == "" then
+			fail("element fără nume")
+		end
+		where = "elementul „" .. shortenText(name, 30) .. "”"
+		local spec = { kind = kind, name = name, props = {}, attrs = {} }
+		spec.frame = decFrame(raw.f == nil and { 0, 0, 0 } or raw.f)
+		if kind == "TRAIL" or kind == "BEAM" then
+			spec.frame1 = decFrame(raw.g == nil and { 0, 0, 0 } or raw.g)
+		end
+		if raw.hs ~= nil then
+			if kind ~= "PARTICLES" then
+				fail("doar particulele stau pe o piesă 3D")
+			end
+			spec.partSize = decVector(raw.hs, 3, 0.05, 2048)
+		end
+		if raw.hn ~= nil then
+			spec.holderName = validText(raw.hn, LIMITS.nameChars, "numele suportului")
+		end
+		if raw.c ~= nil then
+			if kind ~= "LIGHT" or raw.c ~= "S" then
+				fail("tip de lumină necunoscut")
+			end
+			spec.light = "SpotLight"
+		end
+		local list = KIND_PROPS[kind]
+		if list then
+			spec.props = decodeProps(raw.p, list)
+		end
+		spec.attrs = decodeAttrs(raw.a)
+		if kind == "MESH" and type(spec.attrs.LC_Mode) ~= "string" then
+			fail("piesa 3D nu are LC_Mode")
+		end
+		if kind == "CAMERA" then
+			spec.attrs.LC_Kind = "CAMERA"
+		end
+		return spec
+	end
+
+	local function decodeEffect(raw)
+		where = ""
+		if type(raw) ~= "table" then
+			fail("efect invalid")
+		end
+		local name = validText(raw.n, LIMITS.nameChars, "numele efectului")
+		where = "efectul „" .. shortenText(name, 30) .. "”"
+		local attrs = decodeAttrs(raw.a)
+		if type(attrs.LC_Duration) ~= "number" then
+			attrs.LC_Duration = 1
+		end
+		if type(attrs.LC_Attach) ~= "string" then
+			attrs.LC_Attach = "GROUND"
+		end
+		attrs.LC_Tool = "LostCube"
+		local elements = {}
+		local list = raw.e
+		if list ~= nil then
+			if type(list) ~= "table" or (list[1] == nil and next(list) ~= nil) then
+				fail("lista de elemente e invalidă")
+			end
+			if #list > LIMITS.elements then
+				fail(string.format("are %d elemente; maximul e %d", #list, LIMITS.elements))
+			end
+			for i = 1, #list do
+				elements[i] = decodeElement(list[i])
+				where = "efectul „" .. shortenText(name, 30) .. "”"
+			end
+		end
+		where = ""
+		return { name = name, attrs = attrs, elements = elements }
+	end
+
+	local function buildElement(model, spec, refs)
+		local root = rootOf(model)
+		local kind = spec.kind
+		local element = create(model, kind, uniqueName(model, spec.name))
+		if kind == "LIGHT" and spec.light == "SpotLight" then
+			local mount, elementName = element.Parent, element.Name
+			element:Destroy()
+			local spot = Instance.new("SpotLight")
+			spot.Name = elementName
+			spot.Parent = mount
+			element = spot
+		end
+		-- where it sits
+		if kind == "TRAIL" or kind == "BEAM" then
+			element.Attachment0.CFrame, element.Attachment1.CFrame = spec.frame, spec.frame1
+		elseif kind == "MESH" then
+			element.CFrame = root.CFrame * spec.frame
+		elseif spec.partSize then
+			local shape = spec.props.Shape and spec.props.Shape.Name or "Box"
+			setShape(element, SHAPES[shape] and shape ~= "Point" and shape or "Box", spec.partSize)
+			element.Parent.CFrame = root.CFrame * spec.frame
+			element.Parent.Size = spec.partSize
+		else
+			element.Parent.CFrame = spec.frame
+		end
+		if spec.holderName and kind ~= "MESH" and kind ~= "TRAIL" and kind ~= "BEAM" then
+			element.Parent.Name = spec.holderName
+		end
+		-- what it is: every property of its class is set (a value left out of the code is the fresh instance's), then the attributes
+		local list = KIND_PROPS[kind]
+		if list then
+			assignProps(element, list, spec.props, refs)
+		end
+		for name in element:GetAttributes() do
+			element:SetAttribute(name, nil)
+		end
+		for name, value in spec.attrs do
+			element:SetAttribute(name, value)
+		end
+		return element
+	end
+
+	-- the effect built off the tree (nothing sees a half-built one); the caller parents it
+	local function buildModel(spec, name, refs)
+		local model = buildEffectModel(name, spec.attrs.LC_Duration, spec.attrs.LC_Attach)
+		local ok, err = pcall(function()
+			for attr, value in spec.attrs do
+				model:SetAttribute(attr, value)
+			end
+			for _, element in spec.elements do
+				buildElement(model, element, refs)
+			end
+		end)
+		if not ok then
+			model:Destroy()
+			error(err, 0)
+		end
+		return model
+	end
+
+	-- the code itself -------------------------------------------------------------------------------------------------------------
+	local function packPayload(payload, limit, what)
+		local json = jsonEncode(payload)
+		assert(#json <= LIMITS.jsonBytes, string.format("LostCube: %s e prea mare pentru un cod de partajare", what))
+		local body, flag = json, 0
+		local packed = lzCompress(json)
+		if #packed < #json then
+			body, flag = packed, 1
+		end
+		local crc = crc32(json)
+		local head = string.char(bit32.rshift(crc, 24), bit32.band(bit32.rshift(crc, 16), 255), bit32.band(bit32.rshift(crc, 8), 255),
+			bit32.band(crc, 255), flag)
+		local code = Editor.CODE_PREFIX .. base64Encode(head .. body)
+		assert(#code <= limit, string.format("LostCube: %s e prea mare pentru un cod de partajare (%d caractere; maximum %d)", what,
+			#code, limit))
+		return code, { chars = #code, json = #json, compressed = flag == 1 }
+	end
+
+	-- -> payload table, number of characters of the code; raises the Romanian errors
+	local function unpackCode(code)
+		if type(code) ~= "string" then
+			error("LostCube: codul trebuie să fie text", 0)
+		end
+		-- tolerated: invisible characters, line breaks, the code inside a message or between ``` marks
+		local text = (string.gsub(code, "\226\128[\139-\141]", ""))
+		text = (string.gsub(text, "\239\187\191", ""))
+		text = (string.gsub(text, "\194\160", " "))
+		local s, e, version = string.find(text, "[Ll][Cc](%d+):")
+		if not s then
+			if string.match(text, "^%s*$") then
+				error("LostCube: codul e gol. Lipește un cod LostCube (începe cu LC1:).", 0)
+			end
+			error("LostCube: asta nu arată ca un cod LostCube (un cod începe cu LC1:).", 0)
+		end
+		local number = tonumber(version) :: number
+		if number > Editor.CODE_VERSION then
+			error(string.format("LostCube: codul e în formatul LC%d, mai nou decât cel pe care îl înțelege această versiune de "
+				.. "LostCube (LC%d). Actualizează pluginul și încearcă din nou.", number, Editor.CODE_VERSION), 0)
+		elseif number ~= Editor.CODE_VERSION then
+			error(string.format("LostCube: formatul LC%d nu mai e acceptat. Cere un cod nou.", number), 0)
+		end
+		local body
+		if string.match(string.sub(text, 1, s - 1), "^%s*$") then -- the whole text is the code (its lines may have been wrapped)
+			body = (string.gsub(string.sub(text, e + 1), "%s+", ""))
+		else
+			body = string.match(text, "^[%w%+/_%-=]+", e + 1) or ""
+		end
+		if #body > LIMITS.libraryChars then
+			error(string.format("LostCube: codul e prea mare (%d caractere; maximum %d).", #body, LIMITS.libraryChars), 0)
+		end
+		local bytes = base64Decode(body)
+		if not bytes or #bytes < 6 then
+			error("LostCube: codul e stricat sau incomplet. Copiază-l din nou, întreg.", 0)
+		end
+		local b1, b2, b3, b4, flag = string.byte(bytes, 1, 5)
+		local crc = ((b1 * 256 + b2) * 256 + b3) * 256 + b4
+		local data = string.sub(bytes, 6)
+		local json = data
+		if flag == 1 then
+			local plain, why = lzDecompress(data, LIMITS.jsonBytes)
+			if not plain then
+				error("LostCube: codul e stricat (" .. tostring(why) .. "). Copiază-l din nou, întreg.", 0)
+			end
+			json = plain
+		elseif flag ~= 0 then
+			error("LostCube: codul are un format intern necunoscut.", 0)
+		end
+		if #json > LIMITS.jsonBytes or crc32(json) ~= crc then
+			error("LostCube: codul e stricat sau incomplet (suma de control nu se potrivește). Copiază-l din nou, întreg.", 0)
+		end
+		local ok, payload = pcall(jsonDecode, json)
+		if not ok or type(payload) ~= "table" then
+			error("LostCube: codul e stricat: conținutul nu poate fi citit.", 0)
+		end
+		return payload, #body
+	end
+
+	-- -> "effect" | "library", the list of raw effects
+	local function payloadEffects(payload, chars)
+		if type(payload.lib) == "table" then
+			if #payload.lib == 0 or #payload.lib > LIMITS.effects then
+				error(string.format("LostCube: o bibliotecă are între 1 și %d efecte", LIMITS.effects), 0)
+			end
+			return "library", payload.lib
+		elseif type(payload.fx) == "table" then
+			if chars > LIMITS.codeChars then
+				error(string.format("LostCube: codul e prea mare (%d caractere; maximum %d).", chars, LIMITS.codeChars), 0)
+			end
+			return "effect", { payload.fx }
+		end
+		error("LostCube: codul nu conține niciun efect.", 0)
+	end
+
+	local function importNotes(info, wanted)
+		if info.clamped > 0 then
+			table.insert(info.notes, string.format("%d valori erau în afara limitelor permise și au fost aduse în limite.", info.clamped))
+		end
+		if wanted and info.renamed then
+			table.insert(info.notes, "Numele era ocupat, așa că efectul a primit alt nume.")
+		end
+	end
+
+	--- exportEffect(effect) -> code, stats
+	--- The whole effect as text to copy and send: "LC1:" followed by a checksum and the compressed description of the model
+	--- attributes and of every element (kind, name, position and orientation, all properties including colour / size sequences,
+	--- timeline, LC_* attributes). stats = { chars, json, compressed, elements, ignored }: `ignored` counts the objects inside the
+	--- model that are not part of an effect (scripts, folders, loose parts), which a code never carries. Importing the code
+	--- (Editor.importEffect) rebuilds the effect exactly.
+	function Editor.exportEffect(effect)
+		effect = Editor.effect(effect)
+		assert(typeof(effect) == "Instance" and effect:IsA("Model"), "LostCube: un efect e un Model")
+		local refs = newRefs()
+		local ok, result, ignored = pcall(encodeEffect, effect, refs)
+		dropRefs(refs)
+		if not ok then
+			error(result, 0)
+		end
+		local code, stats = packPayload({ g = Editor.VERSION, fx = result }, LIMITS.codeChars, "efectul " .. effect.Name)
+		stats.elements = result.e and #result.e or 0
+		stats.ignored = ignored
+		return code, stats
+	end
+
+	--- importEffect(code, name?, opts?) -> Model, info
+	--- Rebuilds an effect from a code made by exportEffect, in ONE undo step. The whole code is validated first (version,
+	--- checksum, sizes, every value; unknown or oversized things are refused with a Romanian message) and nothing is created when
+	--- anything is wrong. Scripts are never created. `name` replaces the name inside the code. opts: unique = true (the name is
+	--- taken: add a number), replace = true (the name is taken: delete the old effect). info = { elements, renamed, clamped, notes }.
+	function Editor.importEffect(code, name, opts)
+		opts = opts or {}
+		local payload, chars = unpackCode(code)
+		local kind, list = payloadEffects(payload, chars)
+		if kind == "library" then
+			error(string.format("LostCube: codul conține o bibliotecă de %d efecte; importă-l cu Editor.importMany (butonul de import al bibliotecii).",
+				#list), 0)
+		end
+		clamped = 0
+		local spec = decodeEffect(list[1])
+		local info = { elements = #spec.elements, renamed = false, clamped = clamped, notes = {} }
+		local wanted = spec.name
+		if name ~= nil then
+			wanted = trim(tostring(name))
+			assert(wanted ~= "", "LostCube: numele efectului nu poate fi gol")
+			assert(#wanted <= LIMITS.nameChars, "LostCube: numele efectului e prea lung (maxim 100 de caractere)")
+		end
+		local folder = Editor.folder(false)
+		if folder and folder:FindFirstChild(wanted) and not opts.replace then
+			assert(opts.unique, "LostCube: există deja un efect numit " .. wanted .. " (alege alt nume)")
+			wanted = freeName(folder, wanted)
+			info.renamed = true
+		end
+		importNotes(info, true)
+		return record("importat efect " .. wanted, function()
+			local effects = Editor.folder(true)
+			local refs = newRefs()
+			local ok, model = pcall(buildModel, spec, wanted, refs)
+			dropRefs(refs)
+			if not ok then
+				error(model, 0)
+			end
+			local old = effects:FindFirstChild(wanted)
+			if old and opts.replace then
+				old:Destroy()
+			end
+			assertFreeName(effects, wanted)
+			model.Parent = effects
+			return model, info
+		end)
+	end
+
+	--- exportAll(list?) -> code, stats
+	--- A whole library in one code (all the effects of ReplicatedStorage.LostCube.Effects, or the Models / names in `list`).
+	function Editor.exportAll(list)
+		local effects = {}
+		for _, item in (list or Editor.effects()) do
+			table.insert(effects, Editor.effect(item))
+		end
+		assert(#effects > 0, "LostCube: nu există efecte de exportat")
+		assert(#effects <= LIMITS.effects, string.format("LostCube: biblioteca are %d efecte; un cod poate avea cel mult %d",
+			#effects, LIMITS.effects))
+		local refs = newRefs()
+		local ignored = 0
+		local ok, result = pcall(function()
+			local out = {}
+			for _, fx in effects do
+				local encoded, skipped = encodeEffect(fx, refs)
+				table.insert(out, encoded)
+				ignored += skipped
+			end
+			return out
+		end)
+		dropRefs(refs)
+		if not ok then
+			error(result, 0)
+		end
+		local code, stats = packPayload({ g = Editor.VERSION, lib = result }, LIMITS.libraryChars, "biblioteca")
+		stats.effects = #result
+		stats.ignored = ignored
+		return code, stats
+	end
+
+	--- importMany(code, opts?) -> { Model }, info
+	--- A library code (or a single-effect code) -> all its effects, in ONE undo step. A name already taken gets a number
+	--- (opts.replace = true deletes the old effect instead). info = { count, renamed = { names }, clamped, notes }.
+	function Editor.importMany(code, opts)
+		opts = opts or {}
+		local payload, chars = unpackCode(code)
+		local _, list = payloadEffects(payload, chars)
+		clamped = 0
+		local specs = {}
+		for i, raw in list do
+			specs[i] = decodeEffect(raw)
+		end
+		local info = { count = #specs, renamed = {}, clamped = clamped, notes = {} }
+		importNotes(info, false)
+		return record("importat " .. #specs .. " efecte", function()
+			local effects = Editor.folder(true)
+			local refs = newRefs()
+			local made = {}
+			local ok, err = pcall(function()
+				for _, spec in specs do
+					local wanted = spec.name
+					if not opts.replace then
+						wanted = freeName(effects, wanted)
+						if wanted ~= spec.name then
+							table.insert(info.renamed, spec.name .. " → " .. wanted)
+						end
+					end
+					local model = buildModel(spec, wanted, refs)
+					table.insert(made, model)
+					local old = effects:FindFirstChild(wanted)
+					if old and opts.replace then
+						old:Destroy()
+					end
+					assertFreeName(effects, wanted)
+					model.Parent = effects
+				end
+			end)
+			dropRefs(refs)
+			if not ok then
+				for _, model in made do
+					model:Destroy()
+				end
+				error(err, 0)
+			end
+			if #info.renamed > 0 then
+				table.insert(info.notes, #info.renamed .. " efecte aveau numele ocupat și au primit alt nume.")
+			end
+			return made, info
+		end)
+	end
+
+	--- describeCode(code) -> info | nil, message
+	--- Checks a code without creating anything: info = { kind = "effect" | "library", effects = { { name, duration, attach,
+	--- elements, kinds } }, chars, generator, clamped }; on a bad code nil and the Romanian message.
+	function Editor.describeCode(code)
+		local ok, info = pcall(function()
+			local payload, chars = unpackCode(code)
+			local kind, list = payloadEffects(payload, chars)
+			clamped = 0
+			local effects = {}
+			for i, raw in list do
+				local spec = decodeEffect(raw)
+				local kinds = {}
+				for _, element in spec.elements do
+					kinds[element.kind] = (kinds[element.kind] or 0) + 1
+				end
+				effects[i] = { name = spec.name, duration = spec.attrs.LC_Duration, attach = spec.attrs.LC_Attach,
+					elements = #spec.elements, kinds = kinds }
+			end
+			return { kind = kind, effects = effects, chars = chars, clamped = clamped,
+				generator = type(payload.g) == "string" and shortenText(payload.g, 20) or nil }
+		end)
+		if ok then
+			return info
+		end
+		return nil, tostring(info)
+	end
+
+	--- packCode(payload) -> code / unpackCode(code) -> payload
+	--- The low level of the codes: a table of strings / numbers / booleans / arrays <-> "LC1:..." text (checksum, compression and
+	--- the size limits included). For tools that make or read codes themselves; effects go through exportEffect / importEffect.
+	function Editor.packCode(payload)
+		return (packPayload(payload, LIMITS.libraryChars, "conținutul"))
+	end
+
+	function Editor.unpackCode(code)
+		return (unpackCode(code))
+	end
+end
+
+do
+	-- ---------------------------------------------------------------------------------------------
+	-- palette: recolour an existing effect, colours that read well on the map, scale, variants
+	-- ---------------------------------------------------------------------------------------------
+	local TAU = math.pi * 2
+	local NEUTRAL_SAT, NEUTRAL_VAL = 0.12, 0.16 -- below these a colour is white / grey / near-black and is never recoloured (as in the templates)
+
+	local function hueDegrees(c)
+		return (c:ToHSV()) * 360
+	end
+
+	-- 0..180
+	local function hueDistance(a, b)
+		local d = math.abs(a - b) % 360
+		return d > 180 and 360 - d or d
+	end
+
+	local function toLinear(x)
+		x = math.clamp(x, 0, 1)
+		if x <= 0.04045 then
+			return x / 12.92
+		end
+		return ((x + 0.055) / 1.055) ^ 2.4
+	end
+
+	-- OKLab (perceptually even: equal distances look equally different) -> L (0..1), a, b
+	local function oklab(c)
+		local r, g, b = toLinear(c.R), toLinear(c.G), toLinear(c.B)
+		local l = (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b) ^ (1 / 3)
+		local m = (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b) ^ (1 / 3)
+		local s = (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b) ^ (1 / 3)
+		return 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s, 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+			0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s
+	end
+
+	--- colorDistance(a, b) -> number: how different two colours look (OKLab distance: ~0.02 is barely visible, 0.14 clearly
+	--- different, 0.4+ very different).
+	function Editor.colorDistance(a, b)
+		local l1, a1, b1 = oklab(a)
+		local l2, a2, b2 = oklab(b)
+		return math.sqrt((l1 - l2) ^ 2 + (a1 - a2) ^ 2 + (b1 - b2) ^ 2)
+	end
+
+	local COLOR_WORDS = { red = { "roșu", "roșul" }, orange = { "portocaliu", "portocaliul" }, brown = { "maro", "maroul" },
+		yellow = { "galben", "galbenul" }, green = { "verde", "verdele" }, turquoise = { "turcoaz", "turcoazul" },
+		blue = { "albastru", "albastrul" }, violet = { "violet", "violetul" }, pink = { "roz", "rozul" }, black = { "negru", "negrul" },
+		white = { "alb", "albul" }, grey = { "gri", "griul" }, darkGrey = { "gri închis", "griul închis" } }
+
+	local function colorWord(c)
+		local h, s, v = c:ToHSV()
+		h *= 360
+		if v < 0.2 then
+			return COLOR_WORDS.black
+		elseif s < NEUTRAL_SAT then
+			return v > 0.85 and COLOR_WORDS.white or (v > 0.45 and COLOR_WORDS.grey or COLOR_WORDS.darkGrey)
+		elseif h < 15 or h >= 345 then
+			return COLOR_WORDS.red
+		elseif h < 40 then
+			return v < 0.6 and COLOR_WORDS.brown or COLOR_WORDS.orange
+		elseif h < 70 then
+			return COLOR_WORDS.yellow
+		elseif h < 160 then
+			return COLOR_WORDS.green
+		elseif h < 200 then
+			return COLOR_WORDS.turquoise
+		elseif h < 255 then
+			return COLOR_WORDS.blue
+		elseif h < 290 then
+			return COLOR_WORDS.violet
+		end
+		return COLOR_WORDS.pink
+	end
+
+	--- colorName(color) -> "verde", "albastru", "gri"... (Romanian name of a colour, for labels)
+	function Editor.colorName(color)
+		return colorWord(color)[1]
+	end
+
+	-- a colour given as Color3, "RRGGBB" / "#RRGGBB" or { hex = "RRGGBB" } -> Color3?
+	local function asColor(v)
+		if typeof(v) == "Color3" then
+			return v
+		end
+		local hex = type(v) == "string" and v or (type(v) == "table" and type(v.hex) == "string" and v.hex) or nil
+		if hex then
+			hex = string.gsub(hex, "^#", "")
+			if string.match(hex, "^%x%x%x%x%x%x$") then
+				return Color3.fromHex(hex)
+			end
+		end
+		return nil
+	end
+
+	local function targetList(color)
+		local out = {}
+		if typeof(color) == "Color3" or type(color) == "string" then
+			out[1] = asColor(color)
+		elseif type(color) == "table" then
+			if asColor(color) and type(color.hex) == "string" then
+				out[1] = asColor(color)
+			else
+				for _, item in color do
+					if #out >= 4 then
+						break
+					end
+					table.insert(out, asColor(item))
+				end
+			end
+		end
+		assert(#out > 0, "LostCube: dă o culoare (Color3 sau hex) sau o listă de culori")
+		for _, c in out do
+			assert(typeof(c) == "Color3", "LostCube: culoarea trebuie să fie un Color3 sau un hex #RRGGBB")
+		end
+		return out
+	end
+
+	-- every colour of an effect: { inst, prop, attr?, value = Color3 | ColorSequence, weight }
+	local function colorSlots(effect)
+		local slots = {}
+		for _, el in Editor.elements(effect) do
+			local kind = Editor.kindOf(el)
+			if kind == "PARTICLES" or kind == "TRAIL" or kind == "BEAM" then
+				table.insert(slots, { inst = el, prop = "Color", value = el.Color, weight = 1 })
+			elseif kind == "LIGHT" then
+				table.insert(slots, { inst = el, prop = "Color", value = el.Color, weight = 0.6 })
+			elseif kind == "MESH" then
+				table.insert(slots, { inst = el, prop = "Color", value = el.Color, weight = 1 })
+				local fin = el:GetAttribute("LC_ColorEnd")
+				if typeof(fin) == "Color3" then
+					table.insert(slots, { inst = el, prop = "LC_ColorEnd", attr = true, value = fin, weight = 0.5 })
+				end
+			elseif kind == "CAMERA" then
+				local flash = el:GetAttribute("LC_Flash")
+				if typeof(flash) == "Color3" then
+					table.insert(slots, { inst = el, prop = "LC_Flash", attr = true, value = flash, weight = 0.3 })
+				end
+			end
+		end
+		return slots
+	end
+
+	-- the hue groups of a list of { color, weight }: up to k centres { color, hue (degrees), weight }, the heaviest first. The hue
+	-- circle is cut in 24 slices; a group is a peak and the slices next to it (30 degrees each way).
+	local function hueGroups(samples, k)
+		local bins, total = {}, 0
+		for i = 0, 23 do
+			bins[i] = 0
+		end
+		for _, smp in samples do
+			local h, s, v = smp.color:ToHSV()
+			if s >= NEUTRAL_SAT and v >= NEUTRAL_VAL then
+				local w = smp.weight * s * v
+				bins[math.floor(h * 24) % 24] += w
+				total += w
+			end
+		end
+		local groups = {}
+		if total <= 0 then
+			return groups
+		end
+		for _ = 1, k do
+			local best, bestScore = nil, 0
+			for i = 0, 23 do
+				local score = bins[i] + 0.5 * (bins[(i - 1) % 24] + bins[(i + 1) % 24])
+				if score > bestScore then
+					best, bestScore = i, score
+				end
+			end
+			if not best or bestScore <= 0 or (#groups > 0 and bestScore < total * 0.08) then
+				break
+			end
+			local sx, sy, ss, sv, sw = 0, 0, 0, 0, 0
+			for _, smp in samples do
+				local h, s, v = smp.color:ToHSV()
+				if s >= NEUTRAL_SAT and v >= NEUTRAL_VAL then
+					local bin = math.floor(h * 24) % 24
+					if math.min((bin - best) % 24, (best - bin) % 24) <= 2 then
+						local w = smp.weight * s * v
+						sx += math.cos(h * TAU) * w
+						sy += math.sin(h * TAU) * w
+						ss += s * w
+						sv += v * w
+						sw += w
+					end
+				end
+			end
+			local hue = (math.atan2(sy, sx) / TAU) % 1
+			table.insert(groups, { color = Color3.fromHSV(hue, ss / sw, sv / sw), hue = hue * 360, weight = sw / total })
+			for d = -2, 2 do
+				bins[(best + d) % 24] = 0
+			end
+		end
+		return groups
+	end
+
+	local function colorSamples(slots)
+		local samples = {}
+		for _, slot in slots do
+			local v = slot.value
+			if typeof(v) == "Color3" then
+				table.insert(samples, { color = v, weight = slot.weight })
+			else
+				local k = v.Keypoints
+				for _, kp in k do
+					table.insert(samples, { color = kp.Value, weight = slot.weight / #k })
+				end
+			end
+		end
+		return samples
+	end
+
+	local function colorKey(v)
+		local function one(c)
+			return string.format("%.5f,%.5f,%.5f", c.R, c.G, c.B)
+		end
+		if typeof(v) == "Color3" then
+			return one(v)
+		end
+		local out = {}
+		for _, kp in v.Keypoints do
+			table.insert(out, string.format("%.4f:%s", kp.Time, one(kp.Value)))
+		end
+		return table.concat(out, ";")
+	end
+
+	-- moves the colours of an effect to `targets` (see Editor.recolorEffect); no undo recording
+	local function recolorInto(effect, targets, opts)
+		local slots = colorSlots(effect)
+		local groups
+		if opts.from ~= nil then
+			groups = {}
+			for _, c in targetList(opts.from) do
+				table.insert(groups, { color = c, hue = hueDegrees(c), weight = 1 })
+			end
+		else
+			groups = hueGroups(colorSamples(slots), #targets)
+		end
+		local info = { slots = #slots, changed = 0, to = targets, from = {} }
+		for i, g in groups do
+			info.from[i] = g.color
+		end
+		if #groups == 0 then
+			info.neutral = true -- only white / grey / black: nothing to recolour
+			return info
+		end
+		local function move(c)
+			local h, s, v = c:ToHSV()
+			if s < NEUTRAL_SAT or v < NEUTRAL_VAL then
+				return c
+			end
+			local index = 1
+			if #groups > 1 and #targets > 1 then -- several targets: each hue group goes to its own target
+				local nearest = 361
+				for i, g in groups do
+					local d = hueDistance(h * 360, g.hue)
+					if i <= #targets and d < nearest then
+						nearest, index = d, i
+					end
+				end
+			end
+			return shiftColor(c, groups[index].color, targets[math.min(index, #targets)])
+		end
+		for _, slot in slots do
+			local moved = mapColors(slot.value, move)
+			if colorKey(moved) ~= colorKey(slot.value) then
+				if slot.attr then
+					slot.inst:SetAttribute(slot.prop, moved)
+				else
+					(slot.inst :: any)[slot.prop] = moved
+				end
+				info.changed += 1
+			end
+		end
+		return info
+	end
+
+	--- recolorEffect(effect, color | { colors }, opts?) -> effect, info
+	--- Moves the whole effect to another colour, like the colour of a template: one main colour is found in the effect and every
+	--- colour turns by the same hue angle (accents keep their relation to it), saturation and brightness follow; whites, greys and
+	--- near-blacks stay. A list of 2-4 colours sends the effect's hue groups (the heaviest first) to those colours one by one.
+	--- Particles, trails, beams, lights, 3D pieces (and their end colour) and camera flashes are recoloured. One undo step.
+	--- opts.from (Color3 or a list) names the colour(s) to move instead of finding them. info = { changed, slots, from, to, neutral }.
+	function Editor.recolorEffect(effect, color, opts)
+		effect = Editor.effect(effect)
+		local targets = targetList(color)
+		opts = opts or {}
+		return record("recolorat " .. effect.Name, function()
+			return effect, recolorInto(effect, targets, opts)
+		end)
+	end
+
+	-- the palette of a map: a list of colours (Color3, "RRGGBB", { hex, share } as the analysis stores them, or { color, share }) ->
+	-- { { color, w (weights add up to 1), L, a, b } }
+	local function normalizePalette(palette)
+		assert(type(palette) == "table" and #palette > 0, "LostCube: paleta hărții e goală")
+		local out, total = {}, 0
+		for i, item in palette do
+			if i > 24 then
+				break
+			end
+			local color = asColor(type(item) == "table" and item.color or item)
+			if color then
+				local share = type(item) == "table" and (tonumber(item.share) or tonumber(item.weight)) or nil
+				local w = share and math.max(share, 0.01) or 1
+				local l, a, b = oklab(color)
+				table.insert(out, { color = color, w = w, L = l, a = a, b = b, chroma = math.sqrt(a * a + b * b),
+					hue = math.deg(math.atan2(b, a)) % 360 })
+				total += w
+			end
+		end
+		assert(#out > 0, "LostCube: paleta hărții nu conține nicio culoare validă")
+		for _, swatch in out do
+			swatch.w /= total
+		end
+		return out
+	end
+
+	--- paletteOf(report) -> palette, mood
+	--- The colours of the map from the stored analysis (Analyzer.load()): palette = { { color, share } } (dominant surface
+	--- colours and the atmosphere), mood = { night = true / false (nil when the time of day is unknown), clockTime }. For
+	--- suggestColors / matchPalette.
+	function Editor.paletteOf(report)
+		local style = type(report) == "table" and report.style or nil
+		assert(type(style) == "table", "LostCube: analiza jocului nu are partea de stil vizual")
+		local palette = {}
+		for _, c in (style.colors or {}) do
+			local color = asColor(c)
+			if color then
+				table.insert(palette, { color = color, share = tonumber(c.share) or 1 })
+			end
+		end
+		local atmosphere = style.atmosphere
+		local fog = atmosphere and asColor(atmosphere.color)
+		if fog then
+			table.insert(palette, { color = fog, share = 8 })
+		end
+		assert(#palette > 0, "LostCube: analiza nu conține culorile hărții (rulează din nou analiza jocului)")
+		local clock = type(style.lighting) == "table" and tonumber(style.lighting.clockTime) or nil
+		local night -- nil = unknown: suggestColors then judges by the brightness of the map
+		if clock ~= nil then
+			night = clock < 5.5 or clock >= 18.5
+		end
+		return palette, { night = night, clockTime = clock }
+	end
+
+	--- suggestColors(palette, opts?) -> { { color, hex, reason } }
+	--- 3-5 effect colours that read well against the map: far from its dominant colours (never a colour that melts into the
+	--- ground), with enough contrast in brightness, vivid, and in a classic relation to the main hue of the map (complementary,
+	--- split-complementary, triad, or analogous but brighter). The best first; `reason` is a short Romanian sentence.
+	--- opts: count (3..5, default 4), night (true: the map is dark, bright colours glow more; see paletteOf).
+	function Editor.suggestColors(palette, opts)
+		opts = opts or {}
+		local pal = normalizePalette(palette)
+		local count = math.clamp(math.floor(tonumber(opts.count) or 4), 3, 5)
+		-- what the map looks like: mean lightness, mean chroma, the heaviest chromatic hue
+		local meanL, meanC, hx, hy, dominant = 0, 0, 0, 0, pal[1]
+		for _, swatch in pal do
+			meanL += swatch.w * swatch.L
+			meanC += swatch.w * swatch.chroma
+			hx += math.cos(math.rad(swatch.hue)) * swatch.w * swatch.chroma
+			hy += math.sin(math.rad(swatch.hue)) * swatch.w * swatch.chroma
+			if swatch.w * (swatch.chroma + 0.02) > dominant.w * (dominant.chroma + 0.02) then
+				dominant = swatch
+			end
+		end
+		local chromatic = meanC > 0.035
+		local mainHue = math.deg(math.atan2(hy, hx)) % 360
+		-- the colour whose name the reasons use: the heaviest of the chromatic ones
+		local named = dominant
+		for _, swatch in pal do
+			if swatch.chroma > 0.04 and swatch.w * swatch.chroma > named.w * named.chroma * 1.0001 then
+				named = swatch
+			end
+		end
+		local night = opts.night == true or (opts.night == nil and meanL < 0.35)
+
+		local candidates = {}
+		for hue = 0, 345, 15 do
+			for _, sv in { { 1, 1 }, { 0.75, 1 }, { 0.5, 1 } } do -- (always bright: effects glow, a dark colour adds little light)
+				local color = Color3.fromHSV(hue / 360, sv[1], sv[2])
+				local l, a, b = oklab(color)
+				local chroma = math.sqrt(a * a + b * b)
+				local ok = math.deg(math.atan2(b, a)) % 360
+				local sep, closest, closestDominant = 0, 9, 9
+				for _, swatch in pal do
+					local d = math.sqrt((l - swatch.L) ^ 2 + (a - swatch.a) ^ 2 + (b - swatch.b) ^ 2)
+					sep += swatch.w * math.min(d / 0.3, 1)
+					closest = math.min(closest, d)
+					if swatch.w >= 0.08 then
+						closestDominant = math.min(closestDominant, d)
+					end
+				end
+				if closestDominant == 9 then
+					closestDominant = closest
+				end
+				local lum = math.min(math.abs(l - meanL) / 0.35, 1)
+				local vivid = math.min(chroma / 0.15, 1)
+				local gap = hueDistance(ok, mainHue)
+				local comp = math.max(0, 1 - math.abs(gap - 180) / 35)
+				local split = math.max(0, 1 - math.abs(gap - 150) / 25)
+				local triad = math.max(0, 1 - math.abs(gap - 120) / 20)
+				local analog = gap <= 45 and math.max(0, 1 - math.abs(gap - 28) / 28) * (lum >= 0.5 and 1 or 0.3) or 0
+				local harmony = chromatic and math.max(comp, 0.8 * split, 0.6 * triad, 0.5 * analog) or 0.5
+				local mood = night and 0.1 * math.min(l / 0.9, 1) or 0.1 * vivid
+				local score = 0.4 * sep + 0.2 * lum + 0.25 * harmony + 0.1 * vivid + mood
+					- math.max(0, 0.14 - closestDominant) * 8
+				table.insert(candidates, { color = color, score = score, hue = ok, L = l, comp = comp, split = split, triad = triad,
+					gap = gap, closest = closestDominant })
+			end
+		end
+		table.sort(candidates, function(x, y)
+			return x.score > y.score
+		end)
+
+		local picked = {}
+		local function take(strict)
+			for _, c in candidates do
+				if #picked >= count then
+					return
+				end
+				local fine = c.closest >= 0.14 or not strict
+				for _, other in picked do
+					if hueDistance(c.hue, other.hue) < 40 then
+						fine = false
+					end
+				end
+				if fine and not table.find(picked, c) then
+					table.insert(picked, c)
+				end
+			end
+		end
+		take(true)
+		take(false) -- a map that covers the whole colour wheel: the best of what is left
+
+		local out = {}
+		local word = colorWord((chromatic and named or dominant).color)[2]
+		for i, c in picked do
+			local reason
+			if not chromatic then
+				reason = string.format("Harta e aproape fără culoare (%s): o culoare vie se vede de departe.", word)
+			elseif c.comp >= 0.55 then
+				reason = string.format("Complementară cu %s dominant al hărții: iese clar în evidență.", word)
+			elseif c.split >= 0.55 then
+				reason = string.format("Aproape complementară cu %s al hărții: contrast puternic, dar mai blând.", word)
+			elseif c.triad >= 0.5 then
+				reason = string.format("În triadă cu %s al hărții: contrast bun și rămâne armonioasă.", word)
+			elseif c.gap <= 50 then
+				reason = string.format("Analogă cu %s al hărții, dar mai %s: se potrivește cu atmosfera.", word,
+					c.L > meanL and "luminoasă" or "intensă")
+			else
+				reason = "Contrast bun cu paleta hărții."
+			end
+			if c.L - meanL >= 0.25 and meanL < 0.45 then
+				reason ..= " Strălucește pe fundalul întunecat."
+			elseif meanL - c.L >= 0.2 and meanL > 0.65 then
+				reason ..= " Se vede bine pe fundalul deschis."
+			end
+			out[i] = { color = c.color, hex = "#" .. string.upper(c.color:ToHex()), reason = reason }
+		end
+		return out
+	end
+
+	--- matchPalette(effect, palette, opts?) -> color, reason, info
+	--- Picks the colour from suggestColors(palette) that reads best against the map and recolours the effect to it (one undo
+	--- step). opts: pick (2..5: take the second, third... suggestion), night, and the options of recolorEffect.
+	function Editor.matchPalette(effect, palette, opts)
+		opts = opts or {}
+		effect = Editor.effect(effect)
+		local pick = math.clamp(math.floor(tonumber(opts.pick) or 1), 1, 5)
+		local list = Editor.suggestColors(palette, { count = 5, night = opts.night })
+		local chosen = list[math.min(pick, #list)]
+		local _, info = Editor.recolorEffect(effect, chosen.color, opts)
+		return chosen.color, chosen.reason, info
+	end
+
+	-- scale ---------------------------------------------------------------------------------------------------------------------------
+	local function scaleFrame(cf, k)
+		return (cf - cf.Position) + cf.Position * k
+	end
+
+	local function scalePair(inst, attr, k)
+		local v = parseList(inst:GetAttribute(attr))[1]
+		if v then
+			inst:SetAttribute(attr, string.format("%s,%s", round(v[1] * k), round((v[2] or v[1]) * k)))
+		end
+	end
+
+	local function scaleNumber(inst, attr, k)
+		local v = inst:GetAttribute(attr)
+		if type(v) == "number" then
+			inst:SetAttribute(attr, round(v * k))
+		end
+	end
+
+	-- sizes, distances and speeds of an effect already built (what scaleProps does to the properties of a template)
+	local function scaleInto(effect, k)
+		local root = rootOf(effect)
+		local function moveHolder(mount)
+			if mount:IsA("Attachment") then
+				mount.CFrame = scaleFrame(mount.CFrame, k)
+			elseif mount:IsA("BasePart") and mount ~= root then
+				mount.Size = Vector3.new(math.clamp(mount.Size.X * k, 0.001, 2048), math.clamp(mount.Size.Y * k, 0.001, 2048),
+					math.clamp(mount.Size.Z * k, 0.001, 2048))
+				mount.CFrame = root.CFrame * scaleFrame(frameIn(root, mount), k)
+			end
+		end
+		for _, el in Editor.elements(effect) do
+			local kind = Editor.kindOf(el)
+			if kind == "PARTICLES" then
+				el.Size = mulSpec(el.Size, k)
+				el.Speed = mulSpec(el.Speed, k)
+				el.Acceleration = el.Acceleration * k
+				moveHolder(el.Parent)
+			elseif kind == "LIGHT" then
+				el.Range = math.clamp(el.Range * k, 0, 120)
+				local keys = parseList(el:GetAttribute("LC_Keys"))
+				if #keys > 0 then
+					local parts = {}
+					for _, key in keys do
+						table.insert(parts, string.format("%s,%s,%s", round(key[1]), round(key[2] or 0, 3), round((key[3] or 0) * k, 3)))
+					end
+					el:SetAttribute("LC_Keys", table.concat(parts, ";"))
+				end
+				moveHolder(el.Parent)
+			elseif kind == "TRAIL" or kind == "BEAM" then
+				for _, att in { el.Attachment0, el.Attachment1 } do
+					moveHolder(att)
+				end
+				if kind == "TRAIL" then
+					el.MinLength *= k
+					el.MaxLength *= k
+				else
+					el.Width0 *= k
+					el.Width1 *= k
+					el.CurveSize0 *= k
+					el.CurveSize1 *= k
+					scaleNumber(el, "LC_Jitter", k)
+				end
+			elseif kind == "MESH" then
+				el.Size = Vector3.new(math.clamp(el.Size.X * k, 0.001, 2048), math.clamp(el.Size.Y * k, 0.001, 2048),
+					math.clamp(el.Size.Z * k, 0.001, 2048))
+				el.CFrame = root.CFrame * scaleFrame(frameIn(root, el), k)
+				scalePair(el, "LC_Radius", k)
+				scalePair(el, "LC_Speed", k)
+				scaleNumber(el, "LC_Rise", k)
+				scaleNumber(el, "LC_Jitter", k)
+			elseif kind == "SOUND" then
+				moveHolder(el.Parent)
+			elseif kind == "CAMERA" then
+				moveHolder(el.Parent)
+				scaleNumber(el, "LC_Radius", k)
+			end
+		end
+	end
+
+	--- scaleEffect(effect, factor) -> effect
+	--- Makes an effect bigger (factor > 1) or smaller: element sizes, distances, speeds, light ranges, beam widths, 3D pieces, camera
+	--- radius. factor between 0.05 and 20; one undo step.
+	function Editor.scaleEffect(effect, factor)
+		assert(type(factor) == "number" and factor >= 0.05 and factor <= 20, "LostCube: scara trebuie să fie între 0.05 și 20")
+		effect = Editor.effect(effect)
+		return record(string.format("scară x%.2f pe %s", factor, effect.Name), function()
+			scaleInto(effect, factor)
+			return effect
+		end)
+	end
+
+	--- makeVariants(effect, opts) -> { Model }
+	--- Copies of an effect in other colours (teams, rarities, elements), in ONE undo step. opts:
+	---   count    1..12 (default 3)
+	---   hueStep  degrees between the main colour of one copy and the next (default 360 / (count + 1): evenly around the wheel)
+	---   colors   { Color3 }: exact main colours instead of a hue step (count = #colors)
+	---   scale    size factor applied once more per copy (1.25: x1.25, x1.56, ...; default 1 = same size)
+	---   names    { string }: the names of the copies (default: "<effect> <colour name>")
+	--- Names are always free (a taken one gets a number).
+	function Editor.makeVariants(effect, opts)
+		opts = opts or {}
+		effect = Editor.effect(effect)
+		local colors = opts.colors
+		local count = colors and #colors or math.floor(tonumber(opts.count) or 3)
+		assert(count >= 1 and count <= LIMITS.variants, "LostCube: numărul de variante trebuie să fie între 1 și " .. LIMITS.variants)
+		local hueStep = tonumber(opts.hueStep) or 360 / (count + 1)
+		local step = tonumber(opts.scale) or 1
+		assert(step >= 0.05 and step <= 20 and step ^ count <= 20 and step ^ count >= 0.05,
+			"LostCube: scara variantelor trebuie să rămână între 0.05 și 20")
+		local targets = {}
+		for i = 1, count do
+			if colors then
+				targets[i] = targetList(colors[i])[1]
+			end
+		end
+		return record("variante pentru " .. effect.Name, function()
+			local group = hueGroups(colorSamples(colorSlots(effect)), 1)[1]
+			assert(group, "LostCube: efectul " .. effect.Name .. " nu are culori de schimbat (doar alb / gri / negru)")
+			local h, s, v = group.color:ToHSV()
+			local folder = effect.Parent
+			local out = {}
+			for i = 1, count do
+				local target = targets[i] or Color3.fromHSV((h + i * hueStep / 360) % 1, s, v)
+				local copy = effect:Clone()
+				local name = opts.names and opts.names[i] and trim(tostring(opts.names[i])) or nil
+				if not name or name == "" then
+					name = effect.Name .. " " .. colorWord(target)[1]
+				end
+				copy.Name = freeName(folder, string.sub(name, 1, LIMITS.nameChars - 8))
+				recolorInto(copy, { target }, { from = group.color })
+				if step ~= 1 then
+					scaleInto(copy, step ^ i)
+				end
+				copy.Parent = folder
+				out[i] = copy
+			end
+			return out
+		end)
+	end
 end
 
 Editor.VFX = VFX
