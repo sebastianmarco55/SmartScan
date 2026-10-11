@@ -57,6 +57,16 @@ local function toggled(s)
 	return found[1] ~= nil and found[1]:GetAttribute("Checked") == true
 end
 local function input() return findAll(content, function(c) return c.ClassName == "TextBox" and c.MultiLine == true and c.TextEditable ~= false end)[1] end
+local function named(name) return findAll(content, function(c) return c.Name == name end) end
+-- the quick prompts of an empty conversation are chips
+local function chip(s) return findAll(content, function(c) return c.Name == "Chip" and c.Text == s end)[1] end
+-- toasts go away by themselves (the mock's task.delay does not wait): remember every one
+local toasts = {}
+local realToast = UI.toast
+UI.toast = function(text, kind, opts)
+	table.insert(toasts, text)
+	return realToast(text, kind, opts)
+end
 
 local function respond(body) return { StatusCode = 200, Body = body, Headers = {} } end
 local function message(content_, stop, usage)
@@ -75,18 +85,19 @@ end
 
 -- 1. plain chat by default; the toggle switches agent mode on
 render()
-check("agent toggle", texts("Mod agent: Claude poate acționa în Studio") == 1 and not toggled("Mod agent: Claude poate acționa în Studio"))
-check("plain quick prompts", texts("›  Ce animații lipsesc?") == 1 and texts("›  Verifică scriptele suspecte") == 0)
-check("modules + log kept", texts("Module în joc") == 1 and texts("Ce s-a făcut  (1)") == 1)
-click(findText(content, "Mod agent: Claude poate acționa în Studio")[1])
+check("agent toggle", texts("Mod agent") == 1 and not toggled("Mod agent"))
+check("plain quick prompts", chip("Ce animații lipsesc?") ~= nil and chip("Verifică scripturile suspecte") == nil)
+check("modules + log kept", texts("Module în joc") == 1 and texts("<uc>Activitate</uc>") == 1)
+click(findText(content, "Mod agent")[1])
 runQueue()
 check("agent saved", store["LostCube.AI.Agent"] == true)
-check("agent on", toggled("Mod agent: Claude poate acționa în Studio"))
-check("agent quick prompts", texts("›  Creează un efect de lovitură potrivit jocului") == 1 and texts("›  Generează animațiile de luptă care lipsesc") == 1
-	and texts("›  Verifică scriptele suspecte") == 1 and texts("›  Ce animații lipsesc?") == 0)
-check("allow-code toggle off", texts("Permite cod fără confirmare") == 1 and not toggled("Permite cod fără confirmare"))
-check("agent note", texts("îți cere voie înainte de fiecare modificare") >= 1)
-check("stop hidden", button("⏹ Oprește") and button("⏹ Oprește").Visible == false)
+check("agent on", toggled("Mod agent"))
+check("agent quick prompts", chip("Efect de lovitură pentru joc") ~= nil and chip("Animațiile de luptă lipsă") ~= nil
+	and chip("Verifică scripturile suspecte") ~= nil and chip("Ce animații lipsesc?") == nil)
+check("allow-code toggle off", texts("Cod fără confirmare") == 1 and not toggled("Cod fără confirmare"))
+check("agent empty state", texts("îți cere voie înainte de fiecare modificare") >= 1)
+check("agent badge in the composer", #findAll(content, function(c) return c.Name == "Badge" and c.Text == "Agent" end) == 1)
+check("stop hidden", button("Oprește") == nil and button("Trimite") ~= nil)
 
 -- 2. an agent turn: reads run by themselves, the change waits for a click
 Http.sent = {}
@@ -96,40 +107,44 @@ Http.queue = {
 	message({ tool("t4", "run_luau", Json.object({ code = "print('x')\n\tlocal a = 1", summary = "Testează ceva." })) }, "tool_use"),
 	message({ txt("Gata! Am creat **Hit**.") }, "end_turn"),
 }
-click(findText(content, "›  Creează un efect de lovitură potrivit jocului")[1])
+click(chip("Efect de lovitură pentru joc"))
 runQueue(50)
 check("two requests so far", #Http.sent == 2, #Http.sent)
-check("read cards done", texts("⌕  Citește selecția") == 1 and texts("⌕  Listează efectele") == 1 and texts("gata") >= 2)
+check("read lines done", texts("Citește selecția") == 1 and texts("Listează efectele") == 1 and #named("ToolLine") == 2
+	and #named("Done") == 2)
 check("text step rendered", texts("Mă uit întâi la selecție și la efecte.") == 1)
-check("pending card", texts("✎  Creează efect din șablon") == 1 and texts("așteaptă aprobarea") >= 1)
+local cards = named("ToolCard")
+check("pending card", texts("Creează efect din șablon") == 1 and #cards == 1 and cards[1]:GetAttribute("Status") == "pending"
+	and texts("Așteaptă") >= 1)
 check("pending summary", texts("„Hit” din șablonul PUNCH · culoare #FF8A3D") == 1)
-check("approve buttons", button("✓ Permite") ~= nil and button("✗ Refuză") ~= nil
-	and button("Permite mereu „Creează efect din șablon” în conversația asta") ~= nil)
-check("stop visible", button("⏹ Oprește").Visible == true and button("Claude lucrează…") ~= nil)
-check("wait line", texts("așteaptă aprobarea ta") == 1 and texts("pas 2/12") == 1 and texts("tokeni intrare") == 1)
+check("approve buttons", button("Permite") ~= nil and button("Refuză") ~= nil and button("Permite mereu") ~= nil)
+check("stop instead of send", button("Oprește") ~= nil and button("Trimite") == nil)
+check("wait line", texts("Așteaptă aprobarea ta") == 1 and texts("pas 2/12") == 1 and texts("tokeni intrare") == 1)
 check("nothing created yet", #created == 0)
 -- a full re-render (effects changed, tab switch...) keeps the pending card and the draft
 input().Text = "ciornă"
 render()
 runQueue(20)
-check("pending card survives re-render", button("✓ Permite") ~= nil and texts("✎  Creează efect din șablon") == 1)
+check("pending card survives re-render", button("Permite") ~= nil and texts("Creează efect din șablon") == 1)
 check("draft kept", input().Text == "ciornă")
 check("still waiting", #Http.sent == 2)
-click(button("✓ Permite"))
+click(button("Permite"))
 runQueue(50)
 check("approved -> created", #created == 1 and created[1] == "Hit")
 check("third request", #Http.sent == 3)
-check("code card", texts("✎  Rulează cod Luau") == 1 and texts("Testează ceva.") == 1)
+check("approved card done", named("ToolCard")[1]:GetAttribute("Status") == "done" and texts("Gata") >= 1)
+check("code card", texts("Rulează cod Luau") == 1 and texts("Testează ceva.") == 1)
 local codeBoxes = findAll(content, function(c) return c.ClassName == "TextBox" and c.TextEditable == false and has(c.Text, "print('x')") end)
-check("code shown monospace", #codeBoxes == 1 and codeBoxes[1].Font == Enum.Font.Code and has(codeBoxes[1].Text, "    local a = 1"))
-check("no always for code", button("Permite mereu „Rulează cod Luau” în conversația asta") == nil and button("✓ Permite") ~= nil)
-click(button("✗ Refuză"))
+check("code shown on a code surface", #codeBoxes == 1 and codeBoxes[1].FontFace ~= nil and has(codeBoxes[1].FontFace.Family, "BuilderMono")
+	and has(codeBoxes[1].Text, "    local a = 1") and #named("Code") == 1)
+check("no always for code", button("Permite mereu") == nil and button("Permite") ~= nil)
+click(button("Refuză"))
 runQueue(50)
 check("four requests", #Http.sent == 4)
 check("final text", texts("Gata! Am creat <b>Hit</b>.") == 1)
-check("refused card", texts("refuzat") >= 1 and texts("Refuzat de tine.") == 1)
+check("refused card", texts("Refuzat") >= 2 and texts("Refuzat de tine.") == 1)
 check("usage line", texts("4 pași · 4 unelte") == 1, "")
-check("idle again", button("⏹ Oprește").Visible == false and button("Trimite") ~= nil and not panel.busy)
+check("idle again", button("Oprește") == nil and button("Trimite") ~= nil and not panel.busy)
 local last = JSON.decode(Http.sent[4].Body)
 local results = last.messages[#last.messages].content
 check("refusal sent as error", results[1].is_error == true and has(results[1].content, "refused") and results[1].tool_use_id == "t4")
@@ -156,8 +171,8 @@ input().Text = "Mai fă două efecte."
 click(button("Trimite"))
 runQueue(50)
 check("input cleared", input().Text == "")
-check("pending again", button("Permite mereu „Creează efect din șablon” în conversația asta") ~= nil)
-click(button("Permite mereu „Creează efect din șablon” în conversația asta"))
+check("pending again", button("Permite mereu") ~= nil)
+click(button("Permite mereu"))
 runQueue(80)
 check("both created, second without asking", #created == 3 and created[3] == "Hit3" and #Http.sent == 3, #Http.sent)
 check("turn 2 done", texts("Am făcut două.") == 1)
@@ -167,9 +182,12 @@ check("turn 2 history is text only", #b1.messages == 3 and type(b1.messages[2].c
 dumpBodies("p2", 1)
 
 -- 4. code with "permite cod fără confirmare" + stop while a card waits
-click(findText(content, "Permite cod fără confirmare")[1])
+click(findText(content, "Cod fără confirmare")[1])
 runQueue()
-check("allow code saved", store["LostCube.AI.AllowCode"] == true and toggled("Permite cod fără confirmare"))
+check("allow code saved", store["LostCube.AI.AllowCode"] == true and toggled("Cod fără confirmare"))
+local codeToggle = findAll(content, function(c) return c.ClassName == "TextButton" and c.Text == "Cod fără confirmare" end)[1]
+check("allow code in the danger tone", codeToggle.TextColor3 == UI.C.danger and codeToggle:FindFirstChild("Switch").BackgroundColor3 == UI.C.danger
+	and texts("Codul Luau poate rula fără să-l mai aprobi.") == 1)
 Http.sent = {}
 Http.queue = {
 	message({ tool("v1", "run_luau", Json.object({ code = "return 1", summary = "Unu." })), tool("v2", "get_selection") }, "tool_use"),
@@ -178,13 +196,13 @@ Http.queue = {
 input().Text = "Rulează ceva."
 click(button("Trimite"))
 runQueue(30)
-check("always offered for code now", button("Permite mereu „Rulează cod Luau” în conversația asta") ~= nil)
-click(button("⏹ Oprește"))
+check("always offered for code now", button("Permite mereu") ~= nil)
+click(button("Oprește"))
 runQueue(60)
 check("stop: one request only", #Http.sent == 1)
 check("stop: card refused", texts("Oprit înainte să ruleze.") == 1)
 check("stop: note", texts("Oprit de tine după 1 pas") == 1)
-check("stop: idle", not panel.busy and panel.run == nil and button("⏹ Oprește").Visible == false)
+check("stop: idle", not panel.busy and panel.run == nil and button("Oprește") == nil)
 Http.queue = {}
 
 -- 5. "Golește" while a card waits: the loop ends, nothing more is sent, "Permite mereu" is forgotten
@@ -203,8 +221,8 @@ Http.queue = { message({ tool("w2", "run_luau", Json.object({ code = "return 2",
 input().Text = "Cod."
 click(button("Trimite"))
 runQueue(30)
-check("code pending", button("✓ Permite") ~= nil)
-click(button("Golește"))
+check("code pending", button("Permite") ~= nil)
+click(named("IconButton_plus")[1])
 runQueue(60)
 check("cleared", #panel.messages == 0 and not panel.busy and #Http.sent == 1)
 check("always forgotten", next(panel.allowAlways) == nil)
@@ -237,24 +255,29 @@ Http.sent = {}
 Http.queue = { message({ tool("y1", "create_effect_from_template", Json.object({ name = "Hit5", template = "PUNCH" })) }, "tool_use"),
 	message({ txt("Gata și aici.") }, "end_turn") }
 input().Text = "Pe alt tab."
+app.tab = "VFX" -- the developer opens another tab right after sending
 click(button("Trimite"))
-runQueue(20)
-for _, c in content:GetChildren() do c:Destroy() end -- the App shows another tab
-app.tab = "VFX"
+for _, c in content:GetChildren() do c:Destroy() end -- the App shows that tab
 local rendersBefore = renders
-runQueue(40)
+runQueue(60)
 check("no redraw of another tab", renders == rendersBefore)
+local told = false
+for _, text in toasts do
+	told = told or has(text, "Claude așteaptă aprobarea ta: Creează efect din șablon")
+end
+check("a toast says Claude waits (another tab is shown)", told)
 app.tab = "Claude"
 render()
-check("pending card when coming back", button("✓ Permite") ~= nil)
-click(button("✓ Permite"))
+check("pending card when coming back", button("Permite") ~= nil)
+click(button("Permite"))
 runQueue(40)
 check("finished after coming back", texts("Gata și aici.") == 1 and #created == 5)
 
 -- 8. agent off -> the plain chat again (no tools in the request)
-click(findText(content, "Mod agent: Claude poate acționa în Studio")[1])
+click(findText(content, "Mod agent")[1])
 runQueue()
-check("agent off", store["LostCube.AI.Agent"] == false and texts("›  Ce animații lipsesc?") == 1)
+check("agent off", store["LostCube.AI.Agent"] == false and not toggled("Mod agent") and input().PlaceholderText == "Întreabă ceva despre joc…"
+	and #findAll(content, function(c) return c.Name == "Badge" and c.Text == "Agent" end) == 0)
 Http.sent = {}
 Http.queue = { message({ txt("Răspuns simplu.") }, "end_turn") }
 input().Text = "Întrebare simplă"

@@ -5,12 +5,18 @@ local function eq(name, got, want)
 	t.eq(name, got, want)
 end
 
+-- theme tokens: Color3-like values whose ToHex the inline markup reads at call time
+local function hex(h)
+	return { ToHex = function() return h end }
+end
+local C = { textBright = hex("e5e5e5"), link = hex("35b5ff"), textDim = hex("aaaaaa") }
 local tree = LC.modtree.new{
 	env = LC.env{ Color3 = { fromRGB = function(...) return { ... } end } },
-	mocks = { UI = { C = {}, FONT = 0 } },
+	mocks = { UI = { C = C, FONT = 0 } },
 }
 local Markdown = tree.load("Markdown")
 local I = Markdown.inline
+local CODE = '<font family="rbxasset://fonts/families/BuilderMono.json" color="#E5E5E5">'
 
 -- escaping
 eq("escape", Markdown.escape("a < b && c > d"), "a &lt; b &amp;&amp; c &gt; d")
@@ -25,18 +31,29 @@ eq("snake in sentence", I("set my_var_name now"), "set my_var_name now")
 eq("__bold__", I("__strong__ word"), "<b>strong</b> word")
 eq("mult", I("2 * 3 * 4"), "2 * 3 * 4")
 eq("strike", I("~~old~~ new"), "<s>old</s> new")
-eq("code", I("use `Editor.newEffect(\"a<b>\")` now"),
-	'use <font face="RobotoMono" color="#D7B8FF">Editor.newEffect("a&lt;b&gt;")</font> now')
-eq("code no format", I("`**not bold**`"), '<font face="RobotoMono" color="#D7B8FF">**not bold**</font>')
-eq("bold around code", I("**see `x`**"), '<b>see <font face="RobotoMono" color="#D7B8FF">x</font></b>')
-eq("double ticks", I("``a ` b``"), '<font face="RobotoMono" color="#D7B8FF">a ` b</font>')
+eq("code", I("use `Editor.newEffect(\"a<b>\")` now"), "use " .. CODE .. 'Editor.newEffect("a&lt;b&gt;")</font> now')
+eq("code no format", I("`**not bold**`"), CODE .. "**not bold**</font>")
+eq("bold around code", I("**see `x`**"), "<b>see " .. CODE .. "x</font></b>")
+eq("double ticks", I("``a ` b``"), CODE .. "a ` b</font>")
 eq("unbalanced bold", I("**open"), "**open")
 eq("broken nesting falls back", I("**a *b** c*"), "**a *b** c*")
 eq("amp in bold", I("**R&D**"), "<b>R&amp;D</b>")
 eq("link", I("[docs](https://create.roblox.com/a_b)"),
-	'<u>docs</u> <font color="#9696A6">(https://create.roblox.com/a_b)</font>')
+	'<font color="#35B5FF"><u>docs</u></font> <font color="#AAAAAA">(https://create.roblox.com/a_b)</font>')
+eq("bare link", I("[https://x.io](https://x.io)"), '<font color="#35B5FF"><u>https://x.io</u></font>')
 eq("control chars stripped", I("a\1b\2c"), "abc")
-eq("path with dots", I("`ServerScriptService.Combat`"), '<font face="RobotoMono" color="#D7B8FF">ServerScriptService.Combat</font>')
+eq("path with dots", I("`ServerScriptService.Combat`"), CODE .. "ServerScriptService.Combat</font>")
+-- the colours come from the theme tokens when the text is rendered (a theme switch re-renders), or from the caller
+C.textBright = hex("101010")
+eq("theme colour read at call time", I("`x`"), '<font family="rbxasset://fonts/families/BuilderMono.json" color="#101010">x</font>')
+C.textBright = nil
+eq("missing token falls back", I("`x`"), CODE .. "x</font>")
+C.textBright = hex("e5e5e5")
+eq("explicit colours", I("`x` [a](b)", { code = "#111111", link = "#222222", dim = "#333333" }),
+	'<font family="rbxasset://fonts/families/BuilderMono.json" color="#111111">x</font> <font color="#222222"><u>a</u></font> '
+		.. '<font color="#333333">(b)</font>')
+t.check(not string.find(I("`a` [b](c) **d**"), "D7B8FF", 1, true) and not string.find(I("`a`"), "RobotoMono", 1, true),
+	"no hard-coded violet or Roboto in the inline markup")
 
 -- blocks
 local doc = [[

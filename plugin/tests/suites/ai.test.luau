@@ -287,4 +287,47 @@ do
 	eq("static preset list replaced", string.find(sheet, "GROUND_RIBBON", 1, true), nil)
 end
 
+-- the prompts: every Editor function the reference names exists in the real Editor, the new ones are there, every tool the
+-- agent prompt names exists, every tool that changes the place is in the approval sentence, and no emoji / tab icons
+do
+	local sheet = AI.editorCheatSheet()
+	local editorSource = LC.files["LostCube/Editor/init.luau"] or ""
+	local toolsSource = LC.files["LostCube/Tools.luau"] or ""
+	local seen = {}
+	for name in string.gmatch(sheet .. AI.CHAT_PROMPT, "Editor%.([%a_]+)%(") do
+		if not seen[name] then
+			seen[name] = true
+			has("Editor." .. name .. " exists", editorSource, "function Editor." .. name .. "(")
+		end
+	end
+	for _, name in { "exportEffect", "importEffect", "exportAll", "importMany", "describeCode", "recolorEffect", "paletteOf",
+		"suggestColors", "matchPalette", "makeVariants", "scaleEffect" } do
+		has("sheet documents Editor." .. name, sheet, "Editor." .. name .. "(")
+	end
+	local approval = string.match(AI.AGENT_PROMPT, "Tools that change the place %(([^%)]+)%) wait until the developer approves")
+	t.check(approval ~= nil, "approval sentence")
+	local writes = 0
+	for name in string.gmatch(toolsSource, 'name = "([%w_]+)", label = "[^"]+", write = true') do
+		writes += 1
+		has("write tool " .. name .. " needs approval", approval or "", name)
+	end
+	t.check(writes >= 9, "write tools found in Tools.luau: " .. writes)
+	has("import_effect needs approval", approval or "", "import_effect")
+	has("recolor_effect needs approval", approval or "", "recolor_effect")
+	local readOnly = string.match(AI.AGENT_PROMPT, "Read%-only tools run right away: ([^\n]+)") or ""
+	for _, name in { "export_effect", "suggest_effect_colors" } do
+		has("read-only " .. name .. " listed", readOnly, name)
+	end
+	for name in string.gmatch(readOnly .. ", " .. (approval or ""), "([%w_]+)") do
+		has("tool " .. name .. " exists", toolsSource, 'name = "' .. name .. '"')
+	end
+	for _, text in { sheet, AI.ANALYSIS_PROMPT, AI.CHAT_PROMPT, AI.AGENT_PROMPT } do
+		for _, symbol in { "🧠", "✨", "◆", "🎬", "📚", "⚠", "✓" } do
+			eq("no " .. symbol .. " in the prompts", string.find(text, symbol, 1, true), nil)
+		end
+	end
+	has("tabs named as in the app", sheet, "Joc: game scan")
+	has("effects tab named", AI.AGENT_PROMPT, "preview in the Efecte tab")
+end
+
 t.finish()

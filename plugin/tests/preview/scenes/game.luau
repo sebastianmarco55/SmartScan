@@ -124,6 +124,13 @@ function S.scene(opts)
 	return scene
 end
 
+-- preview-only states, asked for with pseudo section keys:  --open preview.scanning (an analysis in progress; with
+-- --state empty: the first one), --open preview.airunning (Claude's analysis on its way), --open preview.noreport (not
+-- analysed, nothing running), --open preview.noai (no Claude analysis yet)
+local function wants(key)
+	return table.find(ARGS.open or {}, key) ~= nil
+end
+
 if ARGS.tab == "Game" then
 	local scene = S.scene{
 		mocks = {
@@ -131,13 +138,19 @@ if ARGS.tab == "Game" then
 			AI = {
 				getKey = function() return "sk-ant-api03-demo" end,
 				getModel = function() return "claude-opus-5-5" end,
+				modelInfo = function(id) return id and string.find(id, "opus", 1, true) and { short = "Opus 5.5" } or nil end,
+				describeInfo = function() return "Opus 5.5 · 12 480 tokeni intrare · 1 906 ieșire · 41 s" end,
 				analyzeGame = function(plugin, context, opts)
 					opts.onStatus("aștept răspunsul")
-					return true, "## Rezumat\nUn joc de acțiune cu hartă în tonuri de violet și multe piese ancorate.\n\n"
-						.. "1. **Securitate**: scriptul `Vaccine` încarcă un modul de pe site (`require(4567891234)`).\n"
-						.. "2. **Remote-uri**: `Hit` și `Buy` au încredere în client — validează `dmg` și `price` pe server.\n"
-						.. "3. **VFX**: lipsesc efectele de lovitură; vezi tab-ul ✨ VFX.\n\n- Adaugă un șablon `PUNCH`\n- Folosește `FOV_PUNCH` pe lovituri",
-						{ model = "claude-opus-5-5" }
+					return true, "## Pe scurt\nUn joc de acțiune cu hartă în tonuri de violet și multe piese ancorate. "
+						.. "Bucla de bază e clară, dar lipsesc feedback-ul loviturilor și protecția remote-urilor.\n\n"
+						.. "## Securitate\n1. **Backdoor confirmat**: `Workspace.Vaccine` încarcă un modul de pe site (`require(4567891234)`).\n"
+						.. "2. **Remote-uri**: `Hit` și `Buy` au încredere în client. Validează `dmg` și `price` pe server.\n\n"
+						.. "| Problemă | Unde | Efort |\n|---|---|---|\n| Backdoor | Workspace.Vaccine | mic |\n| Remote fără validare | Combat, Shop | mediu |\n\n"
+						.. "## Acțiuni în LostCube\n- Creează un efect de lovitură din șablonul `PUNCH`, în violetul hărții\n"
+						.. "- Leagă-l de markerul `Hit` al animației de atac\n\n```lua\nlocal Editor = require(game.ReplicatedStorage.LostCube.Editor)\n"
+						.. "Editor.newFromTemplate(\"Lovitură\", \"PUNCH\", { color = Color3.fromRGB(155, 92, 255) })\n```",
+						{ model = "claude-opus-5-5", inputTokens = 12480, outputTokens = 1906 }
 				end,
 			},
 		},
@@ -145,9 +158,21 @@ if ARGS.tab == "Game" then
 	local panel = scene.app:panel("Game")
 	-- the first render of the panel started the analysis by itself (task.defer); let it finish
 	P.drain(30)
-	if ARGS.state ~= "empty" and ARGS.noai ~= true then
+	if ARGS.state ~= "empty" and ARGS.noai ~= true and not wants("preview.noai") then
 		panel:askClaude()
 		P.drain(30)
+	end
+	if wants("preview.scanning") then
+		if ARGS.state == "empty" then
+			panel.report = nil
+		end
+		panel.running, panel.fraction, panel.label = true, 0.62, "Citesc scripturile: 18 / 29"
+	end
+	if wants("preview.noreport") then -- not analysed and nothing running (e.g. opened during a play test)
+		panel.report, panel.running = nil, false
+	end
+	if wants("preview.airunning") then
+		panel.aiRunning, panel.aiStarted, panel.aiStatus = true, scene.env.os.clock() - 18, "aștept răspunsul" -- the panel's clock
 	end
 	return scene
 end

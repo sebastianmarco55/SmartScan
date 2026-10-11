@@ -1,7 +1,8 @@
--- LostCube > Claude tab: chat with Claude about this game (Anthropic API, your own key), the key / model settings,
--- the modules Claude needs in the game, and what was done with LostCube.
--- Agent mode ("Mod agent"): Claude also gets tools (Tools.luau) and acts in Studio; every change waits for the
--- developer's click on its card in the chat (Permite / Refuză / Permite mereu), and "⏹ Oprește" ends the turn.
+-- LostCube > Claude tab: a chat with Claude about this game (Anthropic API, the developer's own key). Layout: the settings
+-- (key, model, effort, agent mode) in a folded "Setări" section, the conversation, the composer under it (sized so it sits
+-- at the bottom of the window), then the modules Claude needs in the game, the activity log and the "Despre" notes.
+-- Agent mode: Claude also gets tools (Tools.luau) and acts in Studio; every change waits for the developer's click on its
+-- card in the chat (Permite / Refuză / Permite mereu), and "Oprește" ends the turn.
 local UI = require(script.Parent.UI)
 local Installer = require(script.Parent.Installer)
 local AI = require(script.Parent.AI)
@@ -20,17 +21,20 @@ local Panel = {}
 Panel.__index = Panel
 
 local CONTEXT_CHARS = 60000 -- game analysis sent with every question (cached by the API after the first one)
-local CHAT_HEIGHT = 440
+local CHAT_HEIGHT = 420 -- the conversation before the window size is known
+local CHAT_MIN, CHAT_MAX = 240, 1200 -- the conversation follows the window between these
+local MESSAGE_GAP = 14
+local BOTTOM_ROOM = 12 -- between the composer and the bottom of the window
 
 local QUICK = {
-	{ label = "Ce efecte VFX i se potrivesc jocului?", prompt = "Ce efecte VFX i se potrivesc jocului? Ține cont de genul "
+	{ label = "Ce efecte i se potrivesc jocului?", prompt = "Ce efecte VFX i se potrivesc jocului? Ține cont de genul "
 		.. "jocului, de paleta de culori a hărții și de lumini. Propune 3–5 efecte concrete (nume, când se declanșează, "
 		.. "unde se prind, culori hex, ce preseturi LostCube combin) și dă-mi codul Luau cu Editor-ul LostCube pentru cel "
 		.. "mai important." },
 	{ label = "Ce animații lipsesc?", prompt = "Ce animații lipsesc din joc? Uită-te la personaje, NPC-uri, arme și "
 		.. "animațiile existente și spune-mi ce să adaug, în ordinea priorității, cu timing și easing pentru fiecare "
-		.. "(îl reglez în tab-ul 🎬 Anim din LostCube) și ce efecte să pun pe markerele lor." },
-	{ label = "Găsește probleme de securitate", prompt = "Verifică securitatea jocului: posibile backdoor-uri (require "
+		.. "(îl reglez în tab-ul Animații din LostCube) și ce efecte să pun pe markerele lor." },
+	{ label = "Probleme de securitate", prompt = "Verifică securitatea jocului: posibile backdoor-uri (require "
 		.. "cu ID de asset, getfenv / loadstring, cod ofuscat, scripturi din modele gratuite sau din locuri neobișnuite) și "
 		.. "RemoteEvent-uri / RemoteFunction-uri care au încredere în client. Pentru fiecare: calea exactă, de ce e "
 		.. "riscant și cum repar, cu cod pentru verificările pe server." },
@@ -41,34 +45,42 @@ local QUICK = {
 
 -- agent mode: Claude reads the game by itself and asks before every change
 local QUICK_AGENT = {
-	{ label = "Creează un efect de lovitură potrivit jocului", prompt = "Creează un efect de lovitură potrivit jocului: "
+	{ label = "Efect de lovitură pentru joc", prompt = "Creează un efect de lovitură potrivit jocului: "
 		.. "uită-te la genul jocului, la paleta hărții și la efectele care există deja, alege șablonul și culoarea "
 		.. "potrivite, creează efectul și arată-mi-l cu o previzualizare. La final spune-mi cum îl pornesc din cod "
 		.. "când lovește personajul." },
-	{ label = "Generează animațiile de luptă care lipsesc", prompt = "Verifică ce animații de luptă are jocul "
+	{ label = "Animațiile de luptă lipsă", prompt = "Verifică ce animații de luptă are jocul "
 		.. "(scripturile de luptă, animațiile existente și cele din RBX_ANIMSAVES) și generează-le pe cele care lipsesc, "
 		.. "pentru tipul de rig al jocului. La final spune-mi ce markere au și cum le leg de efecte." },
-	{ label = "Verifică scriptele suspecte", prompt = "Verifică scriptele suspecte din joc: pornește de la problemele de "
+	{ label = "Verifică scripturile suspecte", prompt = "Verifică scriptele suspecte din joc: pornește de la problemele de "
 		.. "securitate din analiză, caută require cu ID de asset, getfenv / setfenv, loadstring, cod ofuscat și "
 		.. "scripturi din modele gratuite, citește-le și spune-mi pentru fiecare dacă e periculos și ce face. Nu "
 		.. "modifica și nu șterge nimic fără să mă întrebi." },
-	{ label = "Ce am selectat și ce pot îmbunătăți?", prompt = "Uită-te la ce am selectat în Explorer (citește și "
+	{ label = "Îmbunătățește selecția", prompt = "Uită-te la ce am selectat în Explorer (citește și "
 		.. "scripturile, dacă e cazul) și spune-mi ce pot îmbunătăți. Propune modificările, dar fă-le doar pe cele pe "
 		.. "care le aprob." },
 }
 
--- tool card status -> text, color
+-- tool card status -> badge text, badge kind
 local STATUS = {
-	pending = { "așteaptă aprobarea", C.warn },
-	running = { "rulează…", C.accentHover },
-	done = { "gata", C.good },
-	error = { "eroare", C.danger },
-	refused = { "refuzat", C.dim },
+	pending = { "Așteaptă", "warning" },
+	running = { "Rulează", "accent" },
+	done = { "Gata", "success" },
+	error = { "Eroare", "danger" },
+	refused = { "Refuzat", "neutral" },
 }
 -- the same, in the text sent back to Claude in later turns
 local STATUS_LOG = { done = "gata", error = "eroare", refused = "refuzat", pending = "neterminat", running = "neterminat" }
 
-local CODE_BG = Color3.fromRGB(16, 16, 20)
+-- the glyph of each tool on its card
+local TOOL_ICON = {
+	get_game_overview = "game", find_instances = "search", get_instance = "info", read_script = "script",
+	get_selection = "locate", list_effects = "list", describe_effect = "info", list_templates_and_presets = "list",
+	list_animations = "list", preview_effect = "play", export_effect = "copy", suggest_effect_colors = "grid",
+	create_effect_from_template = "plus", create_effect = "plus", add_element = "plus", set_element_props = "gear",
+	import_effect = "import", recolor_effect = "gear", generate_animation = "animation", select_instances = "locate",
+	run_luau = "runScript",
+}
 
 local function trim(s: string): string
 	return (string.gsub(s, "^%s+", ""):gsub("%s+$", ""))
@@ -89,6 +101,11 @@ local function preview(text: string, maxLines: number, maxChars: number): string
 		out = string.gsub(string.sub(out, 1, maxChars), "[\192-\255][\128-\191]*$", "") .. "…"
 	end
 	return out
+end
+
+-- a message for a toast: the technical detail AI adds in parentheses on its own line stays out (it goes to warn)
+local function short(message: string): string
+	return (string.gsub(tostring(message), "\n%(.*%)%s*$", ""))
 end
 
 -- a tool of an agent turn that actually ran (its effects may be in the place)
@@ -209,18 +226,70 @@ local function liveState(Editor): string
 	return #text > 6000 and (string.gsub(string.sub(text, 1, 6000), "[\192-\255][\128-\191]*$", "") .. "\n…") or text
 end
 
--- a growing multi-line text box (the UI kit only has single-line ones)
-local function multiline(parent: Instance, text: string, placeholder: string)
-	return UI.make("TextBox", { Parent = parent, Text = text or "", PlaceholderText = placeholder, Font = UI.FONT,
-		TextSize = 13, TextColor3 = C.text, PlaceholderColor3 = C.dim, BackgroundColor3 = C.input, ClearTextOnFocus = false,
-		MultiLine = true, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
-		TextYAlignment = Enum.TextYAlignment.Top, Size = UDim2.new(1, 0, 0, 60), AutomaticSize = Enum.AutomaticSize.Y },
-		{ UI.corner(4), UI.stroke(C.border), UI.pad(6, 8, 6, 8) })
+-- ---------------------------------------------------------------------------------------------
+-- small widgets (only here)
+-- ---------------------------------------------------------------------------------------------
+local function autoFrame(parent: Instance, name: string, children: { Instance }?)
+	return UI.make("Frame", { Name = name, Parent = parent, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y }, children)
+end
+
+-- a horizontal bar: items on the left, `right` (a frame) on the right
+local function bar(parent: Instance, height: number)
+	local frame = UI.make("Frame", { Parent = parent, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, height) })
+	local left = UI.make("Frame", { Name = "Left", Parent = frame, BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1) },
+		{ UI.hlist(UI.SPACE.sm, false) })
+	local right = UI.make("Frame", { Name = "Right", Parent = frame, BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.fromScale(1, 0), Size = UDim2.fromScale(1, 1) },
+		{ UI.make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, UI.SPACE.xs),
+			FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Right,
+			VerticalAlignment = Enum.VerticalAlignment.Center }) })
+	return frame, left, right
+end
+
+-- a label as wide as its text
+local function inlineLabel(parent: Instance, text: string, opts: { [string]: any })
+	local l = UI.label(parent, text, opts)
+	l.Size = UDim2.new(0, 0, 0, opts.height or UI.H)
+	l.AutomaticSize = Enum.AutomaticSize.X
+	l.TextTruncate = Enum.TextTruncate.None
+	return l
+end
+
+-- the API key field: the text itself is never shown, a mask is drawn over it
+local function keyField(parent: Instance, onSave: (string) -> ())
+	local box = UI.textbox(parent, "", function(text)
+		onSave(text)
+	end, { mono = true })
+	box.TextTransparency = 1
+	local props = { Name = "Mask", Parent = box, BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1),
+		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = "sk-ant-…" }
+	UI.textStyle(props, "body")
+	local mask = UI.make("TextLabel", props)
+	UI.skin(mask, { TextColor3 = "textDisabled" })
+	box:GetPropertyChangedSignal("Text"):Connect(function()
+		local n = #box.Text
+		mask.Text = n == 0 and "sk-ant-…" or (string.rep("•", math.min(n, 18)) .. "  " .. n .. " caractere")
+		UI.skin(mask, { TextColor3 = n == 0 and "textDisabled" or "text" })
+	end)
+	return box
+end
+
+-- switches the window to another tab (App: tab / save / render), when the app allows it
+local function openTab(app, key: string)
+	if type(app) ~= "table" or app.tab == key or type(app.render) ~= "function" then
+		return
+	end
+	app.tab = key
+	if type(app.save) == "function" then
+		pcall(app.save, app, "tab", key)
+	end
+	app:render()
 end
 
 function Panel.new(ctx)
 	return setmetatable({ ctx = ctx, Editor = ctx.Editor, plugin = ctx.plugin, messages = {}, draft = "", busy = false,
-		gen = 0, allowAlways = {} }, Panel)
+		gen = 0, allowAlways = {}, chatHeight = CHAT_HEIGHT }, Panel)
 end
 
 -- agent mode and "code without confirmation" (plugin settings; kept on the panel when settings are unavailable)
@@ -261,16 +330,33 @@ function Panel:refresh()
 end
 
 function Panel:render(parent)
+	if self.fitConns then
+		for _, c in self.fitConns do
+			pcall(function()
+				c:Disconnect()
+			end)
+		end
+	end
+	self.fitConns = {}
+	self.chatList, self.composer, self.input, self.actions = nil, nil, nil, nil
 	local key = AI.getKey(self.plugin)
-	self:renderKey(parent, key)
-	self:renderChat(parent, key ~= nil)
+	if not key then
+		self:renderConnect(parent)
+	end
+	self:renderSettings(parent, key)
+	if key then
+		self:renderChat(parent)
+	end
 	self:renderModules(parent)
 	self:renderLog(parent)
 	self:renderAbout(parent)
+	if key then
+		self:watchFit(parent)
+	end
 end
 
 -- ---------------------------------------------------------------------------------------------
--- API key, model, effort
+-- API key, model, effort, modes
 -- ---------------------------------------------------------------------------------------------
 function Panel:saveKey(text)
 	local key = string.gsub(text or "", "%s", "")
@@ -278,15 +364,23 @@ function Panel:saveKey(text)
 		return
 	end
 	if not AI.setKey(self.plugin, key) then
-		self.keyStatus = { "Nu am putut salva cheia (setările merg doar când LostCube rulează ca plugin).", C.danger }
+		UI.toast("Cheia nu s-a putut salva. Setările merg doar când LostCube rulează ca plugin.", "error")
 	elseif AI.looksLikeKey(key) then
-		self.keyStatus = { "Cheie salvată doar pe calculatorul tău.", C.good }
+		UI.toast("Cheia a fost salvată doar pe acest calculator.", "success")
 	else
-		self.keyStatus = { "Cheie salvată, dar nu arată ca o cheie Anthropic (cheile încep cu „sk-ant-”).", C.warn }
+		UI.toast("Cheia a fost salvată, dar nu arată ca o cheie Anthropic (începe cu „sk-ant-”).", "warning")
 	end
 	self.editingKey = false
-	self.testStatus = nil
 	self:refresh()
+end
+
+function Panel:deleteKey()
+	UI.confirm("Ștergi cheia API?", "Va trebui să o introduci din nou ca să vorbești cu Claude.", "Șterge", function()
+		AI.setKey(self.plugin, nil)
+		self.editingKey = false
+		UI.toast("Cheia API a fost ștearsă de pe acest calculator.")
+		self:refresh()
+	end, { danger = true })
 end
 
 function Panel:test()
@@ -294,62 +388,79 @@ function Panel:test()
 		return
 	end
 	self.testing = true
-	self.testStatus = { "Se testează… (prima dată Studio îți poate cere permisiunea pentru api.anthropic.com)", C.dim }
 	self:refresh()
 	task.spawn(function()
 		local ok, message = AI.test(self.plugin)
 		self.testing = false
-		self.testStatus = { message, ok and C.good or C.danger }
+		if not ok then
+			warn("LostCube:", message)
+		end
+		UI.toast(short(message), ok and "success" or "error")
 		if not self.destroyed then
 			self:refresh()
 		end
 	end)
 end
 
-function Panel:renderKey(parent, key: string?)
-	local body = UI.section(parent, "Cheie API Anthropic", { key = "claude.key", collapsed = key ~= nil })
-	if key and not self.editingKey then
-		local area = UI.row(body, "Cheie salvată")
-		UI.label(area, AI.mask(key), { size = 12, color = C.good })
-		UI.button(area, "Schimbă", function()
-			self.editingKey = true
-			self:refresh()
-		end, { width = 66 })
-		UI.button(area, "Șterge", function()
-			AI.setKey(self.plugin, nil)
-			self.keyStatus = { "Cheia a fost ștearsă de pe acest calculator.", C.dim }
-			self.testStatus = nil
-			self:refresh()
-		end, { width = 58, style = "danger" })
-	else
-		-- the key is never shown: the box text is hidden and a mask is drawn over it
-		local area = UI.hstack(body, { height = UI.H })
-		local box = UI.textbox(area, "", function(text)
-			self:saveKey(text)
-		end)
-		box.TextTransparency = 1
-		local mask = UI.make("TextLabel", { Parent = box, BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1),
-			Font = UI.FONT, TextSize = 13, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
-			TextTruncate = Enum.TextTruncate.AtEnd, Text = "lipește cheia aici (sk-ant-…)" })
-		box:GetPropertyChangedSignal("Text"):Connect(function()
-			local n = #box.Text
-			mask.Text = n == 0 and "lipește cheia aici (sk-ant-…)" or (string.rep("•", math.min(n, 18)) .. "  " .. n .. " caractere")
-			mask.TextColor3 = n == 0 and C.dim or C.text
-		end)
-		UI.button(area, "Salvează", function()
-			self:saveKey(box.Text)
-		end, { width = 72, style = "primary" })
-		if key then
-			UI.button(area, "×", function()
+-- no key yet: what Claude needs, the key field and where the key stays
+function Panel:renderConnect(parent)
+	local frame = autoFrame(parent, "Connect", { UI.pad(UI.SPACE.xl, 0, UI.SPACE.lg, 0),
+		UI.make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, UI.SPACE.sm),
+			HorizontalAlignment = Enum.HorizontalAlignment.Center }) })
+	UI.icon(frame, "chat", { size = 24, color = "textDisabled" })
+	UI.label(frame, "Conectează Claude", { role = "emphasis", color = "textBright", align = Enum.TextXAlignment.Center,
+		height = 20 })
+	UI.label(frame, "Adaugă o cheie API Anthropic ca să vorbești cu Claude despre joc.", { dim = true, wrap = true,
+		align = Enum.TextXAlignment.Center })
+	UI.spacer(frame, 4)
+	local row = UI.hstack(frame, { height = UI.H_LARGE, fill = false })
+	local box = keyField(row, function(text)
+		self:saveKey(text)
+	end)
+	box.Size = UDim2.new(1, -(84 + UI.SPACE.sm), 0, UI.H_LARGE)
+	UI.button(row, "Salvează", function()
+		self:saveKey(box.Text)
+	end, { style = "primary", width = 84, height = UI.H_LARGE })
+	UI.label(frame, "Cheia rămâne doar pe acest calculator. Detalii în „Despre”.", { role = "meta", dim = true, wrap = true,
+		align = Enum.TextXAlignment.Center })
+end
+
+function Panel:renderSettings(parent, key: string?)
+	local body = UI.section(parent, "Setări", { key = "claude.settings", collapsed = true, onToggle = function()
+		self:scheduleFit()
+	end })
+	if key then
+		if self.editingKey then
+			local area = UI.row(body, "Cheie API")
+			local box = keyField(area, function(text)
+				self:saveKey(text)
+			end)
+			local buttons = UI.hstack(body, { fill = false })
+			UI.spacer(buttons, 0).Size = UDim2.new(0, UI.LABEL_W, 0, 0)
+			UI.button(buttons, "Salvează", function()
+				self:saveKey(box.Text)
+			end, { autoWidth = true })
+			UI.button(buttons, "Anulează", function()
 				self.editingKey = false
 				self:refresh()
-			end, { width = 26, style = "ghost", tip = "Păstrează cheia salvată" })
+			end, { style = "ghost", autoWidth = true, tip = "Păstrează cheia salvată" })
+		else
+			local area = UI.row(body, "Cheie API")
+			local layout = area:FindFirstChildOfClass("UIListLayout")
+			if layout then -- the mask takes the room, the buttons keep their size
+				layout.HorizontalFlex = Enum.UIFlexAlignment.None
+			end
+			local masked = UI.label(area, AI.mask(key), { role = "code" })
+			masked.Size = UDim2.new(1, -(64 + 24 + 8), 1, 0)
+			UI.button(area, "Schimbă", function()
+				self.editingKey = true
+				self:refresh()
+			end, { style = "ghost", width = 64 })
+			UI.iconButton(area, "trash", function()
+				self:deleteKey()
+			end, { danger = true, tip = "Șterge cheia de pe acest calculator" })
 		end
 	end
-	if self.keyStatus then
-		UI.label(body, self.keyStatus[1], { size = 12, wrap = true, color = self.keyStatus[2] })
-	end
-
 	local models = {}
 	for _, m in AI.MODELS do
 		table.insert(models, { value = m.id, label = m.label })
@@ -357,23 +468,43 @@ function Panel:renderKey(parent, key: string?)
 	UI.dropdown(UI.row(body, "Model"), models, AI.getModel(self.plugin), function(id)
 		AI.setModel(self.plugin, id)
 		self:refresh()
-	end, { menuWidth = 250 })
-	UI.segmented(UI.row(body, "Efort"), AI.EFFORTS, AI.getEffort(self.plugin), function(value)
+	end, { menuWidth = 250, tip = "Opus răspunde cel mai bine; Haiku e cel mai rapid și cel mai ieftin" })
+	local effort = UI.segmented(UI.row(body, "Efort"), AI.EFFORTS, AI.getEffort(self.plugin), function(value)
 		AI.setEffort(self.plugin, value)
 		self:refresh()
 	end)
-	UI.button(UI.hstack(body, { height = 26 }), self.testing and "Se testează…" or "Testează conexiunea", function()
-		self:test()
-	end, { height = 26, tip = "O cerere foarte mică: verifică cheia, modelul și permisiunea HTTP" })
-	if self.testStatus then
-		UI.label(body, self.testStatus[1], { size = 12, wrap = true, color = self.testStatus[2] })
+	UI.tip(effort, "Cât se gândește Claude înainte să răspundă; Atent folosește mai mulți tokeni")
+	if Tools then
+		UI.spacer(body, 4)
+		local agent = self:isAgent()
+		UI.toggle(body, agent, function(on)
+			self:setAgent(on)
+			self:refresh()
+		end, "Mod agent", { tip = "Claude primește unelte: citește singur jocul și, cu acordul tău pentru fiecare "
+			.. "modificare, creează efecte, generează animații, selectează și rulează cod" })
+		if agent then
+			local allowCode = self:allowCode()
+			local toggle = UI.toggle(body, allowCode, function(on)
+				self:setAllowCode(on)
+				self:refresh()
+			end, "Cod fără confirmare", { tip = "Pornit: la codul Luau apare și „Permite mereu” (doar în conversația "
+				.. "curentă). Oprit: vezi și aprobi fiecare bucată de cod." })
+			if allowCode then -- a risky setting: the switch and its label in the danger colour
+				UI.skin(toggle, { TextColor3 = "danger" })
+				local track = toggle:FindFirstChild("Switch")
+				if track then
+					UI.skin(track, { BackgroundColor3 = "danger" })
+				end
+				UI.label(body, "Codul Luau poate rula fără să-l mai aprobi.", { role = "meta", color = "danger", wrap = true })
+			end
+		end
 	end
-	UI.note(body, "Cheia o iei de pe <b>console.anthropic.com</b> → <b>API Keys</b>. Cererile se plătesc din contul tău "
-		.. "Anthropic (Opus e cel mai scump, Haiku cel mai ieftin; efortul „Atent” folosește mai mulți tokeni). "
-		.. "Cheia rămâne doar în setările pluginului pe acest calculator: nu se salvează în joc și nu ajunge la "
-		.. "colaboratori.")
-	UI.note(body, "La prima cerere Studio întreabă dacă LostCube are voie să acceseze <b>api.anthropic.com</b>: alege "
-		.. "<b>Allow</b>. Dacă ai refuzat: Plugins → Manage Plugins → LostCube → permisiuni.")
+	UI.spacer(body, 4)
+	local actions = UI.hstack(body, { fill = false })
+	UI.button(actions, self.testing and "Se testează…" or "Testează conexiunea", function()
+		self:test()
+	end, { autoWidth = true, disabled = self.testing == true,
+		tip = "O cerere foarte mică: verifică cheia, modelul și permisiunea HTTP" })
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -396,14 +527,15 @@ function Panel:history()
 	return out
 end
 
--- the line under the conversation while Claude works: "◆ Claude lucrează…  ·  pas 2/12  ·  14 s  ·  tokens"
+-- the line under the conversation while Claude works: "Claude lucrează… · pas 2/12 · 14 s · tokens"
 function Panel:waitLine(): string
 	local seconds = math.floor(now() - (self.startedAt or now()))
 	local run = self.run
+	local status = string.gsub(self.waitText or (run and "Claude lucrează…" or "Claude scrie…"), "^%l", string.upper)
 	if not run then
-		return string.format("◆  %s  %d s", self.waitText or "Claude scrie…", seconds)
+		return string.format("%s · %d s", status, seconds)
 	end
-	local parts = { "◆  " .. (self.waitText or "Claude lucrează…") }
+	local parts = { status }
 	if (run.iteration or 0) > 0 then
 		table.insert(parts, string.format("pas %d/%d", run.iteration, AI.MAX_ITERATIONS))
 	end
@@ -413,7 +545,7 @@ function Panel:waitLine(): string
 		table.insert(parts, string.format("%s tokeni intrare · %s ieșire", AI.thousands(info.inputTokens),
 			AI.thousands(info.outputTokens or 0)))
 	end
-	return table.concat(parts, "  ·  ")
+	return table.concat(parts, " · ")
 end
 
 -- keeps the wait line ticking while a turn runs
@@ -435,11 +567,9 @@ function Panel:send(text: string?, fromInput: boolean?)
 		return
 	end
 	if not AI.getKey(self.plugin) then
-		self.chatNote = { "Pune întâi cheia API în secțiunea „Cheie API Anthropic”.", C.warn }
-		self:redrawChat()
+		UI.toast("Adaugă întâi cheia API Anthropic.", "warning")
 		return
 	end
-	self.chatNote = nil
 	local history = self:history()
 	if fromInput then
 		self.draft = ""
@@ -587,7 +717,11 @@ function Panel:runTool(run, block): (string, boolean)
 		self:redrawChat()
 		local app = self.ctx.app
 		if app and app.tab and app.tab ~= "Claude" then
-			print("LostCube: Claude așteaptă aprobarea ta în tab-ul ◆ Claude (" .. def.label .. ").")
+			print("LostCube: Claude așteaptă aprobarea ta în tab-ul Claude (" .. def.label .. ").")
+			UI.toast("Claude așteaptă aprobarea ta: " .. def.label .. ".", "info", { action = { text = "Deschide",
+				onClick = function()
+					openTab(self.ctx.app, "Claude")
+				end } })
 		end
 		while step.decision == nil do
 			if not alive() then
@@ -642,7 +776,7 @@ function Panel:decide(step, decision: string)
 	self:redrawChat()
 end
 
--- "⏹ Oprește": no new request and no new tool; pending cards are refused; the current request finishes first
+-- "Oprește": no new request and no new tool; pending cards are refused; the current request finishes first
 function Panel:stop()
 	local run = self.run
 	if not run or run.cancelled then
@@ -682,86 +816,161 @@ function Panel:clear()
 	self.messages = {}
 	self.allowAlways = {} -- "Permite mereu" lasts one conversation
 	self.lastInfo = nil
-	self.chatNote = nil
 	self:redrawChat()
 end
 
--- read-only, selectable monospace box (the code Claude wants to run, shown whole before it is approved)
-local function codeBox(parent: Instance, code: string)
-	local frame = UI.make("Frame", { Parent = parent, BackgroundColor3 = CODE_BG, Size = UDim2.new(1, 0, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y }, { UI.corner(4), UI.stroke(C.border), UI.pad(4, 6, 5, 6) })
-	UI.make("TextBox", { Parent = frame, Text = (string.gsub(code, "\t", "    ")), Font = Enum.Font.Code, TextSize = 12,
-		TextColor3 = Color3.fromRGB(214, 220, 236), BackgroundTransparency = 1, ClearTextOnFocus = false, TextEditable = false,
-		MultiLine = true, TextWrapped = true, RichText = false, TextXAlignment = Enum.TextXAlignment.Left,
-		TextYAlignment = Enum.TextYAlignment.Top, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y })
+-- ---------------------------------------------------------------------------------------------
+-- messages
+-- ---------------------------------------------------------------------------------------------
+-- the developer's message: a quiet surface on the right, as wide as its text (up to 85 % of the conversation)
+local function userMessage(list: Instance, text: string)
+	local line = autoFrame(list, "UserMessage", { UI.make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder,
+		HorizontalAlignment = Enum.HorizontalAlignment.Right }) })
+	local available = 0
+	pcall(function()
+		available = list.AbsoluteSize.X - 12
+	end)
+	local width = UI.textWidth(text, "body") + 26
+	-- before the first layout the list has no width yet: 220 px fits in the narrowest dock
+	local limit = available > 0 and available * 0.85 or 220
+	local oneLine = not string.find(text, "\n", 1, true) and width <= limit
+	local bubble = UI.make("Frame", { Name = "Bubble", Parent = line, AutomaticSize = Enum.AutomaticSize.Y,
+		Size = oneLine and UDim2.new(0, width, 0, 0) or UDim2.new(0.85, 0, 0, 0) },
+		{ UI.corner(UI.RADIUS.surface), UI.pad(6, 10, 7, 10) })
+	UI.skin(bubble, { BackgroundColor3 = "raised" })
+	local props = { Parent = bubble, Text = Markdown.escape(text), RichText = true, TextWrapped = true, LineHeight = 1.15,
+		BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+		TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top }
+	UI.textStyle(props, "body")
+	UI.skin(UI.make("TextLabel", props), { TextColor3 = "text" })
+	return line
+end
+
+-- a failed request: what happened (danger note) and "Reîncearcă"
+function Panel:errorView(parent: Instance, text: string, index: number)
+	UI.note(parent, Markdown.escape(text), "danger")
+	local row = UI.hstack(parent, { fill = false })
+	UI.button(row, "Reîncearcă", function()
+		self:retry(index)
+	end, { icon = "refresh", autoWidth = true })
+end
+
+-- the status of a tool call: a badge
+local function statusBadge(parent: Instance, status: string)
+	local s = STATUS[status] or STATUS.running
+	local badge = UI.badge(parent, s[1], s[2])
+	badge.Name = "Status"
+	return badge
+end
+
+-- a read-only tool call: one quiet line (glyph, what, on what, status)
+function Panel:toolLine(parent: Instance, step)
+	local def = Tools and Tools.get(step.name)
+	local frame = autoFrame(parent, "ToolLine", { UI.vlist(2) })
+	local head = UI.make("Frame", { Parent = frame, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 20) })
+	UI.icon(head, TOOL_ICON[step.name] or "info", { size = 14, anchor = Vector2.new(0, 0.5),
+		position = UDim2.new(0, 0, 0.5, 0) })
+	local summary = Tools and Tools.summary(step.name, step.input) or ""
+	local text = '<font weight="medium">' .. UI.escape(def and def.label or step.name) .. "</font>"
+	if summary ~= "" then
+		text ..= '  <font color="#' .. C.textDim:ToHex() .. '">' .. UI.escape(summary) .. "</font>"
+	end
+	local label = UI.label(head, text, { rich = true, color = "text", height = 20 })
+	label.Position = UDim2.fromOffset(20, 0)
+	label.Size = UDim2.new(1, -(20 + 72), 1, 0)
+	local right = UI.make("Frame", { Parent = head, BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.fromScale(1, 0), Size = UDim2.new(0, 70, 1, 0) },
+		{ UI.make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, FillDirection = Enum.FillDirection.Horizontal,
+			HorizontalAlignment = Enum.HorizontalAlignment.Right, VerticalAlignment = Enum.VerticalAlignment.Center }) })
+	if step.status == "done" then
+		local check = UI.icon(right, "check", { size = 14, color = "success" })
+		check.Name = "Done"
+		if type(step.result) == "string" and step.result ~= "" then -- what the tool returned, on hover
+			UI.tip(head, preview(step.result, 6, 400))
+		end
+	else
+		statusBadge(right, step.status)
+	end
+	if step.status == "error" and type(step.result) == "string" and step.result ~= "" then
+		local err = UI.label(frame, preview(step.result, 3, 280), { role = "meta", color = "danger", wrap = true })
+		UI.pad(0, 0, 0, 20).Parent = err
+	end
 	return frame
 end
 
--- one tool call of an agent turn: name, what it does, status; buttons while it waits for approval
+-- a change: a card with what it does, its status, the code it runs, and the approval buttons while it waits
 function Panel:toolCard(parent: Instance, step)
 	local def = Tools and Tools.get(step.name)
-	local status = STATUS[step.status] or STATUS.running
+	if not (def and def.write) and step.status ~= "pending" then
+		return self:toolLine(parent, step)
+	end
 	local pending = step.status == "pending"
-	local card = UI.make("Frame", { Parent = parent, BackgroundColor3 = C.input, Size = UDim2.new(1, 0, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y }, { UI.corner(4), UI.stroke(pending and C.warn or C.border), UI.pad(5, 8, 6, 8),
-		UI.vlist(3) })
-	local head = UI.make("Frame", { Parent = card, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 16) })
-	UI.make("TextLabel", { Parent = head, Text = ((def and def.write) and "✎  " or "⌕  ") .. (def and def.label or step.name),
-		Font = UI.FONT_MED, TextSize = 12, TextColor3 = C.text, BackgroundTransparency = 1, Size = UDim2.new(1, -120, 1, 0),
-		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd })
-	UI.make("TextLabel", { Parent = head, Text = status[1], Font = UI.FONT_MED, TextSize = 11, TextColor3 = status[2],
-		BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0), Position = UDim2.fromScale(1, 0),
-		Size = UDim2.new(0, 116, 1, 0), TextXAlignment = Enum.TextXAlignment.Right })
+	-- a card that waits for the developer is filled (it is the one thing to act on); the others are outlined
+	local card = UI.make("Frame", { Name = "ToolCard", Parent = parent, Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = pending and 0 or 1 }, { UI.corner(UI.RADIUS.surface),
+		UI.stroke(pending and "fieldBorderHover" or "border"), UI.pad(8, 10, 10, 10), UI.vlist(6) })
+	UI.skin(card, { BackgroundColor3 = "raised" })
+	card:SetAttribute("Status", step.status)
+	local head = UI.make("Frame", { Parent = card, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 20) })
+	UI.icon(head, TOOL_ICON[step.name] or "info", { size = 14, color = pending and "text" or "textDim",
+		anchor = Vector2.new(0, 0.5), position = UDim2.new(0, 0, 0.5, 0) })
+	local title = UI.label(head, def and def.label or step.name, { role = "control", color = "text", height = 20 })
+	title.Position = UDim2.fromOffset(20, 0)
+	title.Size = UDim2.new(1, -(20 + 80), 1, 0)
+	local badge = statusBadge(head, step.status)
+	badge.AnchorPoint = Vector2.new(1, 0.5)
+	badge.Position = UDim2.new(1, 0, 0.5, 0)
 	local summary = Tools and Tools.summary(step.name, step.input) or ""
 	if summary ~= "" then
-		UI.label(card, summary, { size = 12, dim = true, wrap = true })
+		UI.label(card, summary, { dim = true, wrap = true })
 	end
 	if step.name == "run_luau" and type(step.input.code) == "string" then
-		codeBox(card, step.input.code)
+		Markdown.code(card, step.input.code, "Luau")
 	end
 	if pending then
-		local bar = UI.hstack(card, { height = 24 })
-		UI.button(bar, "✓ Permite", function()
+		local row = UI.hstack(card, { fill = false })
+		UI.button(row, "Permite", function()
 			self:decide(step, "allow")
-		end, { style = "primary", bold = true, height = 24 })
-		UI.button(bar, "✗ Refuză", function()
+		end, { style = "primary", autoWidth = true, tip = "Rulează această modificare (un singur Ctrl+Z)" })
+		UI.button(row, "Refuză", function()
 			self:decide(step, "deny")
-		end, { style = "danger", height = 24 })
+		end, { autoWidth = true, tip = "Nu schimbă nimic; Claude te întreabă ce vrei în loc" })
 		if self:canAlwaysAllow(step.name) then
-			UI.button(card, "Permite mereu „" .. (def and def.label or step.name) .. "” în conversația asta", function()
+			UI.button(row, "Permite mereu", function()
 				self:decide(step, "always")
-			end, { height = 22, textSize = 11, style = "ghost", align = Enum.TextXAlignment.Left })
+			end, { style = "ghost", autoWidth = true, tip = "Nu mai întreabă pentru „" .. (def and def.label or step.name)
+				.. "” până la o conversație nouă" })
 		end
 	elseif type(step.result) == "string" and step.result ~= "" and step.status ~= "running" then
-		UI.label(card, preview(step.result, 3, 280), { size = 11, wrap = true,
-			color = step.status == "error" and C.danger or C.dim })
+		UI.label(card, preview(step.result, 3, 280), { role = "meta", wrap = true,
+			color = step.status == "error" and "danger" or "textDim" })
 	end
 	return card
 end
 
 -- an agent turn: what Claude said and did, in order, then its final answer
 function Panel:agentView(list: Instance, m, index: number)
-	local frame = UI.make("Frame", { Parent = list, BackgroundColor3 = C.item, BackgroundTransparency = 0.4,
-		Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y }, { UI.corner(6), UI.pad(6, 8, 8, 8), UI.vlist(4) })
-	UI.label(frame, "◆  Claude · agent", { size = 11, bold = true, color = C.accent, height = 14 })
+	local frame = autoFrame(list, "AgentTurn", { UI.vlist(8) })
+	local tools = nil -- consecutive tool calls share one group (4 px apart)
 	for _, step in m.steps do
 		if step.kind == "text" then
+			tools = nil
 			Markdown.render(frame, step.text)
 		else
-			self:toolCard(frame, step)
+			if not tools then
+				tools = autoFrame(frame, "Tools", { UI.vlist(4) })
+			end
+			self:toolCard(tools, step)
 		end
 	end
 	if type(m.content) == "string" and m.content ~= "" then
 		Markdown.render(frame, m.content)
 	end
 	if m.error then
-		UI.label(frame, "⚠  " .. Markdown.escape(m.error), { wrap = true, rich = true, size = 12, color = C.danger })
-		UI.button(UI.hstack(frame, { height = 24, fill = false }), "Reîncearcă", function()
-			self:retry(index)
-		end, { width = 96 })
+		self:errorView(frame, m.error, index)
 	end
 	if m.info then
-		UI.label(frame, AI.describeInfo(m.info), { size = 10, dim = true, wrap = true })
+		UI.label(frame, AI.describeInfo(m.info), { role = "meta", color = "textDisabled", wrap = true })
 	end
 end
 
@@ -771,33 +980,69 @@ function Panel:messageView(list: Instance, m, index: number)
 		return
 	end
 	if m.role == "user" then
-		local frame = UI.make("Frame", { Parent = list, BackgroundColor3 = C.accentDark, BackgroundTransparency = 0.25,
-			Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y }, { UI.corner(6), UI.pad(6, 8, 7, 8), UI.vlist(2) })
-		UI.label(frame, "Tu", { size = 11, bold = true, color = C.accentHover, height = 14 })
-		UI.label(frame, Markdown.escape(m.content), { wrap = true, rich = true, size = 13 })
+		userMessage(list, m.content)
 		return
 	end
+	local frame = autoFrame(list, m.error and "Failed" or "Answer", { UI.vlist(6) })
 	if m.error then
-		local frame = UI.make("Frame", { Parent = list, BackgroundColor3 = Color3.fromRGB(58, 30, 36),
-			Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y }, { UI.corner(6), UI.pad(6, 8, 7, 8), UI.vlist(4) })
-		UI.label(frame, "⚠  Nu a mers", { size = 11, bold = true, color = C.danger, height = 14 })
-		UI.label(frame, Markdown.escape(m.content), { wrap = true, rich = true, size = 12 })
-		UI.button(UI.hstack(frame, { height = 24, fill = false }), "Reîncearcă", function()
-			self:retry(index)
-		end, { width = 96 })
+		self:errorView(frame, m.content, index)
 		return
 	end
-	local frame = UI.make("Frame", { Parent = list, BackgroundColor3 = C.item, BackgroundTransparency = 0.4,
-		Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y }, { UI.corner(6), UI.pad(6, 8, 8, 8), UI.vlist(4) })
-	UI.label(frame, "◆  Claude", { size = 11, bold = true, color = C.accent, height = 14 })
 	Markdown.render(frame, m.content)
 	if m.info then -- token usage of each reply (the newest is the last reply's)
-		UI.label(frame, AI.describeInfo(m.info), { size = 10, dim = true, wrap = true })
+		UI.label(frame, AI.describeInfo(m.info), { role = "meta", color = "textDisabled", wrap = true })
+	end
+end
+
+-- nothing said yet: one sentence and the quick prompts as chips
+function Panel:emptyView(list: Instance)
+	local agent = self:isAgent()
+	local report = storedReport()
+	local frame = UI.empty(list, agent and "Claude citește jocul singur și îți cere voie înainte de fiecare modificare."
+		or "Claude vede analiza jocului, efectele LostCube și selecția din Explorer.", nil, nil,
+		{ icon = "chat", title = agent and "Ce să facă Claude?" or "Întreabă despre joc" })
+	for _, q in (agent and QUICK_AGENT or QUICK) do
+		UI.chip(frame, q.label, { onClick = function()
+			self:send(q.prompt)
+		end, tip = "Trimite: " .. q.label })
+	end
+	if not report then
+		UI.spacer(frame, 2)
+		UI.button(frame, "Analizează jocul în tab-ul Joc", function()
+			openTab(self.ctx.app, "Game")
+		end, { style = "link", autoWidth = true, tip = "Fără analiză, Claude nu cunoaște jocul" })
+	end
+end
+
+-- the send / stop button of the composer, for the current state
+function Panel:drawActions()
+	local actions = self.actions
+	if not (actions and actions.Parent) then
+		return
+	end
+	for _, child in actions:GetChildren() do
+		if child:IsA("GuiObject") then
+			child:Destroy()
+		end
+	end
+	if self.run then
+		local stopping = self.run.cancelled
+		self.stopButton = UI.button(actions, stopping and "Se oprește…" or "Oprește", function()
+			self:stop()
+		end, { icon = "stop", autoWidth = true, disabled = stopping, tip = "Claude nu mai face niciun pas (cererea în curs "
+			.. "se termină; ce așteaptă aprobarea e refuzat)" })
+	else
+		self.stopButton = nil
+		self.sendButton = UI.button(actions, "Trimite", function()
+			if self.input then
+				self:send(self.input.Text, true)
+			end
+		end, { style = "primary", autoWidth = true, disabled = self.busy })
 	end
 end
 
 -- rebuilds only the conversation (the input box keeps its focus and text); falls back to a full redraw (only while
--- the ◆ Claude tab is the one shown: the agent keeps working, and its state is drawn when the tab opens)
+-- the Claude tab is the one shown: the agent keeps working, and its state is drawn when the tab opens)
 function Panel:redrawChat()
 	local list = self.chatList
 	if not (list and list.Parent) then
@@ -813,28 +1058,17 @@ function Panel:redrawChat()
 		end
 	end
 	if #self.messages == 0 and not self.busy then
-		UI.label(list, self:isAgent() and ("Mod agent: cere-i lui Claude ce vrei să facă. Citește singur jocul (scripturi, "
-			.. "instanțe, efecte, selecția) și îți cere voie înainte de fiecare modificare; fiecare modificare aprobată e un "
-			.. "Ctrl+Z.") or ("Întreabă orice despre joc sau alege o întrebare de mai sus. Claude vede analiza jocului "
-			.. "(tab-ul 🧠 Joc), efectele LostCube și selecția din Explorer."), { dim = true, size = 12, wrap = true })
+		self:emptyView(list)
 	end
 	for i, m in self.messages do
 		self:messageView(list, m, i)
 	end
 	self.waitLabel = nil
 	if self.busy then
-		self.waitLabel = UI.label(list, self:waitLine(), { size = 12, color = C.accentHover, wrap = true })
+		self.waitLabel = UI.label(list, self:waitLine(), { role = "meta", dim = true, wrap = true })
+		self.waitLabel.Name = "Waiting"
 	end
-	if self.chatNote then
-		UI.label(list, self.chatNote[1], { size = 12, wrap = true, color = self.chatNote[2] })
-	end
-	if self.sendButton and self.sendButton.Parent then
-		self.sendButton.Text = self.busy and (self.run and "Claude lucrează…" or "Claude scrie…") or "Trimite"
-	end
-	if self.stopButton and self.stopButton.Parent then
-		self.stopButton.Visible = self.run ~= nil
-		self.stopButton.Text = (self.run and self.run.cancelled) and "Se oprește…" or "⏹ Oprește"
-	end
+	self:drawActions()
 	-- show the newest message
 	for _, delay in { 0.05, 0.25 } do
 		task.delay(delay, function()
@@ -845,92 +1079,183 @@ function Panel:redrawChat()
 	end
 end
 
-function Panel:renderChat(parent, hasKey: boolean)
-	local body = UI.section(parent, "Chat cu Claude", { key = "claude.chat" })
+-- the conversation fills the window down to the composer (the composer sits at the bottom of the visible area)
+function Panel:fitChat()
+	local list, composer, scroll = self.chatList, self.composer, self.pageScroll
+	if not (list and list.Parent and composer and composer.Parent and scroll and scroll.Parent) then
+		return
+	end
+	local ok, wanted = pcall(function()
+		local top = list.AbsolutePosition.Y - scroll.AbsolutePosition.Y + scroll.CanvasPosition.Y
+		return scroll.AbsoluteSize.Y - top - composer.AbsoluteSize.Y - UI.SPACE.xs - BOTTOM_ROOM
+	end)
+	if not ok or type(wanted) ~= "number" or wanted ~= wanted then
+		return
+	end
+	local height = math.clamp(math.floor(wanted), CHAT_MIN, CHAT_MAX)
+	if math.abs(height - self.chatHeight) >= 2 then
+		self.chatHeight = height
+		list.Size = UDim2.new(1, 0, 0, height)
+	end
+end
+
+-- fits the conversation once the layout has settled (now and a moment later: positions update after the next frame)
+function Panel:scheduleFit()
+	local function fit()
+		if not self.destroyed then
+			self:fitChat()
+		end
+	end
+	task.defer(fit)
+	task.delay(0.1, fit)
+end
+
+function Panel:watchFit(parent: Instance)
+	local scroll = parent.Parent
+	while scroll and not scroll:IsA("ScrollingFrame") do
+		scroll = scroll.Parent
+	end
+	self.pageScroll = scroll
+	if not scroll then
+		return
+	end
+	local function fit()
+		self:scheduleFit()
+	end
+	table.insert(self.fitConns, scroll:GetPropertyChangedSignal("AbsoluteSize"):Connect(fit))
+	if self.composer then
+		table.insert(self.fitConns, self.composer:GetPropertyChangedSignal("AbsoluteSize"):Connect(fit))
+	end
+	fit()
+end
+
+function Panel:renderChat(parent)
 	local report = storedReport()
-	UI.label(body, report and "✓ Claude primește analiza jocului salvată (tab-ul 🧠 Joc)."
-		or "Fără analiză salvată: scanează jocul în tab-ul 🧠 Joc ca să-l cunoască Claude.",
-		{ size = 12, wrap = true, color = report and C.good or C.warn })
-	if not hasKey then
-		UI.note(body, "Pune cheia API în secțiunea de mai sus ca să poți vorbi cu Claude.", C.warn)
-	end
+	local body = UI.section(parent, "Conversație", { key = "claude.chat", collapsible = false, right = function(r)
+		UI.iconButton(r, "plus", function()
+			self:clear()
+		end, { tip = "Conversație nouă" })
+	end, rightWidth = 28 })
+	local context = UI.make("Frame", { Name = "Context", Parent = body, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 16) },
+		{ UI.hlist(6, false) })
+	local dot = UI.make("Frame", { Name = "Dot", Parent = context, Size = UDim2.fromOffset(6, 6) }, { UI.corner(3) })
+	UI.skin(dot, { BackgroundColor3 = report and "success" or "warning" })
+	inlineLabel(context, report and "Analiza jocului e inclusă" or "Fără analiza jocului", { role = "meta", dim = true,
+		height = 16 })
+	UI.tip(context, report and "Claude primește analiza salvată a jocului (tab-ul Joc), efectele LostCube și selecția."
+		or "Analizează jocul în tab-ul Joc ca să-l cunoască Claude.")
+
+	local list = UI.make("ScrollingFrame", { Name = "Messages", Parent = body, BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, self.chatHeight), CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollBarThickness = 4, ScrollingDirection = Enum.ScrollingDirection.Y,
+		VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar }, { UI.vlist(MESSAGE_GAP), UI.pad(8, 8, 8, 0) })
+	UI.skin(list, { ScrollBarImageColor3 = "scrollbar" })
+	self.chatList = list
+
+	-- the composer: a multi-line box and its toolbar in one field
+	local composer = UI.make("Frame", { Name = "Composer", Parent = body, Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y }, { UI.corner(UI.RADIUS.surface), UI.vlist(0) })
+	UI.skin(composer, { BackgroundColor3 = "field" })
+	local border = UI.stroke("fieldBorder")
+	border.Parent = composer
+	self.composer = composer
 	local agent = self:isAgent()
-	if Tools then
-		UI.toggle(UI.hstack(body, { height = UI.H }), agent, function(on)
-			self:setAgent(on)
-			self:refresh()
-		end, "Mod agent: Claude poate acționa în Studio", { tip = "Claude primește unelte: citește jocul singur și, cu "
-			.. "acordul tău pentru fiecare modificare, creează efecte, generează animații, selectează și rulează cod" })
-	end
-	if agent then
-		local allowCode = self:allowCode()
-		UI.toggle(UI.hstack(body, { height = UI.H }), allowCode, function(on)
-			self:setAllowCode(on)
-			self:refresh()
-		end, "Permite cod fără confirmare", { tip = "Pornit: la codul Luau apare și „Permite mereu” (doar în conversația "
-			.. "curentă). Oprit: vezi și aprobi fiecare bucată de cod." })
-		UI.note(body, "Claude citește singur jocul și îți cere voie înainte de fiecare modificare: <b>✓ Permite</b>, "
-			.. "<b>✗ Refuză</b> sau <b>Permite mereu</b> (până golești conversația). Fiecare modificare aprobată e un "
-			.. "<b>Ctrl+Z</b>; codul Luau îl vezi întreg înainte să ruleze." .. (allowCode
-				and " <b>Atenție:</b> poți permite și codul fără confirmare." or ""), allowCode and C.warn or nil)
-	end
-	for _, q in (agent and QUICK_AGENT or QUICK) do
-		UI.button(body, "›  " .. q.label, function()
-			self:send(q.prompt)
-		end, { height = 24, textSize = 12, align = Enum.TextXAlignment.Left })
-	end
-
-	self.chatList = UI.scrollList(body, CHAT_HEIGHT)
-
-	local box = multiline(body, self.draft, "Întreabă ceva despre joc…  (Enter = rând nou; trimiți cu butonul)")
+	local props = { Name = "Input", Parent = composer, Text = self.draft or "", PlaceholderText = agent
+		and "Spune-i lui Claude ce să facă…" or "Întreabă ceva despre joc…", ClearTextOnFocus = false, MultiLine = true,
+		TextWrapped = true, BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y }
+	UI.textStyle(props, "body")
+	local box = UI.make("TextBox", props, { UI.pad(9, 10, 4, 10),
+		UI.make("UISizeConstraint", { MinSize = Vector2.new(0, 44), MaxSize = Vector2.new(math.huge, 220) }) })
+	UI.skin(box, { TextColor3 = "text", PlaceholderColor3 = "textDisabled" })
 	box:GetPropertyChangedSignal("Text"):Connect(function()
 		self.draft = box.Text
 	end)
+	box.Focused:Connect(function()
+		UI.skin(border, { Color = "focus" })
+	end)
+	box.FocusLost:Connect(function()
+		UI.skin(border, { Color = "fieldBorder" })
+	end)
 	self.input = box
-	local bar = UI.hstack(body, { height = 28 })
-	self.sendButton = UI.button(bar, "Trimite", function()
-		self:send(box.Text, true)
-	end, { style = "primary", bold = true, height = 28 })
-	self.stopButton = UI.button(bar, "⏹ Oprește", function()
-		self:stop()
-	end, { height = 28, width = 96, style = "danger", tip = "Claude nu mai face niciun pas (cererea în curs se termină; "
-		.. "ce așteaptă aprobarea e refuzat)" })
-	UI.button(bar, "Golește", function()
-		self:clear()
-	end, { height = 28, width = 84, tip = "Începe o conversație nouă" })
+	local toolbar, left, right = bar(composer, 32)
+	UI.pad(0, 6, 4, 4).Parent = toolbar
+	local model = AI.modelInfo(AI.getModel(self.plugin))
+	local effortLabel = "?"
+	for _, e in AI.EFFORTS do
+		if e.value == AI.getEffort(self.plugin) then
+			effortLabel = e.label
+		end
+	end
+	UI.button(left, (model and model.short or "Claude") .. " · " .. effortLabel, function()
+		UI.collapsed["claude.settings"] = false
+		if UI.onCollapse then
+			UI.onCollapse()
+		end
+		self:refresh()
+	end, { style = "ghost", autoWidth = true, height = 22, tip = "Model și efort: schimbă-le în Setări" })
+	if agent then
+		local badge = UI.badge(left, "Agent", "neutral")
+		UI.tip(badge, "Mod agent: Claude acționează în Studio, cu aprobarea ta pentru fiecare modificare")
+	end
+	right.Size = UDim2.new(0, 120, 1, 0)
+	left.Size = UDim2.new(1, -124, 1, 0)
+	self.actions = right
 	self:redrawChat()
 end
 
 -- ---------------------------------------------------------------------------------------------
--- modules in the game, activity log, Claude Code
+-- modules in the game, activity log, notes
 -- ---------------------------------------------------------------------------------------------
 function Panel:renderModules(parent)
 	local status = Installer.status()
-	local body = UI.section(parent, "Module în joc", { key = "claude.modules" })
-	UI.label(body, string.format("LostCube %s", status.version), { medium = true })
-	UI.label(body, "VFX (player în joc): " .. (status.vfx or "lipsește"), { dim = true, size = 12,
-		color = status.vfx == status.version and C.good or C.warn })
-	UI.label(body, "Editor (pentru Claude): " .. (status.editor or "lipsește"), { dim = true, size = 12,
-		color = status.editor == status.version and C.good or C.warn })
-	UI.button(UI.hstack(body, { height = 28 }), status.ok and "Reinstalează modulele" or "Instalează / actualizează modulele",
-		function()
-			local ok, err = pcall(Installer.install)
-			if not ok then
-				warn("LostCube:", err)
-			end
-			self.ctx.app:refresh()
-		end, { style = status.ok and "normal" or "primary", bold = true, height = 28 })
+	local missing = status.vfx == nil or status.editor == nil
+	local outdated = not missing and (status.vfx ~= status.version or status.editor ~= status.version)
+	local body = UI.section(parent, "Module în joc", { key = "claude.modules", collapsed = true,
+		right = (missing or outdated) and function(r)
+			UI.badge(r, missing and "Lipsesc" or "De actualizat", "warning")
+		end or nil, rightWidth = 96, onToggle = function()
+			self:scheduleFit()
+		end })
+	local function version(label: string, value: string?, tip: string)
+		local area = UI.row(body, label)
+		local ok = value == status.version
+		UI.label(area, value and ("v" .. value .. (ok and "" or ("  ·  pluginul are v" .. status.version))) or "lipsește",
+			{ color = ok and "text" or "warning" })
+		UI.tip(area.Parent, tip)
+	end
+	version("Editor", status.editor, "Modulul prin care Claude creează și modifică efecte (ReplicatedStorage.LostCube.Editor)")
+	version("VFX", status.vfx, "Playerul care redă efectele în joc (ReplicatedStorage.LostCube.VFX)")
+	local row = UI.hstack(body, { fill = false })
+	UI.button(row, missing and "Instalează modulele" or (outdated and "Actualizează modulele" or "Reinstalează"), function()
+		local ok, err = pcall(Installer.install)
+		if ok then
+			UI.toast("Modulele LostCube sunt în joc (v" .. tostring(status.version) .. ").", "success")
+		else
+			warn("LostCube:", err)
+			UI.toast("Modulele nu s-au putut instala: " .. short(tostring(err)), "error")
+		end
+		self.ctx.app:refresh()
+	end, { autoWidth = true, style = (missing or outdated) and "normal" or "ghost" })
 end
 
 function Panel:renderLog(parent)
 	local history = self.Editor.history()
-	local body = UI.section(parent, "Ce s-a făcut  (" .. #history .. ")", { key = "claude.log" })
+	local body = UI.section(parent, "Activitate", { key = "claude.log", collapsed = true, badge = #history > 0 and #history or nil,
+		onToggle = function()
+			self:scheduleFit()
+		end })
 	if #history == 0 then
-		UI.label(body, "Nimic încă în sesiunea asta.", { dim = true, size = 12 })
+		UI.label(body, "Nimic încă în sesiunea asta.", { dim = true })
+		return
 	end
 	for i = #history, math.max(1, #history - 24), -1 do
 		local h = history[i]
-		UI.label(body, h.t .. "   " .. h.a, { size = 12, color = i == #history and C.text or C.dim })
+		local row = UI.make("Frame", { Name = "Entry", Parent = body, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 20) },
+			{ UI.hlist(UI.SPACE.sm, false) })
+		UI.label(row, tostring(h.t), { role = "meta", dim = true, width = 52, height = 20 })
+		local text = UI.label(row, tostring(h.a), { color = i == #history and "text" or "textDim", height = 20 })
+		text.Size = UDim2.new(1, -60, 1, 0)
 	end
 end
 
@@ -942,13 +1267,24 @@ local EXAMPLES = {
 }
 
 function Panel:renderAbout(parent)
-	local body = UI.section(parent, "Claude Code în Studio", { key = "claude.about", collapsed = true })
-	UI.label(body, "Dacă folosești Claude Code conectat la Studio, Claude folosește aceleași funcții ca panourile "
-		.. "LostCube (modulul ReplicatedStorage.LostCube.Editor). Spune-i în chat ce vrei, de exemplu:", { wrap = true, size = 12 })
-	for _, e in EXAMPLES do
-		UI.label(body, "•  " .. e, { dim = true, size = 12, wrap = true })
+	local body = UI.section(parent, "Despre", { key = "claude.about", collapsed = true, onToggle = function()
+		self:scheduleFit()
+	end })
+	local function paragraph(title: string, text: string)
+		UI.label(body, title, { medium = true, height = 20 })
+		UI.label(body, text, { dim = true, wrap = true, rich = true })
+		UI.spacer(body, 4)
 	end
-	UI.note(body, "Fiecare pas e un singur <b>Ctrl+Z</b>. Efectele apar în tab-ul VFX imediat ce Claude le face.")
+	paragraph("Cheia API", "Cheia o iei de pe <b>console.anthropic.com</b> → API Keys. Cererile se plătesc din contul tău "
+		.. "Anthropic: Opus costă cel mai mult, Haiku cel mai puțin, iar efortul Atent folosește mai mulți tokeni. Cheia "
+		.. "rămâne în setările pluginului pe acest calculator; nu se salvează în joc și nu ajunge la colaboratori.")
+	paragraph("Permisiunea HTTP", "La prima cerere Studio întreabă dacă LostCube poate accesa <b>api.anthropic.com</b>: "
+		.. "alege Allow. Dacă ai refuzat: Plugins → Manage Plugins → LostCube → permisiuni.")
+	paragraph("Claude Code în Studio", "Conectat la Studio, Claude Code folosește aceleași funcții ca panourile LostCube "
+		.. "(ReplicatedStorage.LostCube.Editor). Fiecare pas e un singur Ctrl+Z. Exemple de cereri:")
+	for _, e in EXAMPLES do
+		UI.label(body, e, { dim = true, wrap = true })
+	end
 end
 
 function Panel:destroy()
@@ -957,6 +1293,12 @@ function Panel:destroy()
 		self.run.cancelled = true
 	end
 	self.gen += 1
+	for _, c in self.fitConns or {} do
+		pcall(function()
+			c:Disconnect()
+		end)
+	end
+	self.fitConns = {}
 end
 
 return Panel

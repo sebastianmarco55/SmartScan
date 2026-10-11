@@ -1,8 +1,10 @@
--- LostCube Markdown: shows Claude's answers (Markdown) as Roblox GUI. Headings (#, ##, ###), bullet / numbered /
--- task lists (nested by indentation), **bold**, *italic*, ~~strike~~, `inline code`, links, quotes, tables,
--- horizontal rules and fenced code blocks (monospace, darker, selectable so the code can be copied with Ctrl+C).
+-- LostCube Markdown: shows Claude's answers (Markdown) as Roblox GUI in the LostCube design system. Headings (#, ##, ###),
+-- bullet / numbered / task lists (nested by indentation), **bold**, *italic*, ~~strike~~, `inline code`, links, quotes,
+-- tables, horizontal rules and fenced code blocks (a code surface in Builder Mono with a "Selectează" action, selectable so
+-- the code can be copied with Ctrl+C). Colours come from the theme tokens (read at render time), text from the type scale.
 --
---	Markdown.render(parent, text, { maxWidth = 600 }) -> Frame (auto height)
+--	Markdown.render(parent, text, { maxWidth = 600, gap = 8 }) -> Frame (auto height)
+--	Markdown.code(parent, code, lang?) -> Frame          a code surface on its own (tool cards use it)
 --
 -- Markdown.parse (blocks) and Markdown.inline (RichText) are pure functions, unit tested outside Studio.
 local UI = require(script.Parent.UI)
@@ -10,12 +12,15 @@ local C = UI.C
 
 local Markdown = {}
 
-local CODE_BG = Color3.fromRGB(16, 16, 20)
-local CODE_TEXT = Color3.fromRGB(214, 220, 236)
-local INLINE_CODE = "#D7B8FF"
-local LINK_DIM = "#9696A6"
-local HEADING_SIZE = { 18, 16, 14 }
-local LINE = 17 -- height of one line of 13 px text (list markers line up with it)
+Markdown.MONO_FAMILY = "rbxasset://fonts/families/BuilderMono.json" -- Studio content (Theme.MONO_FAMILY)
+local GAP = 8 -- between blocks
+local LINE_HEIGHT = 1.15 -- body text of an answer: a little air between the lines
+-- heading level -> type role, weight, colour token (h1 15 Bold, h2 13 Bold, h3 12 Bold)
+local HEADING = {
+	{ role = "title", weight = "Bold", color = "textBright" },
+	{ role = "emphasis", weight = "Bold", color = "textBright" },
+	{ role = "body", weight = "Bold", color = "text" },
+}
 
 -- ---------------------------------------------------------------------------------------------
 -- inline: Markdown -> RichText
@@ -24,6 +29,25 @@ function Markdown.escape(s: string): string
 	return (string.gsub(s, "&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
 end
 local escape = Markdown.escape
+
+-- "#RRGGBB" of a theme token now (rich text needs the colour as text); fallback when the token is missing
+local function hexOf(token: string, fallback: string): string
+	local color = C[token]
+	if color ~= nil then
+		local ok, hex = pcall(function()
+			return color:ToHex()
+		end)
+		if ok and type(hex) == "string" and #hex == 6 then
+			return "#" .. string.upper(hex)
+		end
+	end
+	return fallback
+end
+
+-- the colours inline markup uses, from the current theme
+function Markdown.inlineColors(): { [string]: string }
+	return { code = hexOf("textBright", "#E5E5E5"), link = hexOf("link", "#35B5FF"), dim = hexOf("textDim", "#AAAAAA") }
+end
 
 -- every tag closed, in the right order (RichText shows the raw text when the markup is broken)
 local function balanced(s: string): boolean
@@ -60,8 +84,10 @@ local function emphasis(s: string): string
 	return s
 end
 
--- one line / paragraph of Markdown -> RichText (text escaped, tags always balanced)
-function Markdown.inline(text: string): string
+-- one line / paragraph of Markdown -> RichText (text escaped, tags always balanced). colors: Markdown.inlineColors()
+-- (read from the theme when omitted)
+function Markdown.inline(text: string, colors: { [string]: string }?): string
+	local palette = colors or Markdown.inlineColors()
 	text = string.gsub(text or "", "[\1\2]", "")
 	local saved = {}
 	local function keep(rich)
@@ -73,14 +99,15 @@ function Markdown.inline(text: string): string
 		if string.match(inner, "^ .* $") then
 			inner = string.sub(inner, 2, -2)
 		end
-		return keep('<font face="RobotoMono" color="' .. INLINE_CODE .. '">' .. escape(inner) .. "</font>")
+		return keep('<font family="' .. Markdown.MONO_FAMILY .. '" color="' .. palette.code .. '">' .. escape(inner) .. "</font>")
 	end)
 	-- links: not clickable in Studio, so the address is shown after the text
 	text = string.gsub(text, "%[([^%]]+)%]%(([^%)%s]+)%)", function(label, url)
 		if label == url then
-			return keep("<u>" .. escape(url) .. "</u>")
+			return keep('<font color="' .. palette.link .. '"><u>' .. escape(url) .. "</u></font>")
 		end
-		return keep("<u>" .. escape(label) .. '</u> <font color="' .. LINK_DIM .. '">(' .. escape(url) .. ")</font>")
+		return keep('<font color="' .. palette.link .. '"><u>' .. escape(label) .. '</u></font> <font color="' .. palette.dim
+			.. '">(' .. escape(url) .. ")</font>")
 	end)
 	local plain = escape(text)
 	local rich = emphasis(plain)
@@ -262,118 +289,169 @@ end
 -- ---------------------------------------------------------------------------------------------
 -- rendering
 -- ---------------------------------------------------------------------------------------------
+local function autoFrame(parent: Instance, name: string, children: { Instance }?)
+	return UI.make("Frame", { Name = name, Parent = parent, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y }, children)
+end
+
+-- a wrapped rich text label. opts: role (type scale, "body"), weight, color (token, "text"), lineHeight
 local function textLabel(parent: Instance, rich: string, opts: { [string]: any }?)
-	opts = opts or {}
-	return UI.make("TextLabel", { Parent = parent, Text = rich, RichText = true, TextWrapped = true,
-		Font = opts.font or UI.FONT, TextSize = opts.size or 13, TextColor3 = opts.color or C.text, LineHeight = 1.1,
+	local o: { [string]: any } = opts or {}
+	local props = { Parent = parent, Text = rich, RichText = true, TextWrapped = true, LineHeight = o.lineHeight or LINE_HEIGHT,
 		BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-		TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top })
+		TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top }
+	UI.textStyle(props, o.role or "body", o.weight)
+	local label = UI.make("TextLabel", props)
+	UI.skin(label, { TextColor3 = o.color or "text" })
+	return label
 end
 
-local function autoFrame(parent: Instance, props: { [string]: any }?, children: { Instance }?)
-	local p = props or {}
-	p.Parent = parent
-	p.Size = p.Size or UDim2.new(1, 0, 0, 0)
-	p.AutomaticSize = Enum.AutomaticSize.Y
-	if p.BackgroundColor3 == nil then
-		p.BackgroundTransparency = 1
-	end
-	return UI.make("Frame", p, children)
+-- children side by side, aligned on their first line
+local function row(parent: Instance, name: string, gap: number, leftPad: number?)
+	return autoFrame(parent, name, {
+		UI.make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, FillDirection = Enum.FillDirection.Horizontal,
+			VerticalAlignment = Enum.VerticalAlignment.Top, Padding = UDim.new(0, gap) }),
+		UI.pad(0, 0, 0, leftPad or 0),
+	})
 end
 
-local function codeBlock(parent: Instance, block)
-	local frame = autoFrame(parent, { BackgroundColor3 = CODE_BG }, { UI.corner(4), UI.stroke(C.border), UI.pad(4, 8, 6, 8),
-		UI.vlist(2) })
-	local head = UI.make("Frame", { Parent = frame, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 18) })
-	UI.make("TextLabel", { Parent = head, Text = block.lang or "cod", Font = UI.FONT_MED, TextSize = 11, TextColor3 = C.dim,
-		BackgroundTransparency = 1, Size = UDim2.new(1, -110, 1, 0), TextXAlignment = Enum.TextXAlignment.Left })
-	local selectAll = UI.make("TextButton", { Parent = head, Text = "Selectează tot", Font = UI.FONT_MED, TextSize = 11,
-		TextColor3 = C.accentHover, AutoButtonColor = false, BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.fromScale(1, 0), Size = UDim2.new(0, 104, 1, 0), TextXAlignment = Enum.TextXAlignment.Right })
-	-- read-only but selectable: the code is copied with Ctrl+C
-	local box = UI.make("TextBox", { Parent = frame, Text = (string.gsub(block.code, "\t", "    ")), Font = Enum.Font.Code,
-		TextSize = 12, TextColor3 = CODE_TEXT, BackgroundTransparency = 1, ClearTextOnFocus = false, TextEditable = false,
-		MultiLine = true, TextWrapped = true, RichText = false, TextXAlignment = Enum.TextXAlignment.Left,
-		TextYAlignment = Enum.TextYAlignment.Top, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y })
-	selectAll.MouseButton1Click:Connect(function()
+-- the name shown on a code block for the usual fence tags
+local LANGUAGES = { lua = "Luau", luau = "Luau", json = "JSON", txt = "Text", text = "Text", md = "Markdown",
+	markdown = "Markdown", sh = "Shell", bash = "Shell", js = "JavaScript", ts = "TypeScript", py = "Python", python = "Python" }
+
+-- a code surface: language + "Selectează" on top, the code below in Builder Mono, read-only but selectable (Ctrl+C).
+-- Returns the frame and the TextBox.
+function Markdown.code(parent: Instance, code: string, lang: string?)
+	local frame = UI.make("Frame", { Name = "Code", Parent = parent, Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y }, { UI.corner(UI.RADIUS.control), UI.stroke("border"), UI.vlist(0) })
+	UI.skin(frame, { BackgroundColor3 = "field" })
+	local head = UI.make("Frame", { Name = "CodeHeader", Parent = frame, BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, UI.H) }, { UI.pad(0, 2, 0, 10) })
+	local name = UI.label(head, LANGUAGES[string.lower(lang or "")] or lang or "Cod", { role = "meta", dim = true })
+	name.Size = UDim2.new(1, -96, 1, 0)
+	UI.divider(frame)
+	local holder = autoFrame(frame, "CodeBody", { UI.pad(8, 10, 8, 10) })
+	local props = { Parent = holder, Text = (string.gsub(code or "", "\t", "    ")), ClearTextOnFocus = false,
+		TextEditable = false, MultiLine = true, TextWrapped = true, RichText = false, BackgroundTransparency = 1,
+		LineHeight = 1.1, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+		Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y }
+	UI.textStyle(props, "code")
+	local box = UI.make("TextBox", props)
+	UI.skin(box, { TextColor3 = "text" })
+	local select = UI.button(head, "Selectează", function()
 		pcall(function()
 			box:CaptureFocus()
 			box.CursorPosition = #box.Text + 1
 			box.SelectionStart = 1
 		end)
-	end)
-	UI.tip(selectAll, "Selectează codul, apoi Ctrl+C")
-	return frame
+	end, { style = "ghost", autoWidth = true, height = 20, tip = "Selectează codul, apoi Ctrl+C" })
+	select.AnchorPoint = Vector2.new(1, 0.5)
+	select.Position = UDim2.new(1, 0, 0.5, 0)
+	return frame, box
 end
 
-local function listBlock(parent: Instance, block)
-	local frame = autoFrame(parent, nil, { UI.vlist(3) })
+-- a task list box: empty, or filled with the accent and a check when done
+local function checkbox(parent: Instance, done: boolean)
+	local holder = UI.make("Frame", { Name = "Check", Parent = parent, BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(14, 14) })
+	local box = UI.make("Frame", { Parent = holder, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(12, 12), BackgroundTransparency = done and 0 or 1 },
+		{ UI.corner(3), UI.stroke(done and "accent" or "textDisabled") })
+	UI.skin(box, { BackgroundColor3 = "accent" })
+	if done then
+		local check = UI.Icons.draw(box, "check", 12, C.accentText, 1.5)
+		for _, line in check:GetChildren() do
+			UI.skin(line, { BackgroundColor3 = "accentText" })
+		end
+	end
+	return holder
+end
+
+local function listBlock(parent: Instance, block, colors)
+	local frame = autoFrame(parent, "List", { UI.vlist(4) })
 	for _, item in block.items do
-		local marker
+		local markerW = item.task ~= nil and 14 or (item.ordered and 18 or 10)
+		local line = row(frame, "Item", 6, item.level * 16)
 		if item.task ~= nil then
-			marker = item.task and "☑" or "☐"
-		elseif item.ordered then
-			marker = tostring(item.number or 1) .. "."
+			checkbox(line, item.task)
 		else
-			marker = item.level == 0 and "•" or "◦"
+			local marker = item.ordered and (tostring(item.number or 1) .. ".") or (item.level == 0 and "•" or "◦")
+			local m = textLabel(line, marker, { color = "textDim", weight = item.ordered and "Medium" or nil })
+			m.RichText = false
+			m.Size = UDim2.new(0, markerW, 0, 0)
+			m.TextXAlignment = item.ordered and Enum.TextXAlignment.Right or Enum.TextXAlignment.Left
 		end
-		local markerW = item.ordered and 22 or 12
-		local row = autoFrame(frame, nil, {
-			UI.make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, FillDirection = Enum.FillDirection.Horizontal,
-				VerticalAlignment = Enum.VerticalAlignment.Top, Padding = UDim.new(0, 5) }),
-			UI.pad(0, 0, 0, item.level * 14),
-		})
-		UI.make("TextLabel", { Parent = row, Text = marker, Font = item.ordered and UI.FONT_MED or UI.FONT_BOLD, TextSize = 13,
-			TextColor3 = item.task and C.good or C.accent, BackgroundTransparency = 1, Size = UDim2.new(0, markerW, 0, LINE),
-			TextXAlignment = item.ordered and Enum.TextXAlignment.Right or Enum.TextXAlignment.Left,
-			TextYAlignment = Enum.TextYAlignment.Top })
-		local label = textLabel(row, Markdown.inline(item.text))
-		label.Size = UDim2.new(1, -(markerW + 5), 0, 0)
+		local label = textLabel(line, Markdown.inline(item.text, colors), { color = item.task and "textDim" or "text" })
+		label.Size = UDim2.new(1, -(markerW + 6), 0, 0)
 	end
 	return frame
 end
 
-local function quoteBlock(parent: Instance, block)
-	local frame = autoFrame(parent, { BackgroundColor3 = C.input }, { UI.corner(4), UI.stroke(C.accentDark), UI.pad(5, 8, 5, 10) })
-	textLabel(frame, "<i>" .. Markdown.inline(block.text) .. "</i>", { color = C.dim })
+local function quoteBlock(parent: Instance, block, colors)
+	local frame = row(parent, "Quote", 10)
+	local bar = UI.make("Frame", { Name = "Bar", Parent = frame, Size = UDim2.new(0, 2, 1, 0) }, { UI.corner(1) })
+	UI.skin(bar, { BackgroundColor3 = "textDisabled" })
+	local label = textLabel(frame, Markdown.inline(block.text, colors), { color = "textDim" })
+	label.Size = UDim2.new(1, -12, 0, 0)
 	return frame
 end
 
-local function tableBlock(parent: Instance, block)
-	local frame = autoFrame(parent, { BackgroundColor3 = C.input }, { UI.corner(4), UI.pad(5, 8, 5, 8), UI.vlist(3) })
-	for _, row in block.rows do
-		local cells = {}
-		for _, cell in row.cells do
-			table.insert(cells, Markdown.inline(cell))
+-- a real grid: one column per cell, widths after the longest text of each column, a divider between rows
+local function tableBlock(parent: Instance, block, colors)
+	local columns = 0
+	for _, r in block.rows do
+		columns = math.max(columns, #r.cells)
+	end
+	if columns == 0 then
+		return nil
+	end
+	local weights, total = {}, 0
+	for c = 1, columns do
+		local longest = 0
+		for _, r in block.rows do
+			local cell = r.cells[c] or ""
+			longest = math.max(longest, utf8.len(cell) or #cell)
 		end
-		local rich = table.concat(cells, '  <font color="#55556A">│</font>  ')
-		textLabel(frame, row.header and ("<b>" .. rich .. "</b>") or rich, { size = 12 })
-		if row.header then
-			UI.make("Frame", { Parent = frame, BackgroundColor3 = C.border, Size = UDim2.new(1, 0, 0, 1) })
+		weights[c] = math.clamp(longest, 10, 32) -- a short column still fits a word
+		total += weights[c]
+	end
+	local frame = UI.make("Frame", { Name = "Table", Parent = parent, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y }, { UI.corner(UI.RADIUS.control), UI.stroke("border"), UI.vlist(0) })
+	for i, r in block.rows do
+		if i > 1 then
+			UI.divider(frame)
+		end
+		local line = row(frame, r.header and "TableHeader" or "TableRow", 0)
+		for c = 1, columns do
+			local cell = textLabel(line, Markdown.inline(r.cells[c] or "", colors), { weight = r.header and "Bold" or nil,
+				color = r.header and "textBright" or "text" })
+			cell.Size = UDim2.new(weights[c] / total, 0, 0, 0)
+			UI.pad(6, 8, 6, 8).Parent = cell
 		end
 	end
 	return frame
 end
 
-local function renderBlock(parent: Instance, block, first: boolean)
+local function renderBlock(parent: Instance, block, first: boolean, colors)
 	if block.type == "heading" then
 		if not first then
-			UI.make("Frame", { Parent = parent, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 2) })
+			UI.make("Frame", { Name = "Space", Parent = parent, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 2) })
 		end
-		textLabel(parent, Markdown.inline(block.text), { font = UI.FONT_BOLD, size = HEADING_SIZE[block.level],
-			color = block.level == 2 and C.accentHover or C.text })
+		local style = HEADING[block.level] or HEADING[3]
+		textLabel(parent, Markdown.inline(block.text, colors), { role = style.role, weight = style.weight, color = style.color,
+			lineHeight = 1.1 })
 	elseif block.type == "paragraph" then
-		textLabel(parent, Markdown.inline(block.text))
+		textLabel(parent, Markdown.inline(block.text, colors))
 	elseif block.type == "list" then
-		listBlock(parent, block)
+		listBlock(parent, block, colors)
 	elseif block.type == "code" then
-		codeBlock(parent, block)
+		Markdown.code(parent, block.code, block.lang)
 	elseif block.type == "quote" then
-		quoteBlock(parent, block)
+		quoteBlock(parent, block, colors)
 	elseif block.type == "table" then
-		tableBlock(parent, block)
+		tableBlock(parent, block, colors)
 	elseif block.type == "rule" then
-		UI.make("Frame", { Parent = parent, BackgroundColor3 = C.border, Size = UDim2.new(1, 0, 0, 1) })
+		UI.divider(parent)
 	end
 end
 
@@ -386,19 +464,20 @@ local function plainOf(block): string
 		return table.concat(lines, "\n")
 	elseif block.rows then
 		local lines = {}
-		for _, row in block.rows do
-			table.insert(lines, table.concat(row.cells, "  |  "))
+		for _, r in block.rows do
+			table.insert(lines, table.concat(r.cells, "  |  "))
 		end
 		return table.concat(lines, "\n")
 	end
 	return block.text or block.code or ""
 end
 
--- renders Markdown into parent; returns the Frame (full width, auto height). opts.maxWidth caps the width.
-function Markdown.render(parent: Instance, text: string, opts: { maxWidth: number? }?): Frame
+-- renders Markdown into parent; returns the Frame (full width, auto height). opts.maxWidth caps the width, opts.gap is the
+-- space between blocks (8).
+function Markdown.render(parent: Instance, text: string, opts: { [string]: any }?): Frame
 	local o: { [string]: any } = opts or {}
 	local frame = UI.make("Frame", { Name = "Markdown", Parent = parent, BackgroundTransparency = 1,
-		Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y }, { UI.vlist(o.gap or 6) })
+		Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y }, { UI.vlist(o.gap or GAP) })
 	if o.maxWidth then
 		UI.make("UISizeConstraint", { Parent = frame, MaxSize = Vector2.new(o.maxWidth, math.huge) })
 	end
@@ -406,8 +485,9 @@ function Markdown.render(parent: Instance, text: string, opts: { maxWidth: numbe
 	if not ok then
 		blocks = { { type = "paragraph", text = text or "" } }
 	end
+	local colors = Markdown.inlineColors()
 	for i, block in blocks do
-		local done, err = pcall(renderBlock, frame, block, i == 1)
+		local done, err = pcall(renderBlock, frame, block, i == 1, colors)
 		if not done then -- never lose the answer because of one odd block
 			warn("LostCube Markdown:", err)
 			textLabel(frame, escape(plainOf(block)))
