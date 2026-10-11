@@ -79,6 +79,9 @@ Icons.GLYPHS = {
 	library = "Shared/WidgetIcons/Dark/Standard/Toolbox.png",
 	build = "Shared/InsertableObjects/Dark/Standard/Part.png",
 	chat = "Shared/WidgetIcons/Dark/Standard/Annotations.png",
+	environment = "Shared/InsertableObjects/Dark/Standard/Lighting.png",
+	gameui = "Shared/InsertableObjects/Dark/Standard/ScreenGui.png",
+	systems = "Shared/InsertableObjects/Dark/Standard/ServerScriptService.png",
 }
 
 -- name -> path with %s = "Dark" / "Light" (coloured: the theme's own variant, not tinted)

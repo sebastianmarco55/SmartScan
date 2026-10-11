@@ -134,6 +134,7 @@ mocks.VFXPanel = mockPanel("VFX")
 mocks.AnimPanel = mockPanel("Anim")
 mocks.LibraryPanel = mockPanel("Library")
 mocks.ClaudePanel = mockPanel("Claude")
+mocks.BuildPanel = mockPanel("Build")
 local App = tree.load("App")
 
 -- 1. mount, tab bar kept across refreshes
@@ -246,8 +247,23 @@ app:refresh()
 advance(0)
 check(renders == 2, "refresh works after a cancelled wait: " .. renders)
 
--- 3b. six tabs; a tab whose module is not in the plugin yet (Modelare) shows a quiet state, not an error
-check(#App.TABS == 6, "six tabs: " .. #App.TABS)
+-- 3b. the tabs (Claude last); a tab whose module is not in the plugin yet shows a quiet state, not an error (the
+-- Modelare tab pointed at a module that does not exist, for this check only)
+local tabKeys = {}
+for _, t in App.TABS do
+	table.insert(tabKeys, t.key)
+end
+check(table.concat(tabKeys, ",") == "Game,VFX,Anim,Library,Build,Env,GameUI,Systems,Claude", "tabs: " .. table.concat(tabKeys, ","))
+local buildTab
+for _, tab in App.TABS do
+	if tab.key == "Build" then
+		buildTab = tab
+	end
+end
+check(buildTab ~= nil and buildTab.module == "BuildPanel", "the Modelare tab is BuildPanel")
+local realModule = buildTab.module
+buildTab.module = "NoSuchPanel"
+app.panels.Build = nil
 app.tab = "Build"
 app:render()
 local quiet, failed = false, false
@@ -257,6 +273,8 @@ for _, d in app.content:GetDescendants() do
 	if type(text) == "string" and string.find(text, "nu s-a putut afișa", 1, true) then failed = true end
 end
 check(quiet and not failed, "Build tab without its module: 'În lucru', no error")
+buildTab.module = realModule
+app.panels.Build = nil
 
 -- 4. destroy: nothing stays connected, a panel failing to clean up does not stop the others
 app.tab = "VFX"

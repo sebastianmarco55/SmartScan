@@ -18,6 +18,9 @@ local TABS = {
 	{ key = "Anim", label = "Animații", icon = "animation", module = "AnimPanel" },
 	{ key = "Library", label = "Bibliotecă", icon = "library", module = "LibraryPanel" },
 	{ key = "Build", label = "Modelare", icon = "build", module = "BuildPanel" },
+	{ key = "Env", label = "Mediu", icon = "environment", module = "EnvironmentPanel" },
+	{ key = "GameUI", label = "Interfață", icon = "gameui", module = "GameUIPanel" },
+	{ key = "Systems", label = "Sisteme", icon = "systems", module = "SystemsPanel" },
 	{ key = "Claude", label = "Claude", icon = "chat", module = "ClaudePanel" },
 }
 App.TABS = TABS
