@@ -681,7 +681,7 @@ do
 				el("SOUND_WHOOSH", { name = "Whoosh" }),
 			} },
 		{ key = "POWER_AURA", label = "Aură de putere (loop)", category = "Suport", duration = 3, attach = "GROUND_FOLLOW", main = C(255, 190, 60),
-			desc = "Aură continuă de 3 s: raze, flăcări, scântei și un puls pe sol în fiecare secundă. În joc o repeți din cod (VFX.play la fiecare ~2,8 s); aici, cu 🔁 Repetă.",
+			desc = "Aură continuă de 3 s: raze, flăcări, scântei și un puls pe sol în fiecare secundă. În joc o repeți din cod (VFX.play la fiecare ~2,8 s); aici, cu butonul de buclă.",
 			elements = {
 				el("COLUMN_STREAKS", { name = "Raze aură", Rate = 55, speed = { 5, 10 }, lifetime = { 0.4, 0.8 }, partSize = V(3.6, 0.2, 3.6),
 					size = { 0.6, 0.5, 0 }, color = { WHITE, C(255, 190, 60) }, LockedToPart = true, window = { 0, 3 } }),
@@ -802,7 +802,7 @@ do
 				el("HOLY_LIGHT", { name = "Lumină" }),
 			} },
 		{ key = "PORTAL", label = "Portal", category = "Mișcare", duration = 3, attach = "GROUND", main = C(120, 110, 255),
-			desc = "Portal vertical care se rotește în fața efectului, cu cerc pe sol, sclipiri și lumină. Durează 3 s; repetă-l din cod sau cu 🔁 Repetă.",
+			desc = "Portal vertical care se rotește în fața efectului, cu cerc pe sol, sclipiri și lumină. Durează 3 s; repetă-l din cod sau cu butonul de buclă.",
 			elements = {
 				el("PORTAL_STANDING", { name = "Portal", lifetime = 1.8, bursts = { { 0, 1 }, { 1.2, 1 } } }),
 				el("PORTAL_STANDING", { name = "Portal (strat 2)", size = { 2, 10, 11, mid = 0.2 }, rotSpeed = -220, lifetime = 1.8,

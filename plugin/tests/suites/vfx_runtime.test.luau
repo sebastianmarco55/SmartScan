@@ -751,92 +751,14 @@ end
 -- 11. the panel (fake UI kit): every kind renders and its controls apply ----------------------------------------------------------
 do
 	setMode("edit")
-	local C3 = Color3
-	local TREE
-	local function node(kind, parent, fields)
-		local n = fields or {}
-		n.kind, n.children, n.parent = kind, {}, parent
-		n.CaptureFocus = function() end
-		if parent then
-			table.insert(parent.children, n)
-		end
-		return n
-	end
-	local fakeUI = { C = setmetatable({}, { __index = function()
-		return C3.new()
-	end }) }
-	fakeUI.fmt = function(v)
-		return tostring(v)
-	end
-	function fakeUI.label(p, text, o)
-		return node("label", p, { Text = text })
-	end
-	function fakeUI.button(p, text, click, o)
-		return node("button", p, { Text = text, click = click, opts = o or {} })
-	end
-	function fakeUI.hstack(p)
-		return node("hstack", p)
-	end
-	function fakeUI.vstack(p)
-		return node("vstack", p)
-	end
-	function fakeUI.row(p, text)
-		return node("row", p, { label = text })
-	end
-	function fakeUI.number(p, v, f, o)
-		assert(type(v) == "number", "UI.number got " .. typeof(v))
-		return node("number", p, { value = v, change = f, opts = o })
-	end
-	function fakeUI.textbox(p, v, f, o)
-		return node("textbox", p, { Text = v or "", change = f, opts = o })
-	end
-	function fakeUI.toggle(p, v, f, text)
-		return node("toggle", p, { Text = text, change = f, value = v })
-	end
-	function fakeUI.segmented(p, items, v, f)
-		return node("segmented", p, { items = items, value = v, change = f })
-	end
-	function fakeUI.dropdown(p, items, v, f, o)
-		return node("dropdown", p, { items = items, value = v, change = f, opts = o })
-	end
-	function fakeUI.color(p, c, f)
-		assert(typeof(c) == "Color3", "UI.color got " .. typeof(c))
-		return node("color", p, { value = c, change = f })
-	end
-	function fakeUI.section(p, title, o)
-		return node("section", p, { title = title, opts = o })
-	end
-	function fakeUI.item(p, text, o)
-		return node("item", p, { Text = text, opts = o })
-	end
-	function fakeUI.scrollList(p)
-		return node("scroll", p)
-	end
-	function fakeUI.note(p, text, color)
-		return node("note", p, { Text = text })
-	end
-	function fakeUI.spacer(p)
-		return node("spacer", p)
-	end
-	local function walk(n, fn)
-		fn(n)
-		for _, c in n.children do
-			walk(c, fn)
-		end
-	end
-	local function find(pred)
-		local out = {}
-		walk(TREE, function(n)
-			if pred(n) then
-				table.insert(out, n)
-			end
-		end)
-		return out
-	end
+	local F = LC.run("tests/mocks/vfx_fake_ui.luau", nil, { Color3 = Color3, typeof = typeof })
+	local find = F.find
+	local baseEnum = ENV.Enum
+	ENV.Enum = F.globals(ENV) -- the GUI enums of the panel's own frames (the mock models the effect classes only)
 	local folder = inst("Folder", "PanelFolder")
 	local uiS, instS, panelS = inst("ModuleScript", "UI", folder), inst("ModuleScript", "Installer", folder),
 		inst("ModuleScript", "VFXPanel", folder)
-	REQ[uiS] = fakeUI
+	REQ[uiS] = F.UI
 	REQ[instS] = { status = function()
 		return { ok = true }
 	end, install = function() end }
@@ -845,14 +767,16 @@ do
 	local realPreview = Editor.preview
 	Editor.preview = function()
 		previews += 1
-		return { Done = false, Destroy = function() end, Pause = function() end, Resume = function() end }
+		return { Done = false, Destroy = function(h)
+			h.Done = true
+		end, Pause = function() end, Resume = function() end }
 	end
 	local ctx = { Editor = Editor }
 	local panel = Panel.new(ctx)
 	local function render()
-		TREE = node("root", nil)
+		F.reset()
 		local ok, e = pcall(function()
-			panel:render(TREE)
+			panel:render(F.root)
 		end)
 		check(ok, "render failed: " .. tostring(e))
 	end
@@ -861,45 +785,43 @@ do
 	local fx = Editor.newEffect("Panou", { duration = 1 })
 	panel.effect = fx
 	render()
-	-- the add menu: new kinds, with icons, presets grouped
-	local add = find(function(n)
-		return n.kind == "dropdown" and n.opts and n.opts.text == "+ Adaugă element"
-	end)[1]
-	local labels = {}
-	for _, it in add.items do
-		if not it.header then
-			labels[it.value] = it.label
-		end
-	end
-	check(labels.SOUND and labels.SOUND:find("♪", 1, true) and labels.CAMERA:find("◎", 1, true) and labels.BEAM:find("⚡", 1, true),
-		"add menu: empty new kinds with icons")
-	check(labels.SHAKE_HEAVY and labels.SHAKE_HEAVY:find("◎", 1, true) and labels.LASER:find("⚡", 1, true)
-		and labels.SOUND_HIT:find("♪", 1, true), "add menu: presets of the new kinds with icons")
-	local headers = {}
-	for _, it in add.items do
+	-- the add menu: new kinds with their class icons, presets grouped
+	F.menus = {}
+	F.icon("plus", "Adaugă element").click()
+	local items = F.menus[1].items
+	local byValue, headers = {}, {}
+	for _, it in items do
 		if it.header then
 			headers[it.label] = true
+		else
+			byValue[it.value] = it
 		end
 	end
+	check(byValue.SOUND and byValue.SOUND.classIcon == "Sound" and byValue.CAMERA.classIcon == "Camera"
+		and byValue.BEAM.classIcon == "Beam", "add menu: empty new kinds with class icons")
+	check(byValue.SHAKE_HEAVY and byValue.SHAKE_HEAVY.classIcon == "Camera" and byValue.LASER.classIcon == "Beam"
+		and byValue.SOUND_HIT.classIcon == "Sound", "add menu: presets of the new kinds with class icons")
 	check(headers["Cameră"] and headers["Sunet"] and headers["Raze (Beam)"], "add menu: new groups")
 	-- each kind: add, render, poke every control
 	local errorsBefore = failures
+	local POKED = { number = true, scrub = true, slider = true, toggle = true, segmented = true, dropdown = true, color = true }
 	for _, key in { "SOUND", "CAMERA", "BEAM", "SPARKLES", "SOUND_WHOOSH", "WHITE_FLASH", "LIGHTNING_BEAM", "RUMBLE", "ENERGY_BEAM" } do
-		add.change(key)
+		byValue[key].onClick()
 		check(panel.element ~= nil and panel.error == nil, "added " .. key .. " " .. tostring(panel.error))
 		local el = panel.element
 		render()
 		local pokes = 0
 		for _, n in find(function(n)
-			return (n.kind == "number" or n.kind == "toggle" or n.kind == "segmented" or n.kind == "dropdown" or n.kind == "color")
-				and n.change ~= nil
+			return POKED[n.kind] and n.change ~= nil
 		end) do
-			if n.opts and n.opts.text == "+ Adaugă element" then
-				continue
-			end
 			panel.element = el
-			if n.kind == "number" then
-				n.change(n.value + (n.opts and n.opts.step or 0.1))
+			if n.kind == "number" or n.kind == "scrub" or n.kind == "slider" then
+				local step = n.opts and n.opts.step or 0.1
+				local v = n.value + step
+				if n.opts and n.opts.max and v > n.opts.max then
+					v = n.value - step
+				end
+				n.change(v)
 			elseif n.kind == "toggle" then
 				n.change(not n.value)
 			elseif n.kind == "segmented" then
@@ -911,25 +833,45 @@ do
 						pick = it.value
 					end
 				end
-				if pick and n.opts and n.opts.placeholder ~= "alege…" then
+				-- not the preset (it replaces everything), not the effect's own settings (attach, speed)
+				if pick and n.opts.placeholder ~= "Alege un preset" and type(pick) == "string" and not string.find(pick, "_", 1, true)
+					and pick ~= "WORLD" then
 					n.change(pick)
 				end
 			elseif n.kind == "color" then
 				n.change(Color3.fromRGB(10, 200, 30))
 			end
 			pokes += 1
-			check(panel.error == nil, key .. ": control error " .. tostring(panel.error) .. " (" .. tostring(n.kind) .. ")")
+			check(panel.error == nil, key .. ": control error " .. tostring(panel.error) .. " (" .. tostring(n.kind) .. " "
+				.. tostring(n.label) .. ")")
 			panel.error = nil
 		end
 		check(pokes >= 6, key .. ": controls found (" .. pokes .. ")")
-		-- timeline buttons
+		-- the timing group: its add button and the continuous window switch
 		panel.element = el
 		render()
-		for _, b in find(function(n)
-			return n.kind == "button" and (n.Text == "+ Redare" or n.Text == "+ Lovitură" or n.Text == "+ Flash" or n.Text == "+ Burst")
-		end) do
+		local timing = F.section("Cronologie")
+		check(timing ~= nil, key .. ": timing group")
+		local adders = F.find(function(n)
+			return n.kind == "iconButton" and n.glyph == "plus" and type(n.tip) == "string" and n.tip:find("^Adaugă ")
+				and n.tip ~= "Adaugă element"
+		end)
+		check(#adders == 1, key .. ": one add button in the timing group (" .. #adders .. ")")
+		for _, b in adders do
+			local before = #(Editor.read(el).bursts or {})
 			b.click()
-			check(panel.error == nil, key .. ": add burst " .. tostring(panel.error))
+			check(panel.error == nil and #(Editor.read(el).bursts or {}) == before + 1, key .. ": add a moment " .. tostring(panel.error))
+		end
+		panel.element = el
+		render()
+		local window = F.find(function(n)
+			return n.kind == "toggle" and type(n.Text) == "string"
+				and (n.Text:find("continu", 1, true) ~= nil or n.Text == "Buclă" or n.Text == "Activ")
+		end)
+		check(#window == 1, key .. ": the continuous window switch (" .. #window .. ")")
+		for _, w in window do
+			w.change(not w.value)
+			check(panel.error == nil, key .. ": window switch " .. tostring(panel.error))
 		end
 	end
 	check(failures == errorsBefore, "panel controls all applied")
@@ -938,29 +880,41 @@ do
 	panel.customSound = true
 	render()
 	local box = find(function(n)
-		return n.kind == "textbox" and n.opts and n.opts.placeholder and n.opts.placeholder:find("rbxassetid")
+		return n.kind == "textbox" and n.opts.placeholder and n.opts.placeholder:find("rbxassetid")
 	end)[1]
 	box.change("https://create.roblox.com/store/asset/987654/Boom")
 	check(panel.element.SoundId == "rbxassetid://987654", "sound id from a store address")
 	box.change("rbxasset://sounds/oof.ogg")
 	check(panel.element.SoundId == "rbxasset://sounds/oof.ogg", "built-in url kept")
-	local listen = find(function(n)
-		return n.kind == "button" and n.Text == "▶"
-	end)[1]
+	local listen = F.icon("play", "Ascultă o dată, fără efect")
 	listen.click()
 	check(M.localSound == panel.element, "listen plays the sound in Studio")
-	-- flipbook section only for particles; studio toggle text
+	-- flipbook group only for particles; the studio switch of the camera
 	panel.element = Editor.addElement(fx, "CAMERA")
 	render()
 	check(#find(function(n)
-		return n.kind == "toggle" and n.Text == "Aplică și în previzualizarea din Studio"
+		return n.kind == "toggle" and n.Text == "Și în Studio" and n.opts.tip and n.opts.tip:find("previzualizarea din Studio", 1, true)
 	end) == 1, "studio toggle")
+	check(F.section("Flipbook") == nil, "no flipbook group for the camera")
 	panel.element = Editor.addElement(fx, "SPARKLES")
 	render()
-	check(#find(function(n)
-		return n.kind == "section" and n.title == "Flipbook (textură animată)"
-	end) == 1, "flipbook section")
+	check(F.section("Flipbook") ~= nil, "flipbook section")
+	-- the timeline strip shows every element, the playhead runs on the shared Heartbeat and stops with the panel
+	local lanes = find(function(n)
+		return n.Name == "Lane"
+	end)
+	check(#lanes == #Editor.elements(fx), "a lane per element: " .. #lanes)
+	local hb0 = hbCount()
+	panel:play()
+	check(hbCount() == hb0 + 1, "the playhead: one Heartbeat connection while playing")
+	panel:destroy()
+	check(hbCount() == hb0, "destroy disconnects it")
+	for _, s in F.text() do
+		local bad = F.symbolIn(s)
+		check(bad == nil, "no emoji / symbol glyph (" .. tostring(bad) .. ") in " .. string.format("%q", s))
+	end
 	Editor.preview = realPreview
+	ENV.Enum = baseEnum
 end
 
 t.passes += passes

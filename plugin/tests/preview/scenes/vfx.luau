@@ -72,7 +72,12 @@ P.install(ENV, { mergeEnum = true })
 local mocks = {
 	["Editor.VFX"] = { play = function() end },
 	Installer = { status = function() return { version = "2.1.0", editor = "2.1.0", vfx = "2.1.0", ok = true } end, install = function() end },
-	Analyzer = { load = function() return { version = 1 } end },
+	-- a green, sunny map (what the Game tab's analysis stores): "Potrivește cu harta" suggests colours against it
+	Analyzer = { load = function()
+		return { version = 1, style = { lighting = { clockTime = 14 }, atmosphere = { color = "C7D3E0" },
+			colors = { { hex = "4B7A3A", share = 46 }, { hex = "8C8577", share = 22 }, { hex = "6E5A44", share = 14 },
+				{ hex = "D9D4C7", share = 9 } } } }
+	end },
 }
 local tree = LC.modtree.new{ env = ENV, mocks = mocks }
 local Editor = tree.load("Editor")
@@ -84,7 +89,7 @@ if ARGS.state ~= "empty" then
 	Editor.newFromTemplate("Fulger", "LIGHTNING")
 	Editor.newFromTemplate("Aterizare", "LANDING")
 	local magic = Editor.newEffect("Aură magică", { duration = 2, attach = "ROOT" })
-	for _, key in { "MAGIC_CIRCLE", "RISING", "SHIELD_GLOW", "GLOW_LIGHT", "SOUND_SPARKLE", "SHAKE_LIGHT" } do
+	for _, key in { "MAGIC_CIRCLE", "RISING", "SHIELD_GLOW", "GLOW_LIGHT", "SOUND_SPARKLE", "SHAKE_LIGHT", "MAGIC_TRAIL" } do
 		pcall(Editor.addElement, magic, key)
 	end
 	local chosen = Editor.effects()[1]
@@ -108,5 +113,33 @@ if ARGS.state ~= "empty" then
 		end
 	end
 end
-function scene.afterRender() end
+-- states the CLI cannot click into (icon buttons, typed text), asked for with --open:
+--   preview.playing   the preview runs, 0.6 s in (the player is mocked here: a handle with the player's clock)
+--   preview.paste     a valid share code pasted in "Import și export" (preview.badcode: a damaged one)
+--   preview.bare      a new effect without elements, selected
+function scene.afterRender()
+	local redraw = false
+	for _, key in ARGS.open or {} do
+		if key == "preview.bare" then
+			panel.effect, panel.element = Editor.newEffect("Efect nou", { duration = 1 }), nil
+			redraw = true
+		elseif key == "preview.paste" or key == "preview.badcode" then
+			local code = Editor.exportEffect(Editor.effect("Fulger"))
+			panel.pasteCode = key == "preview.paste" and code or (string.sub(code, 1, 40) .. "x" .. string.sub(code, 42))
+			redraw = true
+		elseif key == "preview.playing" then
+			mocks["Editor.VFX"].play = function()
+				return { Done = false, start = os.clock() - 0.6, speed = 1, Destroy = function() end, Pause = function() end,
+					Resume = function() end }
+			end
+			Editor.previewTarget = function()
+				return ENV.CFrame.new()
+			end
+			panel:play()
+		end
+	end
+	if redraw then
+		scene.app:render()
+	end
+end
 return scene
