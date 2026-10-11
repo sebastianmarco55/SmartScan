@@ -1,18 +1,33 @@
--- LostCube window: header, tabs, the current panel; refreshes when effects change (also when Claude edits).
+-- LostCube window: a compact header, the tab bar, the current panel and the toasts; refreshes when effects change (also
+-- when Claude edits) and re-skins when Studio changes theme.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local UI = require(script.Parent.UI)
+local Icons = require(script.Parent.Icons)
+local Theme = require(script.Parent.Theme)
 local C = UI.C
 
 local App = {}
 App.__index = App
 
+-- key: saved in the plugin settings; label: short, shown in the tab bar; icon: Icons.GLYPHS; module: a panel module
+-- next to App (a module that is not there yet shows a quiet "În lucru" state)
 local TABS = {
-	{ key = "Game", label = "🧠 Joc", module = "AnalysisPanel" },
-	{ key = "VFX", label = "✨ VFX", module = "VFXPanel" },
-	{ key = "Anim", label = "🎬 Anim", module = "AnimPanel" },
-	{ key = "Library", label = "📚 Lib", module = "LibraryPanel" },
-	{ key = "Claude", label = "◆ Claude", module = "ClaudePanel" },
+	{ key = "Game", label = "Joc", icon = "game", module = "AnalysisPanel" },
+	{ key = "VFX", label = "Efecte", icon = "effects", module = "VFXPanel" },
+	{ key = "Anim", label = "Animații", icon = "animation", module = "AnimPanel" },
+	{ key = "Library", label = "Bibliotecă", icon = "library", module = "LibraryPanel" },
+	{ key = "Build", label = "Modelare", icon = "build", module = "BuildPanel" },
+	{ key = "Claude", label = "Claude", icon = "chat", module = "ClaudePanel" },
+}
+App.TABS = TABS
+local HEADER_H, TABS_H = Theme.HEIGHT.header, Theme.HEIGHT.tabs
+
+local HELP = {
+	"Trage de eticheta unui câmp numeric ca să schimbi valoarea; cu Shift pașii sunt fini.",
+	"Ctrl + rotiță pe un câmp numeric: un pas (cu Shift, de 10 ori mai mult).",
+	"Esc închide meniurile și dialogurile.",
+	"Tastele pentru redare: File → Advanced → Customize Shortcuts, caută „LostCube”.",
 }
 
 function App.mount(container, ctx)
@@ -20,7 +35,7 @@ function App.mount(container, ctx)
 	ctx.Editor = ctx.Editor or require(script.Parent.Editor)
 	local self = setmetatable({ ctx = ctx, tab = "VFX", conns = {}, panels = {} }, App)
 	ctx.app = self
-	-- remembered between Studio sessions: the open tab and the folded sections
+	-- remembered between Studio sessions: the open tab, the folded sections, the recent colours
 	local savedTab = self:setting("tab")
 	for _, t in TABS do
 		if t.key == savedTab then
@@ -45,38 +60,116 @@ function App.mount(container, ctx)
 	UI.onCollapse = function()
 		self:save("collapsed", UI.collapsed)
 	end
+	local recent = self:setting("recentColors")
+	if type(recent) == "table" then
+		table.clear(UI.recentColors)
+		for _, hex in recent do
+			if type(hex) == "string" and #UI.recentColors < 8 then
+				table.insert(UI.recentColors, hex)
+			end
+		end
+	end
+	UI.onRecentColors = function(list)
+		self:save("recentColors", list)
+	end
 
-	local root = UI.make("Frame", { Name = "LostCube", Parent = container, Size = UDim2.fromScale(1, 1), BackgroundColor3 = C.bg,
-		ClipsDescendants = true })
+	local root = UI.make("Frame", { Name = "LostCube", Parent = container, Size = UDim2.fromScale(1, 1), ClipsDescendants = true })
+	UI.skin(root, { BackgroundColor3 = "bg" })
 	self.root = root
+	UI.setRoot(root)
+	self:renderHeader()
 
-	-- header
-	local header = UI.make("Frame", { Parent = root, Size = UDim2.new(1, 0, 0, 42), BackgroundColor3 = C.section },
-		{ UI.pad(0, 12, 0, 12) })
-	UI.make("TextLabel", { Parent = header, Text = "◆", Font = UI.FONT_BOLD, TextSize = 20, TextColor3 = C.accent,
-		BackgroundTransparency = 1, Size = UDim2.new(0, 20, 1, 0) })
-	UI.make("TextLabel", { Parent = header, Text = "LostCube", Font = UI.FONT_BOLD, TextSize = 17, TextColor3 = C.text,
-		BackgroundTransparency = 1, Position = UDim2.fromOffset(26, 0), Size = UDim2.new(0, 120, 1, 0),
-		TextXAlignment = Enum.TextXAlignment.Left })
-	UI.make("TextLabel", { Parent = header, Text = "v" .. ctx.Editor.VERSION .. "  ·  Roblox VFX + animații", Font = UI.FONT,
-		TextSize = 11, TextColor3 = C.dim, BackgroundTransparency = 1, Position = UDim2.new(0, 112, 0, 0),
-		Size = UDim2.new(1, -112, 1, 0), TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd })
-
-	-- tabs
-	self.tabBar = UI.make("Frame", { Parent = root, Position = UDim2.fromOffset(0, 42), Size = UDim2.new(1, 0, 0, 34),
-		BackgroundColor3 = C.section }, { UI.pad(4, 8, 6, 8), UI.hlist(4, true) })
+	-- tabs (rebuilt only when the tab or the width class changes)
+	self.tabBar = UI.make("Frame", { Name = "TabBar", Parent = root, Position = UDim2.fromOffset(0, HEADER_H),
+		Size = UDim2.new(1, 0, 0, TABS_H), BackgroundTransparency = 1 })
+	local line = UI.divider(root)
+	line.Position = UDim2.fromOffset(0, HEADER_H + TABS_H)
+	line.Size = UDim2.new(1, 0, 0, 1)
 
 	-- content
-	self.scroll = UI.make("ScrollingFrame", { Parent = root, Position = UDim2.fromOffset(0, 76), Size = UDim2.new(1, 0, 1, -76),
-		BackgroundTransparency = 1, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 6,
-		ScrollBarImageColor3 = C.hover, ScrollingDirection = Enum.ScrollingDirection.Y, VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar })
+	local top = HEADER_H + TABS_H + 1
+	self.scroll = UI.make("ScrollingFrame", { Name = "Content", Parent = root, Position = UDim2.fromOffset(0, top),
+		Size = UDim2.new(1, 0, 1, -top), BackgroundTransparency = 1, CanvasSize = UDim2.new(),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 6, ScrollingDirection = Enum.ScrollingDirection.Y,
+		VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar })
+	UI.skin(self.scroll, { ScrollBarImageColor3 = "scrollbar" })
 	self.content = UI.make("Frame", { Parent = self.scroll, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y }, { UI.pad(8, 8, 16, 8), UI.vlist(8) })
+		AutomaticSize = Enum.AutomaticSize.Y }, { UI.pad(4, Theme.PAD, 24, Theme.PAD), UI.vlist(Theme.SPACE.sm) })
 
-	UI.setRoot(root)
+	-- a theme switch in Studio: chrome re-skins itself, the panels are drawn again with the new colours
+	self.themeConn = Theme.onChanged(function()
+		if not self.dead then
+			self.barTab = nil
+			self:render()
+		end
+	end)
+	-- the tab bar shows fewer labels when the window gets narrow
+	table.insert(self.conns, root:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+		if not self.dead and UI.tabsMode(root.AbsoluteSize.X, TABS) ~= self.barMode then
+			self:renderTabs()
+		end
+	end))
 	self:watch()
 	self:render()
 	return self
+end
+
+-- the header: the LostCube mark, the name, the version; help and settings on the right
+function App:renderHeader()
+	local header = UI.make("Frame", { Name = "Header", Parent = self.root, Size = UDim2.new(1, 0, 0, HEADER_H),
+		BackgroundTransparency = 1 })
+	local brand = UI.make("Frame", { Name = "Brand", Parent = header, BackgroundTransparency = 1, Size = UDim2.new(1, -72, 1, 0) },
+		{ UI.pad(0, 0, 0, Theme.PAD), UI.hlist(Theme.SPACE.sm, false) })
+	local mark = Icons.draw(brand, "cube", 16, C.text, 1.25)
+	for _, part in mark:GetChildren() do
+		UI.skin(part, { BackgroundColor3 = "textBright" })
+	end
+	local name = UI.label(brand, "LostCube", { role = "emphasis", bold = true, color = "textBright", height = HEADER_H })
+	name.Size = UDim2.fromOffset(0, HEADER_H)
+	name.AutomaticSize = Enum.AutomaticSize.X
+	local version = UI.label(brand, tostring(self.ctx.Editor.VERSION or ""), { role = "meta", dim = true, height = HEADER_H })
+	version.Size = UDim2.fromOffset(0, HEADER_H)
+	version.AutomaticSize = Enum.AutomaticSize.X
+	local actions = UI.make("Frame", { Name = "Actions", Parent = header, BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -Theme.SPACE.sm, 0, 0), Size = UDim2.new(0, 56, 1, 0) },
+		{ UI.make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4),
+			FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Right,
+			VerticalAlignment = Enum.VerticalAlignment.Center }) })
+	local help
+	help = UI.iconButton(actions, "help", function()
+		self:showHelp(help)
+	end, { tip = "Ajutor și scurtături" })
+	local gear
+	gear = UI.iconButton(actions, "gear", function()
+		UI.menu(gear, {
+			{ header = true, label = "LostCube " .. tostring(self.ctx.Editor.VERSION or "") },
+			{ label = "Restrânge toate secțiunile", icon = "collapseAll", onClick = function()
+				self:foldAll(true)
+			end },
+			{ label = "Extinde toate secțiunile", icon = "expandAll", onClick = function()
+				self:foldAll(false)
+			end },
+		}, { width = 220 })
+	end, { tip = "Setări" })
+	return header
+end
+
+function App:showHelp(anchor)
+	local frame = UI.popover(anchor, 280, 40 + #HELP * 44)
+	local list = UI.make("Frame", { Parent = frame, BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1) },
+		{ UI.pad(Theme.PAD, Theme.PAD, Theme.PAD, Theme.PAD), UI.vlist(Theme.SPACE.sm) })
+	UI.label(list, "<uc>Scurtături</uc>", { role = "caps", dim = true, rich = true, height = 16 })
+	for _, line in HELP do
+		UI.label(list, line, { wrap = true })
+	end
+end
+
+function App:foldAll(collapsed)
+	for key in UI.collapsed do
+		UI.collapsed[key] = collapsed
+	end
+	self:save("collapsed", UI.collapsed)
+	self:render()
 end
 
 -- plugin settings (nothing is saved when the panels run outside a plugin, e.g. in a ScreenGui)
@@ -96,38 +189,45 @@ function App:save(key, value)
 	end
 end
 
+-- a tab whose module is not in the plugin yet
+local function placeholder(tab)
+	return { render = function(_, parent)
+		UI.empty(parent, "Apare într-o versiune următoare.", nil, nil, { icon = tab.icon, title = "În lucru" })
+	end }
+end
+
 function App:panel(key)
 	if not self.panels[key] then
 		for _, t in TABS do
 			if t.key == key then
-				self.panels[key] = require(script.Parent[t.module]).new(self.ctx)
+				local source = script.Parent:FindFirstChild(t.module)
+				self.panels[key] = source and require(source).new(self.ctx) or placeholder(t)
 			end
 		end
 	end
 	return self.panels[key]
 end
 
--- the tab bar only changes when the tab does (not on every refresh)
+-- the tab bar only changes when the tab (or the width class) does, not on every refresh
 function App:renderTabs()
-	if self.barTab == self.tab then
+	local mode = UI.tabsMode(self.root.AbsoluteSize.X, TABS)
+	if self.barTab == self.tab and self.barMode == mode then
 		return
 	end
-	self.barTab = self.tab
+	self.barTab, self.barMode = self.tab, mode
 	for _, child in self.tabBar:GetChildren() do
 		if child:IsA("GuiObject") then
 			child:Destroy()
 		end
 	end
-	for _, t in TABS do
-		UI.button(self.tabBar, t.label, function()
-			if self.tab ~= t.key then
-				self.tab = t.key
-				self:save("tab", t.key)
-				self.scroll.CanvasPosition = Vector2.zero
-				self:render()
-			end
-		end, { selected = self.tab == t.key, height = 24, bold = self.tab == t.key, textSize = 12 }) -- 5 tabs in ~360 px
-	end
+	UI.tabs(self.tabBar, TABS, self.tab, function(key)
+		if self.tab ~= key then
+			self.tab = key
+			self:save("tab", key)
+			self.scroll.CanvasPosition = Vector2.zero
+			self:render()
+		end
+	end, { mode = mode })
 end
 
 function App:render()
@@ -146,7 +246,7 @@ function App:render()
 		self:panel(self.tab):render(self.content)
 	end)
 	if not ok then
-		UI.note(self.content, "⚠ Eroare în panou: " .. tostring(err), C.danger)
+		UI.note(self.content, "Panoul nu s-a putut afișa: " .. UI.escape(tostring(err)), C.danger)
 		warn("LostCube:", err)
 	end
 	task.defer(function()
@@ -180,11 +280,12 @@ end
 
 -- A redraw rebuilds every text box, so it would wipe what the user is typing and take the focus away: it waits until
 -- the box is let go, plus one more beat (a click on a button took the focus; the button must still be there to be clicked).
+-- It also waits while a drag, a menu, the colour picker or a dialog is open (UI.busy).
 function App:flush(gen)
 	if self.dead or gen ~= self.renderGen then
 		return
 	end
-	if self:typingBox() then
+	if self:typingBox() or UI.busy() then
 		self.held = true
 	elseif self.held then
 		self.held = false
@@ -272,6 +373,13 @@ end
 function App:destroy()
 	self.dead = true -- no more redraws, no more re-hooking
 	UI.onCollapse = nil
+	UI.onRecentColors = nil
+	UI.closePopup()
+	UI.release()
+	if self.themeConn then
+		self.themeConn:Disconnect()
+		self.themeConn = nil
+	end
 	for _, c in self.conns do
 		c:Disconnect()
 	end

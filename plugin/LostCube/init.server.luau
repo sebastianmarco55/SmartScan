@@ -1,9 +1,13 @@
--- LostCube - Roblox Studio plugin: VFX editor with live preview, animation preview + Moon-style easing,
--- and the same tools for Claude (ReplicatedStorage.LostCube.Editor). Toolbar "LostCube" opens the panel.
+-- LostCube - Roblox Studio plugin: game analysis, VFX editor with live preview, animations, modelling and Claude
+-- (ReplicatedStorage.LostCube.Editor). Toolbar "LostCube" opens the panel.
 local App = require(script.App)
+local Theme = require(script.Theme)
+local Icons = require(script.Icons)
 
+-- the toolbar icon is Studio's own cube glyph (Icons.TOOLBAR), in the variant of the current Studio theme
 local toolbar = plugin:CreateToolbar("LostCube")
-local button = toolbar:CreateButton("LostCube", "LostCube: VFX + animații (și Claude)", "rbxasset://textures/sparkle.png")
+local button = toolbar:CreateButton("LostCube", "Deschide LostCube: analiza jocului, efecte, animații, modelare, Claude",
+	Icons.toolbar(), "LostCube")
 button.ClickableWhenViewportHidden = true
 
 local info = DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right, false, false, 360, 760, 300, 360)
@@ -32,9 +36,9 @@ end)
 
 -- shortcuts for the VFX preview; a key is bound in Studio: File > Advanced > Customize Shortcuts > "LostCube"
 local playAction = plugin:CreatePluginAction("LostCube_PlayEffect", "LostCube: redă efectul",
-	"Redă efectul ales în tab-ul VFX", "rbxasset://textures/sparkle.png", true)
+	"Redă efectul ales în tab-ul Efecte", Icons.toolbar(), true)
 local stopAction = plugin:CreatePluginAction("LostCube_StopPreview", "LostCube: oprește previzualizarea",
-	"Oprește și scoate previzualizarea din scenă", "rbxasset://textures/sparkle.png", true)
+	"Oprește și scoate previzualizarea din scenă", Icons.toolbar(), true)
 playAction.Triggered:Connect(function()
 	if app then
 		app:panel("VFX"):play()
@@ -44,6 +48,14 @@ stopAction.Triggered:Connect(function()
 	if app then
 		app:panel("VFX"):stopPreview()
 	end
+end)
+
+-- the toolbar icon follows the Studio theme (the window re-skins itself through Theme)
+Theme.watch()
+local themeConn = Theme.onChanged(function()
+	pcall(function()
+		button.Icon = Icons.toolbar()
+	end)
 end)
 
 widget:GetPropertyChangedSignal("Enabled"):Connect(function()
@@ -59,8 +71,10 @@ if widget.Enabled then
 end
 
 plugin.Unloading:Connect(function()
+	themeConn:Disconnect()
 	if app then
 		app:destroy()
 		app = nil
 	end
+	Theme.unwatch()
 end)

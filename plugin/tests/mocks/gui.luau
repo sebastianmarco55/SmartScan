@@ -23,6 +23,7 @@ Color3 = {
 	new = function(r, g, b) return { R = r, G = g, B = b, ToHex = function() return "FFFFFF" end } end,
 	fromHex = function() return Color3.new(1, 1, 1) end,
 }
+Font = { new = function(family, weight, style) return { Family = family, Weight = weight, Style = style } end }
 Enum = setmetatable({}, { __index = function(_, enumName)
 	return setmetatable({}, { __index = function(_, item) return enumName .. "." .. item end })
 end })
@@ -64,9 +65,10 @@ local function Signal()
 end
 
 local GUI = { "Name", "Parent", "Size", "Position", "AnchorPoint", "BackgroundColor3", "BackgroundTransparency",
-	"BorderSizePixel", "LayoutOrder", "AutomaticSize", "Visible", "ZIndex", "ClipsDescendants", "Active" }
-local TEXT = { "Text", "Font", "TextSize", "TextColor3", "TextXAlignment", "TextYAlignment", "TextWrapped", "RichText",
+	"BorderSizePixel", "LayoutOrder", "AutomaticSize", "Visible", "ZIndex", "ClipsDescendants", "Active", "Rotation" }
+local TEXT = { "Text", "Font", "FontFace", "TextSize", "TextColor3", "TextXAlignment", "TextYAlignment", "TextWrapped", "RichText",
 	"TextTruncate", "LineHeight", "TextTransparency" }
+local IMAGE = { "Image", "ImageColor3", "ImageTransparency", "ImageRectOffset", "ImageRectSize", "ScaleType", "ResampleMode" }
 local function set(...) local t = {}; for _, list in { ... } do for _, k in list do t[k] = true end end; return t end
 local PROPS = {
 	Frame = set(GUI),
@@ -77,16 +79,20 @@ local PROPS = {
 	ScrollingFrame = set(GUI, { "CanvasSize", "AutomaticCanvasSize", "ScrollBarThickness", "ScrollBarImageColor3",
 		"ScrollingDirection", "VerticalScrollBarInset", "CanvasPosition" }),
 	UICorner = set({ "Name", "Parent", "CornerRadius" }),
-	UIStroke = set({ "Name", "Parent", "Color", "Thickness", "ApplyStrokeMode" }),
+	UIStroke = set({ "Name", "Parent", "Color", "Thickness", "ApplyStrokeMode", "Transparency" }),
+	ImageLabel = set(GUI, IMAGE),
+	ImageButton = set(GUI, IMAGE, { "AutoButtonColor" }),
+	UIGradient = set({ "Name", "Parent", "Color", "Transparency", "Rotation", "Offset" }),
 	UIPadding = set({ "Name", "Parent", "PaddingTop", "PaddingRight", "PaddingBottom", "PaddingLeft" }),
 	UIListLayout = set({ "Name", "Parent", "SortOrder", "Padding", "FillDirection", "VerticalAlignment",
 		"HorizontalAlignment", "HorizontalFlex" }),
 	UISizeConstraint = set({ "Name", "Parent", "MaxSize", "MinSize" }),
 	UIGridLayout = set({ "Name", "Parent", "CellSize", "CellPadding", "SortOrder" }),
 }
-local GUIOBJ = { Frame = true, TextLabel = true, TextButton = true, TextBox = true, ScrollingFrame = true }
+local GUIOBJ = { Frame = true, TextLabel = true, TextButton = true, TextBox = true, ScrollingFrame = true, ImageLabel = true,
+	ImageButton = true }
 local EVENTS = { MouseButton1Click = true, MouseEnter = true, MouseLeave = true, FocusLost = true, InputChanged = true,
-	Focused = true }
+	Focused = true, InputBegan = true, InputEnded = true, MouseButton1Down = true, MouseButton1Up = true }
 
 local Inst = {}
 function Inst.new(class)
@@ -108,6 +114,9 @@ function Inst.new(class)
 	function methods:CaptureFocus() data.focused = true end
 	function methods:IsFocused() return data.focused == true end
 	function methods:GetFullName() return "Workspace." .. obj.Name end
+	data.attributes = {}
+	function methods:SetAttribute(k, v) data.attributes[k] = v end
+	function methods:GetAttribute(k) return data.attributes[k] end
 	obj = setmetatable({}, {
 		__index = function(_, k)
 			if methods[k] then return methods[k] end

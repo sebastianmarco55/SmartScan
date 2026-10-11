@@ -51,6 +51,11 @@ local function button(s)
 	local found = findAll(content, function(c) return c.ClassName == "TextButton" and c.Text == s end)
 	return found[1]
 end
+-- a UI.toggle is a switch row: its TextButton carries the state in the "Checked" attribute
+local function toggled(s)
+	local found = findAll(content, function(c) return c.ClassName == "TextButton" and c.Text == s end)
+	return found[1] ~= nil and found[1]:GetAttribute("Checked") == true
+end
 local function input() return findAll(content, function(c) return c.ClassName == "TextBox" and c.MultiLine == true and c.TextEditable ~= false end)[1] end
 
 local function respond(body) return { StatusCode = 200, Body = body, Headers = {} } end
@@ -70,16 +75,16 @@ end
 
 -- 1. plain chat by default; the toggle switches agent mode on
 render()
-check("agent toggle", texts("Mod agent: Claude poate acționa în Studio") == 1 and texts("✓ Mod agent") == 0)
+check("agent toggle", texts("Mod agent: Claude poate acționa în Studio") == 1 and not toggled("Mod agent: Claude poate acționa în Studio"))
 check("plain quick prompts", texts("›  Ce animații lipsesc?") == 1 and texts("›  Verifică scriptele suspecte") == 0)
 check("modules + log kept", texts("Module în joc") == 1 and texts("Ce s-a făcut  (1)") == 1)
 click(findText(content, "Mod agent: Claude poate acționa în Studio")[1])
 runQueue()
 check("agent saved", store["LostCube.AI.Agent"] == true)
-check("agent on", texts("✓ Mod agent: Claude poate acționa în Studio") == 1)
+check("agent on", toggled("Mod agent: Claude poate acționa în Studio"))
 check("agent quick prompts", texts("›  Creează un efect de lovitură potrivit jocului") == 1 and texts("›  Generează animațiile de luptă care lipsesc") == 1
 	and texts("›  Verifică scriptele suspecte") == 1 and texts("›  Ce animații lipsesc?") == 0)
-check("allow-code toggle off", texts("Permite cod fără confirmare") == 1 and texts("✓ Permite cod fără confirmare") == 0)
+check("allow-code toggle off", texts("Permite cod fără confirmare") == 1 and not toggled("Permite cod fără confirmare"))
 check("agent note", texts("îți cere voie înainte de fiecare modificare") >= 1)
 check("stop hidden", button("⏹ Oprește") and button("⏹ Oprește").Visible == false)
 
@@ -164,7 +169,7 @@ dumpBodies("p2", 1)
 -- 4. code with "permite cod fără confirmare" + stop while a card waits
 click(findText(content, "Permite cod fără confirmare")[1])
 runQueue()
-check("allow code saved", store["LostCube.AI.AllowCode"] == true and texts("✓ Permite cod fără confirmare") == 1)
+check("allow code saved", store["LostCube.AI.AllowCode"] == true and toggled("Permite cod fără confirmare"))
 Http.sent = {}
 Http.queue = {
 	message({ tool("v1", "run_luau", Json.object({ code = "return 1", summary = "Unu." })), tool("v2", "get_selection") }, "tool_use"),
@@ -247,7 +252,7 @@ runQueue(40)
 check("finished after coming back", texts("Gata și aici.") == 1 and #created == 5)
 
 -- 8. agent off -> the plain chat again (no tools in the request)
-click(findText(content, "✓ Mod agent: Claude poate acționa în Studio")[1])
+click(findText(content, "Mod agent: Claude poate acționa în Studio")[1])
 runQueue()
 check("agent off", store["LostCube.AI.Agent"] == false and texts("›  Ce animații lipsesc?") == 1)
 Http.sent = {}

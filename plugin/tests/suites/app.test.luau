@@ -246,6 +246,18 @@ app:refresh()
 advance(0)
 check(renders == 2, "refresh works after a cancelled wait: " .. renders)
 
+-- 3b. six tabs; a tab whose module is not in the plugin yet (Modelare) shows a quiet state, not an error
+check(#App.TABS == 6, "six tabs: " .. #App.TABS)
+app.tab = "Build"
+app:render()
+local quiet, failed = false, false
+for _, d in app.content:GetDescendants() do
+	local text = rawget(d, "_data").Text
+	if text == "În lucru" then quiet = true end
+	if type(text) == "string" and string.find(text, "nu s-a putut afișa", 1, true) then failed = true end
+end
+check(quiet and not failed, "Build tab without its module: 'În lucru', no error")
+
 -- 4. destroy: nothing stays connected, a panel failing to clean up does not stop the others
 app.tab = "VFX"
 app:render()

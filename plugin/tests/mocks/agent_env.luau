@@ -209,6 +209,7 @@ Color3 = {
 		return Color3.fromRGB(tonumber(string.sub(hex, 1, 2), 16), tonumber(string.sub(hex, 3, 4), 16), tonumber(string.sub(hex, 5, 6), 16))
 	end,
 }
+Font = { new = function(family, weight, style) return typed({ Family = family, Weight = weight, Style = style }, "Font") end }
 local enumCache = {}
 Enum = setmetatable({}, { __index = function(_, enumName)
 	enumCache[enumName] = enumCache[enumName] or setmetatable({}, { __index = function(t, item)
@@ -230,9 +231,10 @@ function Signal()
 end
 
 local GUI = { "Name", "Parent", "Size", "Position", "AnchorPoint", "BackgroundColor3", "BackgroundTransparency",
-	"BorderSizePixel", "LayoutOrder", "AutomaticSize", "Visible", "ZIndex", "ClipsDescendants", "Active" }
-local TEXT = { "Text", "Font", "TextSize", "TextColor3", "TextXAlignment", "TextYAlignment", "TextWrapped", "RichText",
+	"BorderSizePixel", "LayoutOrder", "AutomaticSize", "Visible", "ZIndex", "ClipsDescendants", "Active", "Rotation" }
+local TEXT = { "Text", "Font", "FontFace", "TextSize", "TextColor3", "TextXAlignment", "TextYAlignment", "TextWrapped", "RichText",
 	"TextTruncate", "LineHeight", "TextTransparency" }
+local IMAGE = { "Image", "ImageColor3", "ImageTransparency", "ImageRectOffset", "ImageRectSize", "ScaleType", "ResampleMode" }
 local function set(...) local t = {}; for _, list in { ... } do for _, k in list do t[k] = true end end; return t end
 local GUIPROPS = {
 	Frame = set(GUI),
@@ -243,20 +245,26 @@ local GUIPROPS = {
 	ScrollingFrame = set(GUI, { "CanvasSize", "AutomaticCanvasSize", "ScrollBarThickness", "ScrollBarImageColor3",
 		"ScrollingDirection", "VerticalScrollBarInset", "CanvasPosition" }),
 	UICorner = set({ "Name", "Parent", "CornerRadius" }),
-	UIStroke = set({ "Name", "Parent", "Color", "Thickness", "ApplyStrokeMode" }),
+	UIStroke = set({ "Name", "Parent", "Color", "Thickness", "ApplyStrokeMode", "Transparency" }),
+	ImageLabel = set(GUI, IMAGE),
+	ImageButton = set(GUI, IMAGE, { "AutoButtonColor" }),
+	UIGradient = set({ "Name", "Parent", "Color", "Transparency", "Rotation", "Offset" }),
 	UIPadding = set({ "Name", "Parent", "PaddingTop", "PaddingRight", "PaddingBottom", "PaddingLeft" }),
 	UIListLayout = set({ "Name", "Parent", "SortOrder", "Padding", "FillDirection", "VerticalAlignment",
 		"HorizontalAlignment", "HorizontalFlex" }),
 	UISizeConstraint = set({ "Name", "Parent", "MaxSize", "MinSize" }),
 	UIGridLayout = set({ "Name", "Parent", "CellSize", "CellPadding", "SortOrder" }),
 }
-local GUIOBJ = { Frame = true, TextLabel = true, TextButton = true, TextBox = true, ScrollingFrame = true }
+local GUIOBJ = { Frame = true, TextLabel = true, TextButton = true, TextBox = true, ScrollingFrame = true, ImageLabel = true,
+	ImageButton = true }
 local EVENTS = { MouseButton1Click = true, MouseEnter = true, MouseLeave = true, FocusLost = true, InputChanged = true,
-	Focused = true, ChildAdded = true, DescendantAdded = true, DescendantRemoving = true }
+	Focused = true, ChildAdded = true, DescendantAdded = true, DescendantRemoving = true, InputBegan = true, InputEnded = true,
+	MouseButton1Down = true, MouseButton1Up = true }
 SUPER = { Part = "BasePart", MeshPart = "BasePart", BasePart = "PVInstance", Model = "PVInstance", PVInstance = "Instance",
 	Script = "BaseScript", LocalScript = "BaseScript", BaseScript = "LuaSourceContainer", ModuleScript = "LuaSourceContainer",
 	LuaSourceContainer = "Instance", KeyframeSequence = "AnimationClip", AnimationClip = "Instance", ObjectValue = "ValueBase",
-	StringValue = "ValueBase", ValueBase = "Instance", Workspace = "Model", TextButton = "GuiButton", GuiButton = "GuiObject" }
+	StringValue = "ValueBase", ValueBase = "Instance", Workspace = "Model", TextButton = "GuiButton", GuiButton = "GuiObject",
+	ImageButton = "GuiButton" }
 for k in GUIOBJ do SUPER[k] = SUPER[k] or "GuiObject" end
 SUPER.GuiObject = "Instance"
 
