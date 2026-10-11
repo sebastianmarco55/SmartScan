@@ -7,7 +7,7 @@ e convertit în HTML care reproduce regulile de layout Roblox, iar Chromium (Pla
 ## Rulare
 
 ```
-python3 plugin/tests/preview/render.py --tab VFX                  # Anim | Library | Game | Claude  →  preview/out/VFX-dark.png
+python3 plugin/tests/preview/render.py --tab VFX                  # Anim | Library | Game | Build | Claude  →  preview/out/VFX-dark.png
 python3 plugin/tests/preview/render.py --tab Game --theme light --width 420 --height 1200
 python3 plugin/tests/preview/render.py --all                      # toate tab-urile, ambele teme → preview/out/<Tab>-<temă>.png
 python3 plugin/tests/preview/render.py --tab Claude --full        # înălțime cât tot conținutul (nu doar 900 px)
@@ -74,7 +74,7 @@ Aproximativ:
 
 ## Cum se schimbă
 
-* Alt joc demo / alt conținut: `scenes/vfx.luau` (efecte), `scenes/game.luau` (lumea comună: părți, scripturi cu probleme, remote-uri),
+* Alt joc demo / alt conținut: `scenes/vfx.luau` (efecte), `scenes/build.luau` (Modelare: motorul real pe mockul `modeling_env`; variante cu `--open build.demo.parts` / `build.demo.model`), `scenes/game.luau` (lumea comună: părți, scripturi cu probleme, remote-uri),
   `scenes/anim.luau`, `scenes/library.luau`, `scenes/claude.luau` (cheia API și conversația).
 * O clasă GUI nouă folosită de plugin: se redă după nume dacă `htmlgen.py` o cunoaște (`GUI_OBJECTS`); proprietățile noi se păstrează în dump
   (`gui.luau` nu are listă de proprietăți permise), dar trebuie citite în `htmlgen.py` ca să se vadă.

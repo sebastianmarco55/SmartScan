@@ -19303,8 +19303,9 @@ AI.AGENT_PROMPT = [[
 You are Claude, built into LostCube, a Roblox Studio plugin (VFX editor with live preview, animation tools, game scanner). You are working inside the developer's open place in Roblox Studio (Edit mode), on the game described in the context below. In this mode you act in Studio through tools instead of only answering.
 
 ## Working with the tools
-- Read-only tools run right away: get_game_overview, find_instances, get_instance, read_script, get_selection, list_effects, describe_effect, list_templates_and_presets, list_animations, preview_effect, export_effect, suggest_effect_colors.
-- Tools that change the place (create_effect_from_template, create_effect, add_element, set_element_props, import_effect, recolor_effect, generate_animation, select_instances, run_luau) wait until the developer approves the call in the chat. Each approved call is one Ctrl+Z.
+- Read-only tools run right away: get_game_overview, find_instances, get_instance, read_script, get_selection, list_effects, describe_effect, list_templates_and_presets, list_animations, preview_effect, export_effect, suggest_effect_colors, get_modeling_guide, validate_spec, describe_model, model_summary.
+- Tools that change the place (create_effect_from_template, create_effect, add_element, set_element_props, import_effect, recolor_effect, generate_animation, select_instances, run_luau, generate_model, regenerate_model, build_from_spec, modeling_op, place_terrain) wait until the developer approves the call in the chat. Each approved call is one Ctrl+Z.
+- 3D building: call get_modeling_guide first, then plan -> blockout with generate_model / build_from_spec -> check with model_summary or describe_model -> fix (regenerate_model, modeling_op) -> modeling_op optimize.
 - Colours: call suggest_effect_colors before choosing the colour of a new or recoloured effect, so it reads well on this map. To recolour an existing effect use recolor_effect (with new_name for a copy in another colour, e.g. team colours) instead of changing its elements one by one.
 - Share codes: export_effect returns a code to show complete and unchanged in a code block; import_effect takes a code (starting with LC1:) exactly as the developer gave it, never edited or shortened.
 - Look things up yourself instead of asking the developer to paste code, paths or properties. Run independent lookups in parallel.
@@ -23312,7 +23313,1971 @@ function Panel:destroy()
 end
 
 return Panel
-]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX17"><Properties><string name="Name">Icons</string><ProtectedString name="Source"><![CDATA[-- LostCube icons: Studio's own glyphs (content/studio_svg_textures, shipped with every Studio) and class icons from
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX17"><Properties><string name="Name">BuildPanel</string><ProtectedString name="Source"><![CDATA[-- LostCube > Modelare tab: procedural generators with a live ghost preview, and the modeling operations on the
+-- selection (fills, arrays, mirror, align, placement, scatter, curves, solids, optimize). Every change goes through the
+-- Modeling engine (one undo step each); the preview ghost lives in workspace.CurrentCamera, is not archivable and stays
+-- outside the undo history. Forms are drawn from the generator schemas (Modeling.GENERATORS), cached per kind.
+local ChangeHistoryService = game:GetService("ChangeHistoryService")
+local Selection = game:GetService("Selection")
+
+local UI = require(script.Parent.UI)
+local Modeling = require(script.Parent.Modeling)
+
+local Spec = Modeling.Spec
+local Generators = Modeling.Generators
+local SPACE = UI.SPACE
+
+local Panel = {}
+Panel.__index = Panel
+
+local LABEL_W = 104 -- label column of the forms (a little wider than UI.LABEL_W: Romanian labels are long)
+local TILE_H, TILE_MIN, TILE_GAP = 56, 58, 4
+local GHOST_NAME = "LostCube previzualizare"
+local GHOST_LIMIT = 1500 -- parts drawn in the preview (bigger builds show their bounding box)
+local GHOST_DELAY = 0.25 -- seconds after the last change before the preview is rebuilt
+local WATCH_EVERY = 0.4 -- seconds between checks that the preview is still wanted (tab, window)
+
+-- ---------------------------------------------------------------------------------------------
+-- generators: schemas (cached once), short names, form layout, pictograms
+-- ---------------------------------------------------------------------------------------------
+local GEN = {} -- key -> generator entry of Modeling.GENERATORS
+local FIELDS = {} -- key -> field key -> field
+for _, g in Modeling.GENERATORS do
+	GEN[g.key] = g
+	FIELDS[g.key] = {}
+	for _, f in g.params do
+		FIELDS[g.key][f.key] = f
+	end
+end
+
+local SHORT = {
+	building = "Clădire", stairs = "Scări", fence = "Gard", bridge = "Pod", tower = "Turn", arch = "Arc",
+	colonnade = "Colonadă", wall = "Zid", road = "Drum", tree = "Copac", rock = "Rocă", crystals = "Cristale",
+	furniture = "Mobilier", terrain = "Teren",
+}
+
+-- the first fields are the form; the groups are folded sections under it. Fields of a schema that are not listed here
+-- go to a last "Altele" group, so a new engine parameter always shows up.
+local FORM = {
+	building = { main = { "width", "depth", "floors", "roof", "windows", "door" }, groups = {
+		{ "structure", "Structură", { "floorHeight", "wall", "slab", "slabs" } },
+		{ "windows", "Ferestre", { "windowWidth", "windowHeight", "sill", "windowSpacing", "frames" } },
+		{ "door", "Ușă", { "doorWidth", "doorHeight" } },
+		{ "roof", "Acoperiș", { "roofPitch", "overhang" } },
+		{ "look", "Aspect", { "wallColor", "wallMaterial", "roofColor", "roofMaterial", "trimColor", "glassColor", "doorColor",
+			"floorColor" } },
+	} },
+	stairs = { main = { "kind", "height", "width", "railings" }, groups = {
+		{ "steps", "Trepte", { "rise", "run", "style", "turn" } },
+		{ "spiral", "Spirală", { "radius", "column", "stepsPerTurn" } },
+		{ "look", "Aspect", { "color", "material", "railHeight", "railColor" } },
+	} },
+	fence = { main = { "points", "height", "postSpacing", "style" }, groups = {
+		{ "details", "Detalii", { "smooth", "postSize", "rails", "collision" } },
+		{ "look", "Aspect", { "color", "material" } },
+	} },
+	bridge = { main = { "kind", "length", "width", "height", "railings" }, groups = {
+		{ "structure", "Structură", { "deck", "pierSpacing", "segments", "towerHeight" } },
+		{ "look", "Aspect", { "color", "material", "cableColor" } },
+	} },
+	tower = { main = { "shape", "radius", "height", "floors", "roof" }, groups = {
+		{ "details", "Detalii", { "wall", "segments", "crenellations", "door" } },
+		{ "look", "Aspect", { "color", "material", "floorColor", "roofColor" } },
+	} },
+	arch = { main = { "span", "height", "thickness", "depth" }, groups = {
+		{ "details", "Detalii", { "pillarWidth", "segments" } },
+		{ "look", "Aspect", { "color", "material" } },
+	} },
+	colonnade = { main = { "count", "spacing", "height", "diameter", "arches" }, groups = {
+		{ "details", "Detalii", { "base", "capital", "entablature" } },
+		{ "look", "Aspect", { "color", "material" } },
+	} },
+	wall = { main = { "length", "height", "thickness", "gateWidth", "gateHeight" }, groups = {
+		{ "details", "Detalii", { "crenellations", "towers", "doors" } },
+		{ "look", "Aspect", { "color", "material", "doorColor" } },
+	} },
+	road = { main = { "kind", "length", "width", "sidewalk" }, groups = {
+		{ "marks", "Marcaje", { "lines", "dash", "gap", "crosswalks", "curb" } },
+		{ "look", "Aspect", { "color", "sidewalkColor" } },
+	} },
+	tree = { main = { "kind", "height", "trunk", "crown", "seed" }, groups = {
+		{ "look", "Aspect", { "leafColor", "trunkColor" } },
+	} },
+	rock = { main = { "size", "detail", "flatten", "style", "seed" }, groups = {
+		{ "look", "Aspect", { "color", "material" } },
+	} },
+	crystals = { main = { "count", "height", "width", "spread", "base", "seed" }, groups = {
+		{ "look", "Aspect", { "color", "material" } },
+	} },
+	furniture = { main = { "kind", "seats" }, groups = {
+		{ "look", "Aspect", { "color", "fabricColor" } },
+	} },
+	terrain = { main = { "kind", "radius", "lumps", "flatten", "tunnel", "seed", "material" }, groups = {} },
+}
+
+-- short labels (the schema's own label is the tooltip); per kind first, then by key
+local LABELS = {
+	width = "Lățime", depth = "Adâncime", floors = "Etaje", floorHeight = "Înălțime etaj", wall = "Perete", slab = "Planșeu",
+	windows = "Ferestre", windowWidth = "Lățime", windowHeight = "Înălțime", sill = "Parapet", windowSpacing = "Distanță",
+	frames = "Rame", door = "Ușă", doorWidth = "Lățime", doorHeight = "Înălțime", slabs = "Planșee", roof = "Acoperiș",
+	roofPitch = "Pantă", overhang = "Streașină", wallColor = "Pereți", wallMaterial = "Material pereți", trimColor = "Rame",
+	glassColor = "Geam", doorColor = "Ușă", floorColor = "Podea", roofColor = "Acoperiș", roofMaterial = "Material acoperiș",
+	kind = "Tip", height = "Înălțime", rise = "Treaptă", run = "Adâncime treaptă", style = "Stil", turn = "Întoarcere",
+	railings = "Balustradă", railHeight = "Balustradă", radius = "Rază", column = "Coloană", stepsPerTurn = "Trepte pe tură",
+	color = "Culoare", material = "Material", railColor = "Culoare bare", points = "Lungime", smooth = "Traseu curb",
+	postSpacing = "Între stâlpi", postSize = "Stâlp", rails = "Bare", collision = "Coliziune", length = "Lungime",
+	deck = "Tablier", pierSpacing = "Între piloni", segments = "Segmente", towerHeight = "Turnuri", cableColor = "Cabluri",
+	shape = "Formă", crenellations = "Creneluri", span = "Deschidere", thickness = "Grosime", pillarWidth = "Lățime stâlp",
+	count = "Număr", spacing = "Distanță", diameter = "Diametru", base = "Bază", capital = "Capitel",
+	entablature = "Antablament", arches = "Arce", gateWidth = "Lățime poartă", gateHeight = "Înălțime poartă",
+	towers = "Turnuri", doors = "Porți", sidewalk = "Trotuar", curb = "Bordură", lines = "Marcaje", dash = "Linie",
+	gap = "Pauză", crosswalks = "Treceri", sidewalkColor = "Trotuar", trunk = "Trunchi", crown = "Coroană", seed = "Seed",
+	leafColor = "Frunze", trunkColor = "Trunchi", size = "Mărime", detail = "Detaliu", flatten = "Turtire",
+	spread = "Înclinare", fabricColor = "Textil", seats = "Scaune", lumps = "Umflături", tunnel = "Tunel",
+}
+local KIND_LABELS = {
+	tower = { floors = "Planșee", wall = "Zid", door = "Intrare", segments = "Laturi" },
+	arch = { height = "Stâlpi", segments = "Bolțari" },
+	colonnade = { count = "Coloane" },
+	road = { width = "Carosabil", color = "Asfalt" },
+	crystals = { width = "Grosime", base = "Rocă la bază" },
+	furniture = { kind = "Obiect", color = "Lemn" },
+	terrain = { flatten = "Înălțime" },
+	stairs = { color = "Culoare" },
+}
+
+-- option labels of choice fields (the value itself when missing)
+local OPTIONS = {
+	frames = { none = "Fără", sill = "Pervaz", full = "Ramă" },
+	roof = { flat = "Plat", gable = "2 ape", hip = "4 ape", pyramid = "Piramidă" },
+	style = { solid = "Pline", floating = "Suspendate", wood = "Lemn", metal = "Metal", picket = "Șipci", hull = "Fațete",
+		blocks = "Blocuri" },
+	turn = { right = "Dreapta", left = "Stânga" },
+	collision = { box = "O cutie", parts = "Piese" },
+	shape = { round = "Rotund", square = "Pătrat" },
+}
+local KIND_OPTIONS = {
+	stairs = { straight = "Drepte", L = "În L", spiral = "Spirală" },
+	bridge = { beam = "Grindă", arch = "Arc", suspension = "Suspendat" },
+	road = { straight = "Drept", cross = "Cruce", T = "În T" },
+	tree = { pine = "Brad", round = "Rotund", palm = "Palmier" },
+	furniture = { set = "Masă cu scaune", table = "Masă", chair = "Scaun", bed = "Pat", shelf = "Raft", bench = "Bancă",
+		crate = "Ladă", barrel = "Butoi", lamp = "Felinar" },
+	terrain = { blob = "Movilă", hill = "Deal", cave = "Peșteră", ramp = "Rampă", clear = "Golește" },
+}
+
+-- numbers: unit, step, decimals; sliders for bounded values whose position matters, segments for tiny int ranges
+local DEGREES = { roofPitch = true, spread = true }
+local SLIDERS = { roofPitch = true, spread = true, flatten = true }
+local RATIOS = { flatten = true }
+
+local PART_MATERIALS = { "Plastic", "SmoothPlastic", "Wood", "WoodPlanks", "Brick", "Concrete", "Cobblestone", "Slate",
+	"Granite", "Marble", "Limestone", "Sandstone", "Basalt", "Rock", "Pavement", "Asphalt", "Plaster", "RoofShingles",
+	"ClayRoofTiles", "CeramicTiles", "Metal", "DiamondPlate", "CorrodedMetal", "Foil", "Glass", "Neon", "Ice", "Grass",
+	"LeafyGrass", "Sand", "Fabric", "Snow" }
+local TERRAIN_MATERIALS = { "Grass", "LeafyGrass", "Ground", "Mud", "Rock", "Slate", "Basalt", "Sandstone", "Limestone",
+	"Sand", "Snow", "Ice", "Glacier", "Salt", "Asphalt", "Cobblestone", "Concrete", "Pavement", "Brick", "WoodPlanks",
+	"CrackedLava", "Water", "Air" }
+
+-- line pictograms of the generator tiles, on a 16-unit grid (x right, y down): { x1, y1, x2, y2 } per stroke
+local PICTO = {
+	building = { { 2.5, 8, 2.5, 14 }, { 2.5, 14, 13.5, 14 }, { 13.5, 14, 13.5, 8 }, { 1.5, 8.5, 8, 3 }, { 8, 3, 14.5, 8.5 },
+		{ 6.5, 14, 6.5, 10.5 }, { 6.5, 10.5, 9.5, 10.5 }, { 9.5, 10.5, 9.5, 14 } },
+	stairs = { { 2, 14, 2, 11 }, { 2, 11, 5, 11 }, { 5, 11, 5, 8 }, { 5, 8, 8, 8 }, { 8, 8, 8, 5 }, { 8, 5, 11, 5 },
+		{ 11, 5, 11, 2 }, { 11, 2, 14, 2 }, { 14, 2, 14, 14 }, { 2, 14, 14, 14 } },
+	fence = { { 3, 3, 3, 14 }, { 8, 3, 8, 14 }, { 13, 3, 13, 14 }, { 1.5, 6.5, 14.5, 6.5 }, { 1.5, 10.5, 14.5, 10.5 } },
+	bridge = { { 1, 6, 15, 6 }, { 2, 6, 2, 14 }, { 14, 6, 14, 14 }, { 2, 14, 4, 10.5 }, { 4, 10.5, 8, 9 }, { 8, 9, 12, 10.5 },
+		{ 12, 10.5, 14, 14 } },
+	tower = { { 3.5, 2.5, 3.5, 14.5 }, { 12.5, 2.5, 12.5, 14.5 }, { 3.5, 14.5, 12.5, 14.5 }, { 3.5, 2.5, 5.5, 2.5 },
+		{ 5.5, 2.5, 5.5, 4.5 }, { 5.5, 4.5, 7, 4.5 }, { 7, 4.5, 7, 2.5 }, { 7, 2.5, 9, 2.5 }, { 9, 2.5, 9, 4.5 },
+		{ 9, 4.5, 10.5, 4.5 }, { 10.5, 4.5, 10.5, 2.5 }, { 10.5, 2.5, 12.5, 2.5 }, { 7, 14.5, 7, 11 }, { 7, 11, 9, 11 },
+		{ 9, 11, 9, 14.5 } },
+	arch = { { 2, 14.5, 2, 8 }, { 14, 14.5, 14, 8 }, { 2, 8, 3, 5 }, { 3, 5, 5.5, 3 }, { 5.5, 3, 8, 2.5 }, { 8, 2.5, 10.5, 3 },
+		{ 10.5, 3, 13, 5 }, { 13, 5, 14, 8 }, { 5, 14.5, 5, 9 }, { 11, 14.5, 11, 9 }, { 5, 9, 6, 7 }, { 6, 7, 8, 6.3 },
+		{ 8, 6.3, 10, 7 }, { 10, 7, 11, 9 } },
+	colonnade = { { 1, 2.5, 15, 2.5 }, { 1.5, 4.5, 14.5, 4.5 }, { 3, 4.5, 3, 12.5 }, { 8, 4.5, 8, 12.5 }, { 13, 4.5, 13, 12.5 },
+		{ 1.5, 12.5, 14.5, 12.5 }, { 1, 14.5, 15, 14.5 } },
+	wall = { { 1.5, 5, 1.5, 14.5 }, { 14.5, 5, 14.5, 14.5 }, { 1.5, 14.5, 6, 14.5 }, { 10, 14.5, 14.5, 14.5 },
+		{ 6, 14.5, 6, 10 }, { 6, 10, 8, 8.5 }, { 8, 8.5, 10, 10 }, { 10, 10, 10, 14.5 }, { 1.5, 5, 3.5, 5 }, { 3.5, 5, 3.5, 3 },
+		{ 3.5, 3, 6.5, 3 }, { 6.5, 3, 6.5, 5 }, { 6.5, 5, 9.5, 5 }, { 9.5, 5, 9.5, 3 }, { 9.5, 3, 12.5, 3 }, { 12.5, 3, 12.5, 5 },
+		{ 12.5, 5, 14.5, 5 } },
+	road = { { 2.5, 15, 6, 1 }, { 13.5, 15, 10, 1 }, { 8, 14.5, 8, 11.5 }, { 8, 9, 8, 6.5 }, { 8, 4, 8, 2 } },
+	tree = { { 8, 1.5, 4, 6.5 }, { 8, 1.5, 12, 6.5 }, { 4, 6.5, 12, 6.5 }, { 8, 4.5, 2.5, 11 }, { 8, 4.5, 13.5, 11 },
+		{ 2.5, 11, 13.5, 11 }, { 8, 11, 8, 15 } },
+	rock = { { 2, 13, 3.5, 8 }, { 3.5, 8, 6.5, 4.5 }, { 6.5, 4.5, 10.5, 3.5 }, { 10.5, 3.5, 13.5, 7 }, { 13.5, 7, 14.5, 13 },
+		{ 14.5, 13, 2, 13 }, { 6.5, 4.5, 8.5, 9 }, { 8.5, 9, 13.5, 7 }, { 8.5, 9, 9, 13 }, { 3.5, 8, 8.5, 9 } },
+	crystals = { { 5, 13.5, 3, 9 }, { 3, 9, 5, 4.5 }, { 5, 4.5, 7, 9 }, { 7, 9, 5, 13.5 }, { 10.5, 13.5, 8.5, 7 },
+		{ 8.5, 7, 10.5, 1.5 }, { 10.5, 1.5, 12.5, 7 }, { 12.5, 7, 10.5, 13.5 }, { 1.5, 14.5, 14.5, 14.5 } },
+	furniture = { { 1.5, 6.5, 14.5, 6.5 }, { 1.5, 8, 14.5, 8 }, { 3.5, 8, 3.5, 14.5 }, { 12.5, 8, 12.5, 14.5 } },
+	terrain = { { 1, 13.5, 5, 7 }, { 5, 7, 7.5, 10 }, { 7.5, 10, 10.5, 4.5 }, { 10.5, 4.5, 15, 13.5 }, { 1, 13.5, 15, 13.5 } },
+}
+
+-- ---------------------------------------------------------------------------------------------
+-- small helpers
+-- ---------------------------------------------------------------------------------------------
+-- "Script.Path:12: message" -> "message"
+local function clean(err)
+	local text = tostring(err)
+	text = string.gsub(text, "^[^%s:]+:%d+: ", "")
+	return (string.gsub(text, "^LostCube: ", ""))
+end
+
+-- Romanian plural with the "de" form: 1 piesă, 5 piese, 20 de piese, 101 piese
+local function plural(n, one, many)
+	if n == 1 then
+		return "1 " .. one
+	end
+	local r = n % 100
+	if n ~= 0 and (r == 0 or r >= 20) then
+		return n .. " de " .. many
+	end
+	return n .. " " .. many
+end
+Panel.plural = plural
+
+local function fmt(v, decimals)
+	return UI.fmt(v, decimals or 2)
+end
+
+local function undo()
+	pcall(function()
+		ChangeHistoryService:Undo()
+	end)
+end
+
+local function select(list)
+	pcall(function()
+		Selection:Set(list)
+	end)
+end
+
+local function deepCopy(v)
+	if type(v) ~= "table" then
+		return v
+	end
+	local out = {}
+	for k, x in v do
+		out[k] = deepCopy(x)
+	end
+	return out
+end
+
+local function defaults(kind)
+	local out = {}
+	for _, f in GEN[kind].params do
+		out[f.key] = deepCopy(f.default)
+	end
+	return out
+end
+
+-- stored LC_Params -> values for the form (normalized; fields an older version saved and this one lacks are dropped)
+local function loadParams(kind, raw)
+	local values, errors = Generators.normalize(kind, raw, Modeling.isMaterial)
+	if values then
+		return values
+	end
+	local out = defaults(kind)
+	for key, v in raw do
+		if FIELDS[kind][key] then
+			out[key] = v
+		end
+	end
+	local again = Generators.normalize(kind, out, Modeling.isMaterial)
+	return again or defaults(kind), errors
+end
+
+local function labelOf(kind, key)
+	return (KIND_LABELS[kind] and KIND_LABELS[kind][key]) or LABELS[key] or (FIELDS[kind][key] and FIELDS[kind][key].label) or key
+end
+
+local function rangeText(f)
+	if f.min and f.max then
+		local unit = DEGREES[f.key] and "°" or ((f.kind == "number" and not RATIOS[f.key]) and " studs" or "")
+		return string.format(" · %s–%s%s", fmt(f.min), fmt(f.max), unit)
+	end
+	return ""
+end
+
+local function optionLabel(kind, f, value)
+	local own = f.key == "kind" and KIND_OPTIONS[kind] or OPTIONS[f.key]
+	return own and own[value] or tostring(value)
+end
+
+local function positionOf(inst)
+	local ok, p = pcall(function()
+		if inst:IsA("Attachment") then
+			local parent = inst.Parent
+			if parent and parent:IsA("BasePart") then
+				return (parent.CFrame * inst.CFrame).Position
+			end
+			return inst.WorldPosition
+		elseif inst:IsA("BasePart") then
+			return inst.Position
+		elseif inst:IsA("Model") then
+			return inst:GetPivot().Position
+		end
+		return nil
+	end)
+	return ok and p or nil
+end
+
+local function countParts(model)
+	local stored = model:GetAttribute("LC_Parts")
+	if type(stored) == "number" then
+		return stored
+	end
+	local n = 0
+	for i, d in model:GetDescendants() do
+		if d:IsA("BasePart") then
+			n += 1
+		end
+		if i > 50000 then
+			break
+		end
+	end
+	return n
+end
+
+-- world box (min, max) of objects (parts: their rotated box, models: GetBoundingBox)
+local function worldBox(objs)
+	local lo, hi
+	for _, obj in objs do
+		local cf, size
+		if obj:IsA("Model") then
+			cf, size = obj:GetBoundingBox()
+		else
+			cf, size = obj.CFrame, obj.Size
+		end
+		local h = size / 2
+		for _, sx in { -1, 1 } do
+			for _, sy in { -1, 1 } do
+				for _, sz in { -1, 1 } do
+					local p = cf:PointToWorldSpace(Vector3.new(h.X * sx, h.Y * sy, h.Z * sz))
+					lo = lo and Vector3.new(math.min(lo.X, p.X), math.min(lo.Y, p.Y), math.min(lo.Z, p.Z)) or p
+					hi = hi and Vector3.new(math.max(hi.X, p.X), math.max(hi.Y, p.Y), math.max(hi.Z, p.Z)) or p
+				end
+			end
+		end
+	end
+	return lo, hi
+end
+
+-- a frame on `point` whose LookVector (the front of a generated model, -Z) turns toward the camera
+local function facingCamera(point)
+	local cam = workspace.CurrentCamera
+	local look = Vector3.new(0, 0, 1)
+	if cam then
+		local d = cam.CFrame.Position - point
+		if Vector3.new(d.X, 0, d.Z).Magnitude > 1e-3 then
+			look = Vector3.new(d.X, 0, d.Z).Unit
+		end
+	end
+	return CFrame.lookAt(point, point + look)
+end
+
+local AXES = { { value = "X", label = "X" }, { value = "Y", label = "Y" }, { value = "Z", label = "Z" } }
+local AXIS_VECTOR = { X = Vector3.new(1, 0, 0), Y = Vector3.new(0, 1, 0), Z = Vector3.new(0, 0, 1) }
+
+-- ---------------------------------------------------------------------------------------------
+-- panel
+-- ---------------------------------------------------------------------------------------------
+local selfChecked = false -- Modeling.selfCheck runs once per plugin session
+
+function Panel.new(ctx)
+	local self = setmetatable({
+		ctx = ctx,
+		mode = "gen", -- "gen" (generators) | "ops" (operations on the selection)
+		kind = nil, -- the chosen generator
+		values = {}, -- kind -> the form's values
+		preview = true,
+		where = "camera", -- the preview spot: "camera" | "selection"
+		editing = nil, -- a generated Model of the selection (Actualizează)
+		editingJSON = nil,
+		ghostGen = 0,
+		op = {
+			fill = { mode = "triangle", thickness = 0.4, align = "center" },
+			array = { mode = "linear", count = 5, axis = "X", gap = 0, radius = 12, angle = 360, arcAngle = 15, arcAxis = "Y",
+				arcRadius = 0, spacing = 8, align = true },
+			mirror = { axis = "X", copy = true },
+			align = { axis = "Y", mode = "min", to = "group" },
+			place = { normal = false, grid = 1, rotation = 0, face = "auto", extend = "center" },
+			scatter = { density = 50, minDistance = 4, scaleMin = 0.8, scaleMax = 1.25, rotate = true, normal = false, seed = 1,
+				area = 64 },
+			spline = { kind = "rail", spacing = 4, width = 16, height = 8, diameter = 0.4, closed = false },
+			solid = { keep = false },
+			optimize = { anchorAll = true, decor = true, shadows = true, fidelity = true },
+		},
+		conns = {},
+	}, Panel)
+	local saved = self:setting("build.mode")
+	if saved == "gen" or saved == "ops" then
+		self.mode = saved
+	end
+	pcall(function()
+		table.insert(self.conns, Selection.SelectionChanged:Connect(function()
+			self:onSelection()
+		end))
+	end)
+	return self
+end
+
+function Panel:setting(key)
+	local app = self.ctx.app
+	if app and app.setting then
+		local ok, v = pcall(app.setting, app, key)
+		return ok and v or nil
+	end
+	return nil
+end
+
+function Panel:refresh()
+	local app = self.ctx.app
+	if app and not self.dead then
+		app:refresh()
+	end
+end
+
+-- true while the Modelare tab is the one shown
+function Panel:visible()
+	local app = self.ctx.app
+	if self.dead then
+		return false
+	end
+	if not app then
+		return true
+	end
+	if app.tab ~= "Build" or app.dead then
+		return false
+	end
+	-- the dock widget can be closed while the tab stays chosen
+	local ok, enabled = pcall(function()
+		local container = app.root and app.root.Parent
+		if container and container:IsA("PluginGui") then
+			return container.Enabled
+		end
+		return true
+	end)
+	return not ok or enabled ~= false
+end
+
+function Panel:setMode(mode)
+	if self.mode == mode then
+		return
+	end
+	self.mode = mode
+	local app = self.ctx.app
+	if app and app.save then
+		pcall(app.save, app, "build.mode", mode)
+	end
+	if mode ~= "gen" then
+		self:clearGhost()
+	else
+		self:scheduleGhost(0)
+	end
+	self:refresh()
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- selection (read once per change, never during a render)
+-- ---------------------------------------------------------------------------------------------
+function Panel:selection()
+	if self.sel then
+		return self.sel
+	end
+	local raw = {}
+	pcall(function()
+		raw = Selection:Get()
+	end)
+	local info = { raw = raw, objects = {}, parts = {}, models = {}, attachments = {}, points = {}, partCount = 0 }
+	local ok, objs = pcall(Modeling.selection)
+	info.objects = ok and objs or {}
+	for _, inst in raw do
+		if inst:IsA("Attachment") then
+			table.insert(info.attachments, inst)
+		end
+		local p = positionOf(inst)
+		if p then
+			table.insert(info.points, p)
+		end
+	end
+	for _, obj in info.objects do
+		if obj:IsA("BasePart") then
+			table.insert(info.parts, obj)
+			info.partCount += 1
+		elseif obj:IsA("Model") then
+			table.insert(info.models, obj)
+			info.partCount += countParts(obj)
+		end
+	end
+	local only = #info.objects == 1 and info.objects[1] or nil
+	if only and only:IsA("Model") and type(only:GetAttribute("LC_Generator")) == "string" then
+		info.generated = only
+	end
+	self.sel = info
+	return info
+end
+
+function Panel:onSelection()
+	self.sel = nil
+	self.optReport = nil
+	if self.dead then
+		return
+	end
+	local info = self:selection()
+	local model = info.generated
+	if model and model ~= self.editing then
+		local kind = model:GetAttribute("LC_Generator")
+		local raw = Spec.fromJSON(model:GetAttribute("LC_Params") or "")
+		if GEN[kind] and type(raw) == "table" then
+			local values = loadParams(kind, raw)
+			self.kind = kind
+			self.values[kind] = values
+			self.editing = model
+			self.editingJSON = Spec.toJSON(values)
+		end
+	elseif not model then
+		self.editing = nil
+		self.editingJSON = nil
+	end
+	if self:visible() then
+		self:refresh()
+		self:scheduleGhost(0.05)
+	end
+end
+
+function Panel:status(info)
+	if #info.raw == 0 then
+		return "Nimic selectat"
+	end
+	if info.generated then
+		local g = GEN[info.generated:GetAttribute("LC_Generator")]
+		return string.format("%s · %s · %s", info.generated.Name, g and string.lower(SHORT[g.key] or g.label) or "generat",
+			plural(info.partCount, "piesă", "piese"))
+	end
+	if #info.objects == 1 then
+		local obj = info.objects[1]
+		if obj:IsA("Model") then
+			return string.format("%s · %s", obj.Name, plural(info.partCount, "piesă", "piese"))
+		end
+		return string.format("%s · %s", obj.Name, obj.ClassName)
+	end
+	if #info.objects == 0 and #info.attachments > 0 then
+		return plural(#info.attachments, "atașament", "atașamente")
+	end
+	local text = string.format("%s · %s", plural(#info.objects, "obiect", "obiecte"), plural(info.partCount, "piesă", "piese"))
+	if #info.attachments > 0 then
+		text ..= " · " .. plural(#info.attachments, "atașament", "atașamente")
+	end
+	return text
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- generator values, compute (cached), ghost preview
+-- ---------------------------------------------------------------------------------------------
+function Panel:valuesOf(kind)
+	if not self.values[kind] then
+		self.values[kind] = defaults(kind)
+	end
+	return self.values[kind]
+end
+
+-- the generator's result for the current values (cached by their JSON): result or nil, errors text
+function Panel:compute()
+	local kind = self.kind
+	if not kind then
+		return nil, nil
+	end
+	local key = kind .. "|" .. Spec.toJSON(self:valuesOf(kind))
+	if self.cacheKey ~= key then
+		local ok, result, err = pcall(Generators.generate, kind, deepCopy(self:valuesOf(kind)), Modeling.isMaterial)
+		if not ok then
+			result, err = nil, clean(result)
+		end
+		self.cacheKey, self.cacheResult, self.cacheError = key, result, err
+	end
+	return self.cacheResult, self.cacheError, self.cacheKey
+end
+
+function Panel:dirty()
+	if not self.editing then
+		return false
+	end
+	return Spec.toJSON(self:valuesOf(self.kind)) ~= self.editingJSON
+end
+
+function Panel:isEditing()
+	local m = self.editing
+	return m ~= nil and m.Parent ~= nil and m:GetAttribute("LC_Generator") == self.kind
+end
+
+-- the spot in front of the camera (kept until Mută asks for a new one, so the preview does not chase the camera)
+function Panel:cameraAnchor()
+	if not self.cameraCF then
+		local ok, cf = pcall(Modeling.placement)
+		cf = ok and cf or CFrame.new()
+		-- Modeling.placement() turns the model's front (-Z) away from the camera: turn it around so it faces the camera
+		self.cameraCF = cf * CFrame.Angles(0, math.pi, 0)
+	end
+	return self.cameraCF
+end
+
+-- where the preview / a new model goes: the edited model, the top of the selection or in front of the camera
+function Panel:anchorCF()
+	if self:isEditing() then
+		return self.editing.WorldPivot
+	end
+	if self.where == "selection" then
+		local info = self:selection()
+		if #info.objects > 0 then
+			local ok, cf = pcall(function()
+				local lo, hi = worldBox(info.objects)
+				return facingCamera(Vector3.new((lo.X + hi.X) / 2, hi.Y, (lo.Z + hi.Z) / 2))
+			end)
+			if ok and cf then
+				return cf
+			end
+		end
+	end
+	return self:cameraAnchor()
+end
+
+function Panel:wantsGhost()
+	if not (self.preview and self.mode == "gen" and self.kind and self:visible()) then
+		return false
+	end
+	if self:isEditing() then
+		return self:dirty()
+	end
+	return true
+end
+
+function Panel:scheduleGhost(delay)
+	self.ghostGen += 1
+	local gen = self.ghostGen
+	task.delay(delay or GHOST_DELAY, function()
+		if gen == self.ghostGen and not self.dead then
+			self:syncGhost()
+		end
+	end)
+end
+
+function Panel:clearGhost()
+	local ghost = self.ghost
+	self.ghost, self.ghostContent, self.ghostCF = nil, nil, nil
+	if ghost then
+		pcall(function()
+			ghost:Destroy()
+		end)
+	end
+end
+
+-- one translucent, unselectable, non-archivable part of the preview
+local GHOST_CLASS = { Wedge = "WedgePart", CornerWedge = "CornerWedgePart" }
+local function ghostPart(shape, size, cf, color)
+	local part = Instance.new(GHOST_CLASS[shape] or "Part")
+	if part:IsA("Part") and shape and shape ~= "Block" and not GHOST_CLASS[shape] then
+		part.Shape = (Enum.PartType :: any)[shape]
+	end
+	part.Name = "Ghost"
+	part.Archivable = false
+	part.Anchored = true
+	part.Locked = true
+	part.CanCollide = false
+	part.CanTouch = false
+	part.CanQuery = false
+	part.CastShadow = false
+	part.Material = Enum.Material.SmoothPlastic
+	part.Transparency = 0.45
+	part.Size = Vector3.new(math.max(0.05, size[1]), math.max(0.05, size[2]), math.max(0.05, size[3]))
+	part.CFrame = cf
+	part.Color = color
+	return part
+end
+
+function Panel:syncGhost()
+	if not self:wantsGhost() then
+		self:clearGhost()
+		return
+	end
+	local result, _, key = self:compute()
+	if not result then
+		self:clearGhost()
+		return
+	end
+	local cf = self:anchorCF()
+	if self.ghost and self.ghost.Parent and self.ghostContent == key then
+		if self.ghostCF ~= cf then
+			pcall(function()
+				self.ghost:PivotTo(cf)
+			end)
+			self.ghostCF = cf
+		end
+		return
+	end
+	self:clearGhost()
+	local camera = workspace.CurrentCamera
+	if not camera then
+		return
+	end
+	local model = Instance.new("Model")
+	model.Name = GHOST_NAME
+	model.Archivable = false
+	local ok, err = pcall(function()
+		local pieces = result.pieces
+		if #pieces > GHOST_LIMIT then
+			local b = Modeling.Geometry.piecesBounds(pieces)
+			local mid = { (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2, (b.min[3] + b.max[3]) / 2 }
+			ghostPart("Block", { b.max[1] - b.min[1], b.max[2] - b.min[2], b.max[3] - b.min[3] },
+				cf * CFrame.new(mid[1], mid[2], mid[3]), Color3.fromHex("#9fb4c8")).Parent = model
+		else
+			for _, pc in pieces do
+				local hex = Spec.hexColor(pc.color) or Spec.DEFAULT_COLOR
+				ghostPart(pc.shape, pc.size, cf * Modeling.toCFrame(pc.cf), Color3.fromHex(hex)).Parent = model
+			end
+		end
+		if #pieces == 0 then -- terrain: a disc with the generator's radius
+			local r = (self:valuesOf(self.kind).radius or 16)
+			ghostPart("Cylinder", { 0.4, r * 2, r * 2 }, cf * CFrame.new(0, 0.2, 0) * CFrame.Angles(0, 0, math.pi / 2),
+				Color3.fromHex("#7a9a5a")).Parent = model
+		end
+		model.WorldPivot = cf
+	end)
+	if not ok then
+		warn("LostCube: previzualizarea nu s-a putut construi:", err)
+		pcall(function()
+			model:Destroy()
+		end)
+		return
+	end
+	model.Parent = camera
+	self.ghost, self.ghostContent, self.ghostCF = model, key, cf
+	self:watchGhost()
+end
+
+-- while a preview exists: take it away when the tab, the window or the mode changes (App has no tab events)
+function Panel:watchGhost()
+	if self.watching then
+		return
+	end
+	self.watching = true
+	local function check()
+		if not self.ghost then
+			self.watching = false
+			return
+		end
+		if self.dead or not self:wantsGhost() then
+			self.watching = false
+			self:clearGhost()
+			return
+		end
+		task.delay(WATCH_EVERY, check)
+	end
+	task.delay(WATCH_EVERY, check)
+end
+
+-- a form value changed: live = while dragging (no redraw of the panel, only the preview)
+function Panel:edited(live)
+	self:scheduleGhost(live and 0.12 or GHOST_DELAY)
+	if not live then
+		self:refresh()
+	end
+end
+
+function Panel:choose(kind)
+	if self.kind == kind then
+		return
+	end
+	self.kind = kind
+	if self.editing and self.editing:GetAttribute("LC_Generator") ~= kind then
+		self.editing, self.editingJSON = nil, nil
+	end
+	self:scheduleGhost(0.05)
+	self:refresh()
+end
+
+function Panel:resetValues()
+	if self.kind then
+		self.values[self.kind] = defaults(self.kind)
+		self:edited()
+	end
+end
+
+function Panel:setPreview(on)
+	self.preview = on
+	if on then
+		self:scheduleGhost(0)
+	else
+		self:clearGhost()
+	end
+	self:refresh()
+end
+
+function Panel:recenter()
+	self.cameraCF = nil
+	self.where = "camera"
+	self:scheduleGhost(0)
+	self:refresh()
+end
+
+-- commits a new model (one undo step)
+function Panel:place(copy)
+	local kind = self.kind
+	if not kind then
+		return
+	end
+	local cf
+	if copy then
+		cf = self:cameraAnchor() -- a copy of the edited model: in front of the camera, not on top of it
+	else
+		cf = (self.ghost and self.ghostCF) or self:anchorCF()
+	end
+	self:clearGhost()
+	local values = deepCopy(self:valuesOf(kind))
+	local ok, model, report = pcall(Modeling.generate, kind, values, nil, cf)
+	if not ok then
+		UI.toast(clean(model), "error")
+		self:scheduleGhost()
+		return
+	end
+	local name = SHORT[kind] or GEN[kind].label
+	if model then
+		self.values[kind] = deepCopy(report.params or values)
+		self.editing, self.editingJSON = model, Spec.toJSON(self.values[kind])
+		select({ model })
+		UI.toast(string.format("Am plasat „%s” (%s).", name, plural(report.parts, "piesă", "piese")), "success",
+			{ action = { text = "Anulează", onClick = undo } })
+	else
+		UI.toast(string.format("Am generat terenul (%s).", plural(report.terrainOps, "operație", "operații")), "success",
+			{ action = { text = "Anulează", onClick = undo } })
+		self:scheduleGhost()
+	end
+	self:refresh()
+end
+
+-- rebuilds the selected generated model with the form's values (one undo step)
+function Panel:update()
+	local model = self.editing
+	if not (model and model.Parent) then
+		return
+	end
+	self:clearGhost()
+	local ok, fresh, report = pcall(Modeling.regenerate, model, deepCopy(self:valuesOf(self.kind)))
+	if not ok then
+		UI.toast(clean(fresh), "error")
+		self:scheduleGhost()
+		return
+	end
+	self.editing, self.editingJSON = fresh, Spec.toJSON(report.params)
+	select({ fresh })
+	UI.toast(string.format("Am actualizat „%s” (%s).", fresh.Name, plural(report.parts, "piesă", "piese")), "success",
+		{ action = { text = "Anulează", onClick = undo } })
+	self:refresh()
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- layout helpers
+-- ---------------------------------------------------------------------------------------------
+-- a 24 px row: dim label (LABEL_W), the controls (they share the width), optional fixed room on the right
+local function row(parent, label, opts)
+	opts = opts or {}
+	local frame = UI.make("Frame", { Name = "Row", Parent = parent, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, UI.H) },
+		{ UI.hlist(SPACE.sm, false) })
+	local l = UI.label(frame, label, { width = LABEL_W, dim = true })
+	if opts.tip then
+		UI.tip(l, opts.tip)
+	end
+	local rightW = opts.rightWidth or 0
+	local area = UI.make("Frame", { Name = "Area", Parent = frame, BackgroundTransparency = 1,
+		Size = UDim2.new(1, -(LABEL_W + SPACE.sm + (rightW > 0 and rightW + SPACE.sm or 0)), 1, 0) }, { UI.hlist(SPACE.xs, true) })
+	local right = nil
+	if rightW > 0 then
+		right = UI.make("Frame", { Name = "Right", Parent = frame, BackgroundTransparency = 1, Size = UDim2.new(0, rightW, 1, 0) },
+			{ UI.hlist(0, false) })
+	end
+	return area, right
+end
+
+local function buttonWidth(text, icon)
+	return math.max(64, UI.textWidth(text, "control") + 24 + (icon and 22 or 0))
+end
+
+-- the action line of an operation: a dim hint on the left (what will happen, or why it cannot), buttons on the right.
+-- buttons: { { text, onClick, disabled, tip, style, icon } }
+local function actionRow(parent, hint, buttons, height)
+	height = height or UI.H
+	local frame = UI.make("Frame", { Name = "Action", Parent = parent, BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, height) })
+	local total = 0
+	for i, b in buttons do
+		total += buttonWidth(b.text, b.icon) + (i > 1 and SPACE.xs or 0)
+	end
+	local right = UI.make("Frame", { Name = "Buttons", Parent = frame, BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.fromScale(1, 0), Size = UDim2.new(0, total, 1, 0) },
+		{ UI.make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, SPACE.xs),
+			FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Right,
+			VerticalAlignment = Enum.VerticalAlignment.Center }) })
+	local made = {}
+	for _, b in buttons do
+		local button = UI.button(right, b.text, b.onClick, { style = b.style, width = buttonWidth(b.text, b.icon), height = height,
+			disabled = b.disabled, tip = b.tip, icon = b.icon })
+		table.insert(made, button)
+	end
+	if hint and hint ~= "" then
+		local l = UI.label(frame, hint, { role = "meta", dim = true, height = height })
+		l.Size = UDim2.new(1, -(total + SPACE.sm), 0, height)
+	end
+	return frame, made
+end
+
+-- a small heading inside a section body (groups of rows of one operation)
+local function subhead(parent, text)
+	local l = UI.label(parent, text, { role = "meta", medium = true, color = "text", height = 18 })
+	return l
+end
+
+-- the strokes of a pictogram, as thin frames painted with a token
+local function picto(parent, key, size, token)
+	local holder = UI.make("Frame", { Name = "Picto", Parent = parent, BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.new(0.5, 0, 0, 10), Size = UDim2.fromOffset(size, size) })
+	local k = size / 16
+	local w = 1.5
+	local lines = {}
+	for _, s in PICTO[key] or {} do
+		local x1, y1, x2, y2 = s[1] * k, s[2] * k, s[3] * k, s[4] * k
+		local dx, dy = x2 - x1, y2 - y1
+		local len = math.sqrt(dx * dx + dy * dy)
+		local bar = UI.make("Frame", { Name = "Stroke", Parent = holder, AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromOffset((x1 + x2) / 2, (y1 + y2) / 2), Size = UDim2.fromOffset(len + w * 0.5, w),
+			Rotation = math.deg(math.atan2(dy, dx)) })
+		UI.skin(bar, { BackgroundColor3 = token })
+		table.insert(lines, bar)
+	end
+	return lines
+end
+
+function Panel:contentWidth()
+	local app = self.ctx.app
+	local w = 360
+	if app and app.root then
+		local ok, size = pcall(function()
+			return app.root.AbsoluteSize
+		end)
+		if ok and size and size.X > 0 then
+			w = size.X
+		end
+	end
+	return w - 2 * 12 - 6
+end
+
+-- a section whose body is only built while it is open (folding it open redraws the panel)
+function Panel:fold(parent, key, title, collapsed, build, opts)
+	opts = opts or {}
+	local body = UI.section(parent, title, { key = key, collapsed = collapsed, badge = opts.badge, right = opts.right,
+		rightWidth = opts.rightWidth, onToggle = function(c)
+			if not c then
+				self:refresh()
+			end
+		end })
+	if not UI.collapsed[key] then
+		build(body)
+	end
+	return body
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- render
+-- ---------------------------------------------------------------------------------------------
+function Panel:render(parent)
+	local root = UI.make("Frame", { Name = "BuildPanel", Parent = parent, BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y }, { UI.vlist(SPACE.sm) })
+	self:selfCheck()
+	local info = self:selection()
+	UI.header(root, "Modelare", { subtitle = self:status(info) })
+	UI.segmented(root, {
+		{ value = "gen", label = "Generatoare", tip = "Clădiri, scări, poduri, copaci, teren: construite din parametri" },
+		{ value = "ops", label = "Operații", tip = "Umple, repetă, oglindește, aliniază, împrăștie, unește ce ai selectat" },
+	}, self.mode, function(v)
+		self:setMode(v)
+	end)
+	if self.mode == "gen" then
+		self:renderGenerators(root, info)
+		self:scheduleGhost()
+	else
+		self:renderOps(root, info)
+	end
+end
+
+function Panel:selfCheck()
+	if selfChecked then
+		return
+	end
+	selfChecked = true
+	task.defer(function()
+		local ok, report = pcall(Modeling.selfCheck)
+		if ok and report.wedge == true and report.cornerWedge == true then
+			return
+		end
+		local why = ok and table.concat(report.notes or {}, " ") or clean(report)
+		warn("LostCube Modeling.selfCheck:", why)
+		UI.toast("Verificarea pieselor-pană a eșuat: umplerile de triunghiuri și acoperișurile pot ieși greșit.", "warning",
+			{ duration = 8 })
+	end)
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- generators view
+-- ---------------------------------------------------------------------------------------------
+function Panel:renderGenerators(root, info)
+	local body = UI.section(root, "Generatoare", { key = "build.generators", badge = #Modeling.GENERATORS })
+	if not UI.collapsed["build.generators"] then
+		self:renderTiles(body)
+	end
+	if not self.kind then
+		UI.label(body, "Alege ce construiești; previzualizarea apare în fața camerei, iar Plasează o adaugă în joc.",
+			{ role = "meta", dim = true, wrap = true })
+		return
+	end
+	self:renderForm(root, info)
+end
+
+function Panel:renderTiles(body)
+	local list = Modeling.GENERATORS
+	local cols = math.clamp(math.floor((self:contentWidth() + TILE_GAP) / (TILE_MIN + TILE_GAP)), 3, 7)
+	local rows = math.ceil(#list / cols)
+	-- rows of equal tiles that share the width (a flex list, so they follow the window when it is resized)
+	local grid = UI.make("Frame", { Name = "Generators", Parent = body, BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, rows * TILE_H + (rows - 1) * TILE_GAP) }, { UI.vlist(TILE_GAP) })
+	for r = 1, rows do
+		local line = UI.make("Frame", { Name = "TileRow", Parent = grid, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, TILE_H) },
+			{ UI.hlist(TILE_GAP, true) })
+		for c = 1, cols do
+			local g = list[(r - 1) * cols + c]
+			if g then
+				self:tile(line, g, cols)
+			else
+				UI.make("Frame", { Name = "Spacer", Parent = line, BackgroundTransparency = 1, Size = UDim2.new(1 / cols, 0, 1, 0) })
+			end
+		end
+	end
+end
+
+function Panel:tile(line, g, cols)
+	local selected = self.kind == g.key
+	local b = UI.make("TextButton", { Name = "Tile_" .. g.key, Parent = line, Text = "", AutoButtonColor = false,
+		BackgroundTransparency = selected and 0 or 1, Size = UDim2.new(1 / cols, 0, 1, 0) }, { UI.corner(UI.RADIUS.control) })
+	UI.skin(b, { BackgroundColor3 = selected and "accentSoft" or "surfaceHover" })
+	if selected then
+		UI.stroke("accent").Parent = b
+	end
+	b:SetAttribute("Selected", selected)
+	local rest = selected and "accent" or "textDim"
+	local lines = picto(b, g.key, 20, rest)
+	local label = UI.label(b, SHORT[g.key] or g.label, { role = "meta", medium = selected, align = Enum.TextXAlignment.Center,
+		color = selected and "text" or "textDim", height = 14 })
+	label.Position = UDim2.new(0, 2, 1, -19)
+	label.Size = UDim2.new(1, -4, 0, 14)
+	local function paint(lineToken, textToken)
+		for _, line in lines do
+			UI.skin(line, { BackgroundColor3 = lineToken })
+		end
+		UI.skin(label, { TextColor3 = textToken })
+	end
+	if not selected then
+		b.MouseEnter:Connect(function()
+			b.BackgroundTransparency = 0
+			paint("text", "text")
+		end)
+		b.MouseLeave:Connect(function()
+			b.BackgroundTransparency = 1
+			paint("textDim", "textDim")
+		end)
+	end
+	b.MouseButton1Click:Connect(function()
+		self:choose(g.key)
+	end)
+	UI.tip(b, g.label)
+	return b
+end
+
+function Panel:renderForm(root, info)
+	local kind = self.kind
+	local g = GEN[kind]
+	local values = self:valuesOf(kind)
+	local result, err = self:compute()
+	local editing = self:isEditing()
+	local badge = "?"
+	if result then
+		badge = #result.pieces > 0 and plural(#result.pieces, "piesă", "piese") or "teren"
+	end
+	local form = FORM[kind] or { main = {}, groups = {} }
+	local body = UI.section(root, SHORT[kind] or g.label, { key = "build.form", badge = badge, rightWidth = 52,
+		right = function(r)
+			UI.iconButton(r, self.preview and "eye" or "eyeOff", function()
+				self:setPreview(not self.preview)
+			end, { tip = self.preview and "Ascunde previzualizarea" or "Arată previzualizarea" })
+			UI.iconButton(r, "refresh", function()
+				self:resetValues()
+			end, { tip = "Valorile implicite" })
+		end })
+	if UI.collapsed["build.form"] then
+		return
+	end
+	-- the fields of the form; the rest go to folded sections under it
+	local listed = {}
+	for _, key in form.main do
+		listed[key] = true
+		if FIELDS[kind][key] then
+			self:field(body, kind, FIELDS[kind][key], values)
+		end
+	end
+	for _, group in form.groups do
+		for _, key in group[3] do
+			listed[key] = true
+		end
+	end
+	if err then
+		UI.note(body, UI.escape((string.gsub(err, "\n", " "))), "danger")
+	end
+	-- where the new model goes (not while editing a generated model: it stays where it is)
+	if not editing then
+		local hasObjects = #info.objects > 0
+		UI.segmented(row(body, "Loc", { tip = "Unde apare clădirea nouă" }), {
+			{ value = "camera", label = "În fața camerei", tip = "Pe sol, în fața camerei (Mută aduce previzualizarea aici)" },
+			{ value = "selection", label = "Pe selecție", tip = "Deasupra obiectelor selectate" },
+		}, self.where, function(v)
+			self.where = v
+			self:scheduleGhost(0)
+			self:refresh()
+		end)
+		if self.where == "selection" and not hasObjects then
+			UI.label(body, "Nimic selectat: modelul apare în fața camerei.", { role = "meta", dim = true })
+		end
+	end
+	UI.spacer(body, 2)
+	local reason = err and "Corectează parametrii marcați." or nil
+	local bar = UI.make("Frame", { Name = "PlaceBar", Parent = body, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, UI.H_LARGE) },
+		{ UI.hlist(SPACE.xs, false) })
+	if editing then
+		local dirty = self:dirty()
+		local copyW = buttonWidth("Plasează copie")
+		local primary = UI.button(bar, "Actualizează", function()
+			self:update()
+		end, { style = dirty and "primary" or "normal", height = UI.H_LARGE, disabled = err ~= nil or not dirty,
+			tip = reason or (dirty and "Reconstruiește modelul selectat cu acești parametri (un singur Ctrl+Z)"
+				or "Schimbă un parametru ca să actualizezi modelul selectat") })
+		primary.Size = UDim2.new(1, -(copyW + SPACE.xs), 0, UI.H_LARGE)
+		UI.button(bar, "Plasează copie", function()
+			self:place(true)
+		end, { width = copyW, height = UI.H_LARGE, disabled = err ~= nil, tip = reason or "Un model nou, în fața camerei" })
+	else
+		local primary = UI.button(bar, "Plasează", function()
+			self:place(false)
+		end, { style = "primary", height = UI.H_LARGE, disabled = err ~= nil, tip = reason or "Adaugă modelul în joc (un singur Ctrl+Z)" })
+		primary.Size = UDim2.new(1, -(UI.H_LARGE + SPACE.xs), 0, UI.H_LARGE)
+		UI.iconButton(bar, "locate", function()
+			self:recenter()
+		end, { tip = "Mută previzualizarea în fața camerei", size = UI.H_LARGE })
+	end
+	-- what will be built: size, parts, where
+	if result then
+		local parts = {}
+		local b = #result.pieces > 0 and Modeling.Geometry.piecesBounds(result.pieces) or nil
+		if b then
+			table.insert(parts, string.format("%s × %s × %s studs", fmt(b.max[1] - b.min[1], 1), fmt(b.max[2] - b.min[2], 1),
+				fmt(b.max[3] - b.min[3], 1)))
+		elseif result.terrain and #result.terrain > 0 then
+			table.insert(parts, plural(#result.terrain, "operație de teren", "operații de teren"))
+		end
+		if editing then
+			table.insert(parts, self:dirty() and "modificat" or "fără modificări")
+		elseif not self.preview then
+			table.insert(parts, "previzualizare oprită")
+		end
+		UI.label(body, table.concat(parts, " · "), { role = "meta", dim = true, height = 16 })
+	end
+	-- the folded groups
+	local extra = {}
+	for _, f in g.params do
+		if not listed[f.key] then
+			table.insert(extra, f.key)
+		end
+	end
+	local groups = table.clone(form.groups)
+	if #extra > 0 then
+		table.insert(groups, { "other", "Altele", extra })
+	end
+	for _, group in groups do
+		self:fold(root, "build.form." .. group[1], group[2], true, function(gbody)
+			for _, key in group[3] do
+				if FIELDS[kind][key] then
+					self:field(gbody, kind, FIELDS[kind][key], values)
+				end
+			end
+		end)
+	end
+end
+
+-- one control of the form, from the field's schema
+function Panel:field(body, kind, f, values)
+	local key = f.key
+	local label = labelOf(kind, key)
+	local tip = f.label .. rangeText(f)
+	local function set(v, live)
+		values[key] = v
+		self:edited(live)
+	end
+	if f.kind == "number" or f.kind == "int" then
+		local isInt = f.kind == "int"
+		if key == "seed" then
+			local area, right = row(body, label, { rightWidth = UI.H, tip = "Aceeași valoare dă același rezultat" })
+			UI.number(area, values[key], function(v)
+				set(math.clamp(math.floor(v + 0.5), f.min, f.max))
+			end, { min = f.min, max = f.max, step = 1, decimals = 0, tip = tip })
+			UI.iconButton(right, "refresh", function()
+				set(math.random(1, 99999))
+			end, { tip = "Seed aleator" })
+			return
+		end
+		if isInt and f.max - f.min <= 3 then
+			local items = {}
+			for i = f.min, f.max do
+				table.insert(items, { value = i, label = tostring(i) })
+			end
+			UI.segmented(row(body, label, { tip = tip }), items, values[key], function(v)
+				set(v)
+			end)
+			return
+		end
+		local unit = if DEGREES[key] then "°" elseif isInt or RATIOS[key] then nil else "studs"
+		local step = isInt and 1 or (DEGREES[key] and 1 or (RATIOS[key] and 0.05 or 0.25))
+		local decimals = isInt and 0 or (DEGREES[key] and 0 or 2)
+		local function commit(v)
+			if isInt then
+				v = math.floor(v + 0.5)
+			end
+			return math.clamp(v, f.min, f.max)
+		end
+		if SLIDERS[key] then
+			UI.slider(row(body, label, { tip = tip }), values[key], function(v)
+				set(commit(v))
+			end, { min = f.min, max = f.max, step = step, decimals = decimals, unit = unit, field = true, valueWidth = 64,
+				onInput = function(v)
+					set(commit(v), true)
+				end })
+		else
+			UI.scrub(body, label, values[key], function(v)
+				set(commit(v))
+			end, { min = f.min, max = f.max, step = step, decimals = decimals, unit = unit, labelWidth = LABEL_W, tip = tip,
+				onInput = function(v)
+					set(commit(v), true)
+				end })
+		end
+	elseif f.kind == "bool" then
+		UI.switch(row(body, label, { tip = tip }), values[key] == true, function(v)
+			set(v)
+		end, { tip = f.label })
+	elseif f.kind == "choice" then
+		local items = {}
+		for _, option in f.options do
+			table.insert(items, { value = option, label = optionLabel(kind, f, option) })
+		end
+		if #items <= 3 or (#items == 4 and kind ~= "terrain") then
+			UI.segmented(row(body, label, { tip = tip }), items, values[key], function(v)
+				set(v)
+			end)
+		else
+			UI.dropdown(row(body, label, { tip = tip }), items, values[key], function(v)
+				set(v)
+			end, { menuWidth = 180 })
+		end
+	elseif f.kind == "color" then
+		local ok, color = pcall(Color3.fromHex, values[key])
+		UI.color(row(body, label, { tip = tip }), ok and color or Color3.new(1, 1, 1), function(c)
+			set("#" .. string.lower(c:ToHex()))
+		end)
+	elseif f.kind == "material" then
+		local terrain = GEN[kind].terrainOnly == true
+		local items, found = {}, false
+		for _, name in terrain and TERRAIN_MATERIALS or PART_MATERIALS do
+			if Modeling.isMaterial(name, terrain) then
+				table.insert(items, { value = name, label = name })
+				found = found or name == values[key]
+			end
+		end
+		if not found then
+			table.insert(items, 1, { value = values[key], label = tostring(values[key]) })
+		end
+		UI.dropdown(row(body, label, { tip = tip }), items, values[key], function(v)
+			set(v)
+		end, { menuWidth = 180 })
+	elseif f.kind == "points" then
+		-- a straight run is edited as its length; a path from a model keeps its points until the length is changed
+		local pts = values[key]
+		local length = nil
+		if type(pts) == "table" and #pts == 2 and pts[1][2] == 0 and pts[2][2] == 0 and pts[1][3] == 0 and pts[2][3] == 0 then
+			length = math.abs(pts[2][1] - pts[1][1])
+		end
+		if length then
+			UI.scrub(body, label, length, function(v)
+				values[key] = { { -v / 2, 0, 0 }, { v / 2, 0, 0 } }
+				self:edited()
+			end, { min = 2, max = 2000, step = 0.5, decimals = 2, unit = "studs", labelWidth = LABEL_W,
+				tip = "Lungimea traseului drept · pentru un traseu prin piese: Operații, Curbe, Gard",
+				onInput = function(v)
+					values[key] = { { -v / 2, 0, 0 }, { v / 2, 0, 0 } }
+					self:edited(true)
+				end })
+		else
+			local area = row(body, "Traseu", { tip = f.label })
+			UI.label(area, plural(type(pts) == "table" and #pts or 0, "punct", "puncte"), { dim = true })
+			UI.button(area, "Drept", function()
+				values[key] = deepCopy(f.default)
+				self:edited()
+			end, { style = "ghost", tip = "Înlocuiește traseul cu unul drept" })
+		end
+	end
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- operations view
+-- ---------------------------------------------------------------------------------------------
+-- runs an engine call; errors become a toast. Returns ok, results...
+local function attempt(fn, ...)
+	local results = table.pack(pcall(fn, ...))
+	if not results[1] then
+		UI.toast(clean(results[2]), "error")
+		return false
+	end
+	return true, table.unpack(results, 2, results.n)
+end
+
+local function done(text, kind)
+	UI.toast(text, kind or "success", { action = { text = "Anulează", onClick = undo } })
+end
+
+function Panel:renderOps(root, info)
+	if #info.raw == 0 then
+		local empty = UI.empty(root, "Selectează piese, modele sau atașamente ca să le umpli, repeți, oglindești sau aliniezi.",
+			nil, nil, { icon = "build", title = "Nimic selectat" })
+		UI.button(empty, "Pornește de la un generator", function()
+			self:setMode("gen")
+		end, { style = "link", autoWidth = true })
+		return
+	end
+	self:renderFill(root, info)
+	self:renderArray(root, info)
+	self:renderMirror(root, info)
+	self:renderAlign(root, info)
+	self:renderPlace(root, info)
+	self:renderScatter(root, info)
+	self:renderSpline(root, info)
+	self:renderSolid(root, info)
+	self:renderOptimize(root, info)
+end
+
+-- Umplere: triangle (3 points), polygon (3+ points), gap between 2 parts
+function Panel:renderFill(root, info)
+	local o = self.op.fill
+	self:fold(root, "build.op.fill", "Umplere", true, function(body)
+		UI.segmented(body, {
+			{ value = "triangle", label = "Triunghi", tip = "Un triunghi prin 3 piese sau atașamente (1-2 pene)" },
+			{ value = "polygon", label = "Poligon", tip = "Un poligon prin 3 sau mai multe puncte, în ordinea selecției" },
+			{ value = "gap", label = "Spațiu", tip = "Umple spațiul dintre muchiile apropiate a 2 piese" },
+		}, o.mode, function(v)
+			o.mode = v
+			self:refresh()
+		end)
+		UI.scrub(body, "Grosime", o.thickness, function(v)
+			o.thickness = v
+		end, { min = 0.05, max = 20, step = 0.05, decimals = 2, unit = "studs", labelWidth = LABEL_W })
+		if o.mode ~= "gap" then
+			UI.segmented(row(body, "Aliniere", { tip = "Unde stă grosimea față de planul triunghiului" }), {
+				{ value = "center", label = "Centru" }, { value = "front", label = "Față" }, { value = "back", label = "Spate" },
+			}, o.align, function(v)
+				o.align = v
+				self:refresh()
+			end)
+		end
+		local n = #info.points
+		local ok, hint
+		if o.mode == "triangle" then
+			ok = n == 3
+			hint = ok and "3 vârfuri" or "Selectează exact 3 piese sau atașamente."
+		elseif o.mode == "polygon" then
+			ok = n >= 3
+			hint = ok and (plural(n, "punct", "puncte") .. ", în ordinea selecției") or "Selectează cel puțin 3 puncte, în ordine."
+		else
+			ok = #info.parts == 2
+			hint = ok and "Între cele 2 piese" or "Selectează exact 2 piese."
+		end
+		actionRow(body, hint, { { text = "Umple", disabled = not ok, tip = not ok and hint or nil, onClick = function()
+			self:runFill(info)
+		end } })
+	end)
+end
+
+function Panel:runFill(info)
+	local o = self.op.fill
+	local source = info.parts[1]
+	if not source and info.attachments[1] and info.attachments[1].Parent and info.attachments[1].Parent:IsA("BasePart") then
+		source = info.attachments[1].Parent
+	end
+	local opts = { thickness = o.thickness, align = o.align, source = source }
+	local ok, made
+	if o.mode == "triangle" then
+		local p = info.points
+		ok, made = attempt(Modeling.triangleFill, p[1], p[2], p[3], opts)
+	elseif o.mode == "polygon" then
+		ok, made = attempt(Modeling.polygonFill, info.points, opts)
+	else
+		ok, made = attempt(Modeling.gapFill, info.parts[1], info.parts[2], { thickness = o.thickness })
+	end
+	if ok then
+		select(made)
+		done(string.format("Am umplut cu %s.", plural(#made, "piesă", "piese")))
+	end
+end
+
+-- Repetare: linear, radial, arc, along a path
+function Panel:renderArray(root, info)
+	local o = self.op.array
+	self:fold(root, "build.op.array", "Repetare", false, function(body)
+		UI.segmented(body, {
+			{ value = "linear", label = "Liniar", tip = "Copii în linie, una lângă alta" },
+			{ value = "radial", label = "Radial", tip = "Copii în cerc, în jurul unui centru" },
+			{ value = "arc", label = "Arc", tip = "Fiecare copie continuă precedenta și se rotește pe muchia comună (ziduri curbe, inele)" },
+			{ value = "path", label = "Traseu", tip = "Copii ale primului obiect de-a lungul reperelor selectate după el" },
+		}, o.mode, function(v)
+			o.mode = v
+			self:refresh()
+		end)
+		if o.mode ~= "path" then
+			UI.scrub(body, "Total", o.count, function(v)
+				o.count = math.floor(v + 0.5)
+			end, { min = 2, max = 500, step = 1, decimals = 0, labelWidth = LABEL_W, tip = "Numărul total de obiecte, cu originalul" })
+		end
+		if o.mode == "linear" then
+			UI.segmented(row(body, "Axă", { tip = "Axa obiectului (a lumii pentru mai multe obiecte)" }), AXES, o.axis, function(v)
+				o.axis = v
+				self:refresh()
+			end)
+			UI.scrub(body, "Spațiu", o.gap, function(v)
+				o.gap = v
+			end, { min = -1000, max = 1000, step = 0.25, decimals = 2, unit = "studs", labelWidth = LABEL_W,
+				tip = "Golul dintre copii (0 = lipite)" })
+		elseif o.mode == "radial" then
+			UI.scrub(body, "Rază", o.radius, function(v)
+				o.radius = v
+			end, { min = 0, max = 2000, step = 0.5, decimals = 2, unit = "studs", labelWidth = LABEL_W,
+				tip = "Distanța până la centru, în fața obiectului" })
+			UI.slider(row(body, "Unghi"), o.angle, function(v)
+				o.angle = v
+			end, { min = 15, max = 360, step = 5, decimals = 0, unit = "°", field = true, valueWidth = 64 })
+		elseif o.mode == "arc" then
+			UI.scrub(body, "Unghi", o.arcAngle, function(v)
+				o.arcAngle = v
+			end, { min = -180, max = 180, step = 1, decimals = 1, unit = "°", labelWidth = LABEL_W, tip = "Rotația fiecărei copii" })
+			UI.segmented(row(body, "Axă", { tip = "Axa obiectului în jurul căreia se rotește" }), AXES, o.arcAxis, function(v)
+				o.arcAxis = v
+				self:refresh()
+			end)
+			UI.scrub(body, "Rază", o.arcRadius, function(v)
+				o.arcRadius = v
+			end, { min = 0, max = 1000, step = 0.25, decimals = 2, unit = "studs", labelWidth = LABEL_W,
+				tip = "Mută pivotul în afară (curbă mai largă)" })
+		else
+			UI.scrub(body, "Pas", o.spacing, function(v)
+				o.spacing = v
+			end, { min = 0.25, max = 1000, step = 0.25, decimals = 2, unit = "studs", labelWidth = LABEL_W,
+				tip = "Distanța dintre copii pe traseu" })
+			UI.switch(row(body, "Aliniază"), o.align, function(v)
+				o.align = v
+			end, { tip = "Copiile se rotesc după direcția traseului" })
+		end
+		local ok, hint
+		if o.mode == "path" then
+			ok = #info.objects >= 1 and #info.points >= 3
+			hint = ok and plural(#info.points - 1, "reper", "repere") or "Selectează obiectul, apoi cel puțin 2 repere."
+		else
+			ok = #info.objects >= 1
+			hint = ok and (plural(#info.objects, "obiect", "obiecte") .. " × " .. o.count) or "Selectează ce repeți."
+		end
+		actionRow(body, hint, { { text = "Repetă", disabled = not ok, tip = not ok and hint or nil, onClick = function()
+			self:runArray(info)
+		end } })
+	end)
+end
+
+-- the step of a linear array: along the axis of the object (of the world for several), the object's size + the gap
+local function linearOffset(objs, axis, gap)
+	local dir, extent
+	if #objs == 1 then
+		local obj = objs[1]
+		local cf, size
+		if obj:IsA("Model") then
+			cf, size = obj:GetBoundingBox()
+		else
+			cf, size = obj.CFrame, obj.Size
+		end
+		dir = cf:VectorToWorldSpace(AXIS_VECTOR[axis])
+		extent = (axis == "X" and size.X) or (axis == "Y" and size.Y) or size.Z
+	else
+		local lo, hi = worldBox(objs)
+		dir = AXIS_VECTOR[axis]
+		local d = hi - lo
+		extent = (axis == "X" and d.X) or (axis == "Y" and d.Y) or d.Z
+	end
+	return dir * (extent + gap)
+end
+
+function Panel:runArray(info)
+	local o = self.op.array
+	local ok, made
+	if o.mode == "linear" then
+		ok, made = attempt(Modeling.linearArray, info.objects, { count = o.count, offset = linearOffset(info.objects, o.axis, o.gap) })
+	elseif o.mode == "radial" then
+		ok, made = attempt(Modeling.radialArray, info.objects, { count = o.count, radius = o.radius, angle = o.angle })
+	elseif o.mode == "arc" then
+		ok, made = attempt(Modeling.arcArray, info.objects, { count = o.count, angle = o.arcAngle, axis = o.arcAxis,
+			radius = o.arcRadius })
+	else
+		local template = info.objects[1]
+		local points = table.move(info.points, 2, #info.points, 1, {})
+		ok, made = attempt(Modeling.pathArray, { template }, points, o.spacing, { align = o.align })
+	end
+	if ok then
+		done(string.format("Am făcut %s.", plural(#made, "copie", "copii")))
+	end
+end
+
+-- Oglindire
+function Panel:renderMirror(root, info)
+	local o = self.op.mirror
+	self:fold(root, "build.op.mirror", "Oglindire", false, function(body)
+		UI.segmented(row(body, "Plan", { tip = "Normala planului de oglindire (prin centrul grupului)" }), AXES, o.axis, function(v)
+			o.axis = v
+			self:refresh()
+		end)
+		UI.switch(row(body, "Copie"), o.copy, function(v)
+			o.copy = v
+		end, { tip = "Pornit: originalul rămâne și se adaugă imaginea în oglindă" })
+		local ok = #info.objects >= 1
+		local hint = ok and ("Prin centrul selecției, pe " .. o.axis) or "Selectează ce oglindești."
+		actionRow(body, hint, { { text = "Oglindește", disabled = not ok, tip = not ok and hint or nil, onClick = function()
+			local okRun, made, warnings = attempt(Modeling.mirror, info.objects, o.axis, { copy = o.copy })
+			if okRun then
+				if o.copy then
+					select(made)
+				end
+				if warnings and #warnings > 0 then
+					done("Oglindit, cu observații: " .. warnings[1], "warning")
+				else
+					done(string.format("Am oglindit %s.", plural(#made, "obiect", "obiecte")))
+				end
+			end
+		end } })
+	end)
+end
+
+-- Aliniere: align on an axis, distribute
+function Panel:renderAlign(root, info)
+	local o = self.op.align
+	self:fold(root, "build.op.align", "Aliniere", false, function(body)
+		UI.segmented(row(body, "Axă"), AXES, o.axis, function(v)
+			o.axis = v
+			self:refresh()
+		end)
+		UI.segmented(row(body, "Spre"), {
+			{ value = "min", label = "Min" }, { value = "center", label = "Centru" }, { value = "max", label = "Max" },
+		}, o.mode, function(v)
+			o.mode = v
+			self:refresh()
+		end)
+		UI.segmented(row(body, "Față de"), {
+			{ value = "group", label = "Grup", tip = "Marginea / centrul întregii selecții" },
+			{ value = "first", label = "Primul", tip = "Primul obiect selectat stă pe loc" },
+		}, o.to, function(v)
+			o.to = v
+			self:refresh()
+		end)
+		local n = #info.objects
+		local hint = n >= 2 and plural(n, "obiect", "obiecte") or "Selectează cel puțin 2 obiecte."
+		actionRow(body, hint, {
+			{ text = "Distribuie", disabled = n < 3, tip = n < 3 and "Distribuirea are nevoie de cel puțin 3 obiecte."
+				or "Spații egale între obiecte, pe axă", onClick = function()
+				if attempt(Modeling.distribute, info.objects, o.axis, "gap") then
+					done(string.format("Am distribuit %s pe %s.", plural(n, "obiect", "obiecte"), o.axis))
+				end
+			end },
+			{ text = "Aliniază", disabled = n < 2, tip = n < 2 and hint or nil, onClick = function()
+				if attempt(Modeling.align, info.objects, o.axis, o.mode, o.to == "first" and "first" or nil) then
+					done(string.format("Am aliniat %s pe %s.", plural(n, "obiect", "obiecte"), o.axis))
+				end
+			end },
+		})
+	end)
+end
+
+-- Plasare: drop to the surface, snap to the grid, extend a part up to another one
+local FACES = {
+	{ value = "auto", label = "Automat", hint = "spre țintă" },
+	{ value = "Top", label = "Sus", hint = "+Y" }, { value = "Bottom", label = "Jos", hint = "−Y" },
+	{ value = "Right", label = "Dreapta", hint = "+X" }, { value = "Left", label = "Stânga", hint = "−X" },
+	{ value = "Back", label = "Spate", hint = "+Z" }, { value = "Front", label = "Față", hint = "−Z" },
+}
+
+-- the face of `part` that looks most toward `target`
+local function faceToward(part, target)
+	local dir = target.Position - part.Position
+	if dir.Magnitude < 1e-6 then
+		return "Top"
+	end
+	dir = dir.Unit
+	local cf = part.CFrame
+	local normals = { Right = cf.RightVector, Left = -cf.RightVector, Top = cf.UpVector, Bottom = -cf.UpVector,
+		Back = -cf.LookVector, Front = cf.LookVector }
+	local best, bestDot = "Top", -math.huge
+	for _, name in { "Right", "Left", "Top", "Bottom", "Back", "Front" } do
+		local d = normals[name]:Dot(dir)
+		if d > bestDot then
+			best, bestDot = name, d
+		end
+	end
+	return best
+end
+
+function Panel:renderPlace(root, info)
+	local o = self.op.place
+	self:fold(root, "build.op.place", "Plasare", true, function(body)
+		local n = #info.objects
+		subhead(body, "Pe suprafață")
+		UI.switch(row(body, "Pe pantă"), o.normal, function(v)
+			o.normal = v
+		end, { tip = "Obiectele se înclină după suprafața de dedesubt" })
+		actionRow(body, n >= 1 and "Coboară pe ce e dedesubt" or "Selectează ce așezi.", { { text = "Lasă jos", disabled = n < 1,
+			onClick = function()
+				local ok, moved, missed = attempt(Modeling.dropToSurface, info.objects, { alignToNormal = o.normal })
+				if ok then
+					local text = string.format("Am așezat %s.", plural(#moved, "obiect", "obiecte"))
+					if missed and missed > 0 then
+						text ..= " " .. plural(missed, "obiect nu are", "obiecte nu au") .. " nimic dedesubt."
+					end
+					done(text, missed and missed > 0 and "warning" or "success")
+				end
+			end } })
+		UI.spacer(body, SPACE.xs)
+		subhead(body, "La grilă")
+		UI.scrub(body, "Grilă", o.grid, function(v)
+			o.grid = v
+		end, { min = 0.05, max = 64, step = 0.25, decimals = 2, unit = "studs", labelWidth = LABEL_W })
+		UI.scrub(body, "Rotație", o.rotation, function(v)
+			o.rotation = v
+		end, { min = 0, max = 90, step = 1, decimals = 0, unit = "°", labelWidth = LABEL_W,
+			tip = "Pasul de rotație (0 = rotația rămâne)" })
+		actionRow(body, n >= 1 and plural(n, "obiect", "obiecte") or "Selectează ce aliniezi.", { { text = "La grilă",
+			disabled = n < 1, onClick = function()
+				local opts = o.rotation > 0 and { rotation = o.rotation } or nil
+				if attempt(Modeling.snapToGrid, info.objects, o.grid, opts) then
+					done(string.format("Am aliniat la grila de %s studs.", fmt(o.grid)))
+				end
+			end } })
+		UI.spacer(body, SPACE.xs)
+		subhead(body, "Extinde până la")
+		UI.dropdown(row(body, "Față", { tip = "Fața primei piese care se întinde" }), FACES, o.face, function(v)
+			o.face = v
+			self:refresh()
+		end, { menuWidth = 170 })
+		UI.dropdown(row(body, "Atinge cu", { tip = "Cum ajunge o față înclinată la planul țintei: toate colțurile = fără gol, "
+			.. "primul colț = fără suprapunere" }), {
+			{ value = "center", label = "Centrul feței" }, { value = "outer", label = "Toate colțurile" },
+			{ value = "inner", label = "Primul colț" },
+		}, o.extend, function(v)
+			o.extend = v
+			self:refresh()
+		end, { menuWidth = 180 })
+		local ok = #info.parts == 2
+		local hint = ok and string.format("%s până la %s", info.parts[1].Name, info.parts[2].Name)
+			or "Selectează piesa, apoi ținta (2 piese)."
+		actionRow(body, hint, { { text = "Extinde", disabled = not ok, tip = not ok and hint or nil, onClick = function()
+			local part, target = info.parts[1], info.parts[2]
+			local face = o.face == "auto" and faceToward(part, target) or o.face
+			local okRun, _, dist = attempt(Modeling.extendTo, part, face, target, { mode = o.extend })
+			if okRun then
+				done(string.format("Am extins „%s” cu %s studs.", part.Name, fmt(dist or 0)))
+			end
+		end } })
+	end)
+end
+
+-- Împrăștiere: copies of the selected models over the selected parts (or an area in front of the camera)
+function Panel:renderScatter(root, info)
+	local o = self.op.scatter
+	self:fold(root, "build.op.scatter", "Împrăștiere", true, function(body)
+		UI.slider(row(body, "Densitate", { tip = "Obiecte la 10 000 studs² de suprafață" }), o.density, function(v)
+			o.density = v
+		end, { min = 1, max = 400, step = 1, decimals = 0, field = true, valueWidth = 64 })
+		UI.scrub(body, "Distanță min.", o.minDistance, function(v)
+			o.minDistance = v
+		end, { min = 0, max = 200, step = 0.25, decimals = 2, unit = "studs", labelWidth = LABEL_W })
+		local area = row(body, "Scară", { tip = "Fiecare copie primește o scară între aceste valori" })
+		UI.number(area, o.scaleMin, function(v)
+			o.scaleMin = math.min(v, o.scaleMax)
+		end, { min = 0.1, max = 10, step = 0.05, decimals = 2 })
+		UI.number(area, o.scaleMax, function(v)
+			o.scaleMax = math.max(v, o.scaleMin)
+		end, { min = 0.1, max = 10, step = 0.05, decimals = 2 })
+		UI.switch(row(body, "Rotație"), o.rotate, function(v)
+			o.rotate = v
+		end, { tip = "O rotație la întâmplare în jurul verticalei" })
+		UI.switch(row(body, "Pe pantă"), o.normal, function(v)
+			o.normal = v
+		end, { tip = "Copiile se înclină după suprafață" })
+		local surfaces = info.parts
+		if #surfaces == 0 then
+			UI.scrub(body, "Zonă", o.area, function(v)
+				o.area = v
+			end, { min = 8, max = 2000, step = 1, decimals = 0, unit = "studs", labelWidth = LABEL_W,
+				tip = "Latura pătratului din fața camerei (nicio piesă selectată ca suprafață)" })
+		end
+		local seedArea, seedRight = row(body, "Seed", { rightWidth = UI.H, tip = "Același seed dă aceeași așezare" })
+		UI.number(seedArea, o.seed, function(v)
+			o.seed = math.max(0, math.floor(v + 0.5))
+		end, { min = 0, max = 2147483646, step = 1, decimals = 0 })
+		UI.iconButton(seedRight, "refresh", function()
+			o.seed = math.random(1, 99999)
+			self:refresh()
+		end, { tip = "Seed aleator" })
+		local ok = #info.models >= 1
+		local hint
+		if not ok then
+			hint = "Selectează modelele de împrăștiat (și piesele-suprafață)."
+		elseif #surfaces > 0 then
+			hint = string.format("%s pe %s", plural(#info.models, "șablon", "șabloane"), plural(#surfaces, "suprafață", "suprafețe"))
+		else
+			hint = string.format("%s, în fața camerei", plural(#info.models, "șablon", "șabloane"))
+		end
+		actionRow(body, hint, { { text = "Împrăștie", disabled = not ok, tip = not ok and hint or nil, onClick = function()
+			self:runScatter(info)
+		end } })
+	end)
+end
+
+function Panel:runScatter(info)
+	local o = self.op.scatter
+	local where
+	if #info.parts > 0 then
+		where = info.parts
+	else
+		local ok, cf = pcall(Modeling.placement, o.area / 2 + 20)
+		where = { cframe = (ok and cf or CFrame.new()) * CFrame.new(0, 20, 0), size = Vector3.new(o.area, 80, o.area) }
+	end
+	local okRun, container, report = attempt(Modeling.scatter, where, info.models, { density = o.density, minDistance = o.minDistance,
+		randomRotation = o.rotate, scaleRange = { o.scaleMin, o.scaleMax }, alignToNormal = o.normal, seed = o.seed })
+	if okRun then
+		select({ container })
+		local text = string.format("Am împrăștiat %s.", plural(report.placed, "obiect", "obiecte"))
+		if report.missed > 0 then
+			text ..= " " .. plural(report.missed, "poziție a ratat", "poziții au ratat") .. " suprafața."
+		end
+		done(text)
+	end
+end
+
+-- Curbe: a rail / pipe / cable / road / wall / fence through the selected points
+local SPLINE_KINDS = {
+	{ value = "rail", label = "Șină" }, { value = "pipe", label = "Țeavă" }, { value = "cable", label = "Cablu" },
+	{ value = "road", label = "Drum" }, { value = "wall", label = "Zid" }, { value = "fence", label = "Gard" },
+}
+
+function Panel:renderSpline(root, info)
+	local o = self.op.spline
+	self:fold(root, "build.op.spline", "Curbe", true, function(body)
+		UI.dropdown(row(body, "Tip"), SPLINE_KINDS, o.kind, function(v)
+			o.kind = v
+			self:refresh()
+		end)
+		UI.scrub(body, "Pas", o.spacing, function(v)
+			o.spacing = v
+		end, { min = 0.5, max = 100, step = 0.25, decimals = 2, unit = "studs", labelWidth = LABEL_W,
+			tip = "Lungimea unui segment (mai mic = mai lin, mai multe piese)" })
+		if o.kind == "road" or o.kind == "wall" then
+			UI.scrub(body, "Lățime", o.width, function(v)
+				o.width = v
+			end, { min = 0.25, max = 200, step = 0.25, decimals = 2, unit = "studs", labelWidth = LABEL_W })
+		end
+		if o.kind == "wall" or o.kind == "fence" then
+			UI.scrub(body, "Înălțime", o.height, function(v)
+				o.height = v
+			end, { min = 0.5, max = 100, step = 0.25, decimals = 2, unit = "studs", labelWidth = LABEL_W })
+		end
+		if o.kind == "rail" or o.kind == "pipe" or o.kind == "cable" then
+			UI.scrub(body, "Diametru", o.diameter, function(v)
+				o.diameter = v
+			end, { min = 0.05, max = 40, step = 0.05, decimals = 2, unit = "studs", labelWidth = LABEL_W })
+		end
+		UI.switch(row(body, "Închisă"), o.closed, function(v)
+			o.closed = v
+		end, { tip = "Curba se întoarce la primul punct" })
+		local ok = #info.points >= 2
+		local hint = ok and (plural(#info.points, "punct", "puncte") .. ", în ordinea selecției") or "Selectează cel puțin 2 repere, în ordine."
+		actionRow(body, hint, { { text = "Construiește", disabled = not ok, tip = not ok and hint or nil, onClick = function()
+			local opts = { spacing = o.spacing, closed = o.closed or nil }
+			if o.kind == "road" then
+				opts.width = o.width
+			elseif o.kind == "wall" then
+				opts.width, opts.thickness, opts.height = o.width, o.height, o.height / 2
+			elseif o.kind == "fence" then
+				opts.params = { height = o.height }
+			else
+				opts.diameter = o.diameter
+			end
+			local okRun, made, report = attempt(Modeling.alongSpline, o.kind, info.points, opts)
+			if okRun and made then
+				select({ made })
+				done(string.format("Am construit „%s” (%s).", made.Name, plural(report and report.parts or 0, "piesă", "piese")))
+			end
+		end } })
+	end)
+end
+
+-- Solide: union / subtraction (CSG)
+function Panel:renderSolid(root, info)
+	local o = self.op.solid
+	self:fold(root, "build.op.solid", "Solide", true, function(body)
+		UI.switch(row(body, "Păstrează"), o.keep, function(v)
+			o.keep = v
+		end, { tip = "Piesele originale (unire) sau cele care taie (scădere) rămân în joc" })
+		local canMerge = info.partCount >= 2
+		local base = info.objects[1]
+		local canCut = base ~= nil and base:IsA("BasePart") and #info.objects >= 2
+		local hint = canMerge and plural(info.partCount, "piesă", "piese") or "Selectează cel puțin 2 piese."
+		actionRow(body, hint, {
+			{ text = "Scade", disabled = not canCut, tip = canCut and ("„" .. base.Name .. "” e baza; restul taie")
+				or "Selectează întâi piesa de bază, apoi piesele care taie.", onClick = function()
+				local cutters = table.move(info.objects, 2, #info.objects, 1, {})
+				local result, err = Modeling.subtract(base, cutters, { keepCutters = o.keep })
+				if not result then
+					UI.toast((err or "Scăderea a eșuat.") .. " Încearcă mai puține piese sau forme mai simple.", "error")
+					return
+				end
+				select({ result })
+				done(string.format("Am scăzut %s din „%s”.", plural(#cutters, "piesă", "piese"), result.Name))
+			end },
+			{ text = "Unește", disabled = not canMerge, tip = not canMerge and hint or "Un singur UnionOperation", onClick = function()
+				local result, err = Modeling.merge(info.objects, { keep = o.keep })
+				if not result then
+					UI.toast((err or "Unirea a eșuat.") .. " Încearcă mai puține piese sau forme mai simple.", "error")
+					return
+				end
+				select({ result })
+				done(string.format("Am unit %s.", plural(info.partCount, "piesă", "piese")))
+			end },
+		})
+	end)
+end
+
+-- Optimizare: a dry run first (a table of what would change), then apply
+local REPORT_ROWS = {
+	{ "anchored", "Piese de ancorat" },
+	{ "canCollide", "Decor fără coliziune" },
+	{ "castShadow", "Fără umbre (piese mici)" },
+	{ "renderFidelity", "Randare Performance" },
+	{ "collisionFidelity", "Coliziune Box" },
+}
+
+function Panel:optimizeOptions(dryRun)
+	local o = self.op.optimize
+	local opts = { anchorAll = o.anchorAll, canCollideDecor = o.decor, castShadowSmall = o.shadows,
+		collisionFidelityBox = o.fidelity, dryRun = dryRun }
+	if not o.fidelity then
+		opts.renderFidelity = false -- keep the render fidelity (nil = the engine's default, Performance)
+	end
+	return opts
+end
+
+function Panel:renderOptimize(root, info)
+	local o = self.op.optimize
+	self:fold(root, "build.op.optimize", "Optimizare", true, function(body)
+		local function option(key, text, tip)
+			UI.toggle(body, o[key], function(v)
+				o[key] = v
+				self.optReport = nil
+				self:refresh()
+			end, text, { tip = tip })
+		end
+		option("anchorAll", "Ancorează tot", "Anchored = true pe toate piesele")
+		option("decor", "Decor fără coliziune", "Piesele mai mici de 1 stud nu mai au coliziune / atingere")
+		option("shadows", "Fără umbre la piese mici", "Piesele mai mici de 1.5 studs nu mai aruncă umbre")
+		option("fidelity", "Mesh-uri și uniri ușoare", "RenderFidelity Performance, coliziune Box la decor")
+		local report = self.optReport
+		if report then
+			UI.spacer(body, SPACE.xs)
+			self:reportTable(body, report)
+		end
+		local ok = #info.objects >= 1
+		local buttons = { { text = "Analizează", disabled = not ok, tip = "Arată ce s-ar schimba, fără să schimbe nimic",
+			onClick = function()
+				local okRun, r = attempt(Modeling.optimize, info.objects, self:optimizeOptions(true))
+				if okRun then
+					self.optReport = r
+					self:refresh()
+				end
+			end } }
+		if report then
+			local changes = report.changes or 0
+			table.insert(buttons, { text = "Aplică", style = changes > 0 and "primary" or nil,
+				disabled = changes == 0, tip = changes == 0 and "Nimic de schimbat" or "Un singur Ctrl+Z", onClick = function()
+					local okRun, r = attempt(Modeling.optimize, info.objects, self:optimizeOptions(false))
+					if okRun then
+						self.optReport = nil
+						done(string.format("Am aplicat %s pe %s.", plural(r.changes, "modificare", "modificări"),
+							plural(r.parts, "piesă", "piese")))
+						self:refresh()
+					end
+				end })
+		end
+		local hint = ok and (report and plural(report.parts, "piesă analizată", "piese analizate") or plural(info.partCount, "piesă", "piese"))
+			or "Selectează modelul de optimizat."
+		actionRow(body, hint, buttons)
+	end)
+end
+
+-- the dry-run report: one line per kind of change, the total, the suggestions
+function Panel:reportTable(body, report)
+	local function line(label, value, strong)
+		local frame = UI.make("Frame", { Name = "ReportRow", Parent = body, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 20) })
+		local l = UI.label(frame, label, { dim = not strong, medium = strong, height = 20 })
+		l.Size = UDim2.new(1, -64, 0, 20)
+		local v = UI.label(frame, tostring(value), { medium = strong, align = Enum.TextXAlignment.Right, height = 20,
+			color = (value == 0 and not strong) and "textDisabled" or "text" })
+		v.AnchorPoint = Vector2.new(1, 0)
+		v.Position = UDim2.fromScale(1, 0)
+		v.Size = UDim2.new(0, 60, 0, 20)
+		return frame
+	end
+	for _, r in REPORT_ROWS do
+		line(r[2], report[r[1]] or 0)
+	end
+	UI.divider(body)
+	line("Proprietăți de schimbat", report.changes or 0, true)
+	for _, s in report.suggestions or {} do
+		UI.note(body, UI.escape(s))
+	end
+end
+
+function Panel:destroy()
+	self.dead = true
+	self:clearGhost()
+	for _, c in self.conns do
+		pcall(function()
+			c:Disconnect()
+		end)
+	end
+	self.conns = {}
+end
+
+return Panel
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX18"><Properties><string name="Name">Icons</string><ProtectedString name="Source"><![CDATA[-- LostCube icons: Studio's own glyphs (content/studio_svg_textures, shipped with every Studio) and class icons from
 -- StudioService:GetClassIcon. No emoji anywhere in the interface.
 --
 -- Every path below was checked against rbxManifest.txt of MaximumADHD/Roblox-Client-Tracker (branch `roblox`, commit
@@ -23581,7 +25546,7 @@ function Icons.draw(parent, name, size, color, width)
 end
 
 return Icons
-]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX18"><Properties><string name="Name">Modeling</string><ProtectedString name="Source"><![CDATA[--[[ LostCube Modeling - fast 3D modeling in Studio (plugin-only engine; the panel and Claude's tools call this API).
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX19"><Properties><string name="Name">Modeling</string><ProtectedString name="Source"><![CDATA[--[[ LostCube Modeling - fast 3D modeling in Studio (plugin-only engine; the panel and Claude's tools call this API).
 Every operation that changes the place is ONE undo step (ChangeHistoryService) and returns what it created / changed.
 Bad input raises an error with a Romanian message and changes nothing; engine failures that are not the caller's fault
 (CSG, EditableMesh) return nil + message (the step is rolled back). `targets` = a BasePart / Model / Folder, a list of
@@ -25733,7 +27698,7 @@ function Modeling.generatorHelp(kind)
 end
 
 return Modeling
-]]></ProtectedString></Properties><Item class="ModuleScript" referent="RBX19"><Properties><string name="Name">Generators</string><ProtectedString name="Source"><![CDATA[-- LostCube > Modeling > Generators: procedural builders as pure functions. Each one takes validated parameters and
+]]></ProtectedString></Properties><Item class="ModuleScript" referent="RBX20"><Properties><string name="Name">Generators</string><ProtectedString name="Source"><![CDATA[-- LostCube > Modeling > Generators: procedural builders as pure functions. Each one takes validated parameters and
 -- returns { pieces = { piece }, terrain = { op }?, info = {...} } in LOCAL coordinates: the origin is the centre of the
 -- footprint on the ground (y = 0), -Z is the front (the LookVector of the CFrame the model is placed at). init.luau turns
 -- the pieces into one Model (one undo step). Same seed + same parameters = the same model.
@@ -27239,7 +29204,7 @@ function Generators.generate(kind, params, isMaterial)
 end
 
 return Generators
-]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX20"><Properties><string name="Name">Geometry</string><ProtectedString name="Source"><![CDATA[-- LostCube > Modeling > Geometry: the pure maths of the modeling engine (no Instances, no Roblox datatypes), so every
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX21"><Properties><string name="Name">Geometry</string><ProtectedString name="Source"><![CDATA[-- LostCube > Modeling > Geometry: the pure maths of the modeling engine (no Instances, no Roblox datatypes), so every
 -- algorithm runs and is unit-tested in the plain Luau CLI. init.luau converts at the boundary (Vector3 <-> { x, y, z },
 -- CFrame <-> frame).
 --
@@ -28731,7 +30696,7 @@ function Geometry.pyramid(base, w, d, h, extra, rot)
 end
 
 return Geometry
-]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX21"><Properties><string name="Name">Mesh</string><ProtectedString name="Source"><![CDATA[-- LostCube > Modeling > Mesh: procedural triangle meshes as plain data, built without Roblox:
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX22"><Properties><string name="Name">Mesh</string><ProtectedString name="Source"><![CDATA[-- LostCube > Modeling > Mesh: procedural triangle meshes as plain data, built without Roblox:
 --   mesh = { verts = { { x, y, z } }, tris = { { i, j, k } } (counter-clockwise seen from outside), flat = bool }
 -- init.luau turns a mesh into a MeshPart through AssetService:CreateEditableMesh + CreateMeshPartAsync when the engine
 -- allows it, and otherwise into WedgeParts (Mesh.toPieces: two wedges per triangle at most), so every shape exists in
@@ -29149,7 +31114,7 @@ function Mesh.make(kind, params)
 end
 
 return Mesh
-]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX22"><Properties><string name="Name">Spec</string><ProtectedString name="Source"><![CDATA[-- LostCube > Modeling > Spec: the compact build format Claude (or a panel) writes, validated and compiled into pieces
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX23"><Properties><string name="Name">Spec</string><ProtectedString name="Source"><![CDATA[-- LostCube > Modeling > Spec: the compact build format Claude (or a panel) writes, validated and compiled into pieces
 -- without touching Roblox; init.luau builds the result (Modeling.buildFromSpec) and reads models back into the same
 -- format (Modeling.describe). Spec.DOC below is the format's reference, written to be handed to Claude verbatim.
 -- Also: a small deterministic JSON codec (sorted keys, the same output in Studio and in the tests).
@@ -30024,7 +31989,7 @@ function Spec.describePiece(pc)
 end
 
 return Spec
-]]></ProtectedString></Properties></Item></Item><Item class="ModuleScript" referent="RBX23"><Properties><string name="Name">Theme</string><ProtectedString name="Source"><![CDATA[-- LostCube theme: semantic colour tokens read from the Studio theme (Light and Dark), live re-skin when Studio switches
+]]></ProtectedString></Properties></Item></Item><Item class="ModuleScript" referent="RBX24"><Properties><string name="Name">Theme</string><ProtectedString name="Source"><![CDATA[-- LostCube theme: semantic colour tokens read from the Studio theme (Light and Dark), live re-skin when Studio switches
 -- theme, the type scale (FontFace per role) and the spacing / radius / motion constants. Every colour the UI paints comes
 -- from Theme.tokens (UI.C is the same set plus the 2.0 names); nothing is hard-coded in the components.
 --
@@ -30367,7 +32332,7 @@ end
 Theme.refresh()
 
 return Theme
-]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX24"><Properties><string name="Name">Tools</string><ProtectedString name="Source"><![CDATA[--[[ LostCube Tools - what Claude can do in Studio in agent mode (◆ Claude tab, "Mod agent").
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX25"><Properties><string name="Name">Tools</string><ProtectedString name="Source"><![CDATA[--[[ LostCube Tools - what Claude can do in Studio in agent mode (Claude tab, "Mod agent").
 Each tool = an API definition (name, description, input_schema) + an executor that runs inside the plugin:
 
 	local Tools = require(script.Parent.Tools)
@@ -30417,11 +32382,15 @@ local function round(x: number, decimals: number?): number
 end
 
 local function service(name: string): Instance?
-	local ok, s = pcall(game.FindService, game, name)
+	local ok, s = pcall(function()
+		return game:FindService(name)
+	end)
 	if ok and s then
 		return s
 	end
-	local okGet, got = pcall(game.GetService, game, name)
+	local okGet, got = pcall(function()
+		return game:GetService(name)
+	end)
 	return okGet and got or nil
 end
 
@@ -30437,8 +32406,25 @@ local function editorOf(ctx): any
 end
 
 local function fullName(inst: Instance): string
-	local ok, name = pcall(inst.GetFullName, inst)
-	return ok and name or tostring(inst)
+	local ok, name = pcall(function()
+		return inst:GetFullName()
+	end)
+	if ok and type(name) == "string" then
+		return name
+	end
+	-- no GetFullName (a stand-in instance): Name.Name... up to the root, which GetFullName leaves out too
+	local names, node = {}, inst
+	while node ~= nil and #names < 64 do
+		local okNode, nodeName, parent = pcall(function()
+			return node.Name, node.Parent
+		end)
+		if not okNode or parent == nil then
+			break
+		end
+		table.insert(names, 1, tostring(nodeName))
+		node = parent
+	end
+	return #names > 0 and table.concat(names, ".") or tostring(inst)
 end
 
 local function className(inst: Instance): string
@@ -30736,7 +32722,7 @@ local function gameOverview(): (boolean, string)
 	end
 	local okLoad, report = pcall(Analyzer.load)
 	if not okLoad or not report then
-		return true, "Nu există încă o analiză salvată a jocului. Dezvoltatorul o poate porni din tab-ul 🧠 Joc; "
+		return true, "Nu există încă o analiză salvată a jocului. Dezvoltatorul o poate porni din tab-ul Joc; "
 			.. "până atunci folosește find_instances, get_instance și read_script."
 	end
 	local okText, text = pcall(Analyzer.context, report, 20000)
@@ -30744,7 +32730,7 @@ local function gameOverview(): (boolean, string)
 		return false, "Analiza salvată nu poate fi citită: " .. cleanError(text)
 	end
 	local okStale, stale = pcall(Analyzer.isStale, report)
-	local note = (okStale and stale) and "\n\n(Analiza e veche: jocul s-a schimbat de atunci; o poți reface din tab-ul 🧠 Joc.)" or ""
+	local note = (okStale and stale) and "\n\n(Analiza e veche: jocul s-a schimbat de atunci; o poți reface din tab-ul Joc.)" or ""
 	return true, text .. note
 end
 
@@ -31015,7 +33001,7 @@ local function describeEffect(input, ctx): (boolean, string)
 			and (", din șablonul " .. tostring(fx:GetAttribute("LC_Template"))) or "") }
 	local okLength, length = pcall(Editor.length, fx)
 	if okLength then
-		table.insert(lines, string.format("O redare durează ≈ %s s.", round(length, 2)))
+		table.insert(lines, string.format("O redare durează ~%s s.", round(length, 2)))
 	end
 	local okElements, elements = pcall(Editor.elements, fx)
 	if not okElements or #elements == 0 then
@@ -31071,7 +33057,7 @@ local function listAnimations(): (boolean, string)
 	end
 	local AnimLibrary = optionalModule("AnimLibrary")
 	if AnimLibrary then
-		table.insert(lines, "## Animații Roblox gratuite (tab-ul 📚 Lib; le adaugă dezvoltatorul de acolo)")
+		table.insert(lines, "## Animații Roblox gratuite (tab-ul Bibliotecă; le adaugă dezvoltatorul de acolo)")
 		local okGroups, groups = pcall(AnimLibrary.groups)
 		for _, g in (okGroups and groups or {}) do
 			local states = {}
@@ -31124,7 +33110,7 @@ local function previewEffect(input, ctx): (boolean, string)
 	local okLength, length = pcall(Editor.length, fx)
 	local rig = selectedRig()
 	return true, string.format("Previzualizare pornită: %s%s, %s.", fx.Name,
-		okLength and string.format(" (≈ %s s)", round(length, 2)) or "",
+		okLength and string.format(" (~%s s)", round(length, 2)) or "",
 		rig and ("pe " .. fullName(rig)) or "pe selecție sau pe sol, în fața camerei")
 end
 
@@ -31156,11 +33142,11 @@ local function suggestEffectColors(input, ctx): (boolean, string)
 	local okLoad, report = pcall(Analyzer.load)
 	if not okLoad or not report then
 		return true, "Nu există încă o analiză salvată a jocului, deci nu cunosc paleta hărții. Dezvoltatorul o poate porni din "
-			.. "tab-ul 🧠 Joc; până atunci alege culorile după tema jocului."
+			.. "tab-ul Joc; până atunci alege culorile după tema jocului."
 	end
 	local okPalette, palette, mood = pcall(Editor.paletteOf, report)
 	if not okPalette then
-		return true, "Analiza salvată nu are culorile hărții (" .. cleanError(palette) .. "). Poate fi refăcută din tab-ul 🧠 Joc."
+		return true, "Analiza salvată nu are culorile hărții (" .. cleanError(palette) .. "). Poate fi refăcută din tab-ul Joc."
 	end
 	local count = math.clamp(math.floor(tonumber(input.count) or 4), 3, 5)
 	local suggestions = Editor.suggestColors(palette, { count = count, night = type(mood) == "table" and mood.night })
@@ -31331,7 +33317,7 @@ local function generateAnimation(input, ctx): (boolean, string)
 		end
 	end
 	return true, string.format("Am generat %s pentru %s%s și am salvat-o în %s. Markere: %s. Dezvoltatorul o deschide în "
-		.. "Animation Editor (selectează rigul → Animation Editor → ⋯ → Load) ca s-o ajusteze și s-o publice; apoi "
+		.. "Animation Editor (selectează rigul → Animation Editor → … → Load) ca s-o ajusteze și s-o publice; apoi "
 		.. "folosește ID-ul publicat într-un Animation.", kfs.Name, rigType, rig and (" (" .. fullName(rig) .. ")") or "",
 		fullName(kfs), #markers > 0 and table.concat(markers, ", ") or "niciunul")
 end
@@ -31465,7 +33451,7 @@ local function runLuau(input): (boolean, string)
 	local done, okRun, value = false, false, nil
 	local started = now()
 	task.spawn(function()
-		okRun, value = pcall(fn, capture("", print), capture("⚠ ", warn))
+		okRun, value = pcall(fn, capture("", print), capture("Avertisment: ", warn))
 		done = true
 	end)
 	while not done and now() - started < Tools.RUN_TIMEOUT do
@@ -31494,6 +33480,585 @@ end
 -- ---------------------------------------------------------------------------------------------
 -- the tool list
 -- ---------------------------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------------------------
+-- 3D modeling (LostCube Modeling engine): guide, readback, generators, spec builds, operations
+-- ---------------------------------------------------------------------------------------------
+-- docs/modeling-research.md 5.3 (the instructions block for Claude), with the real tool names
+Tools.MODELING_INSTRUCTIONS = [[
+## Building in Roblox Studio (LostCube Modeling)
+Units: studs and degrees, Y up, front = -Z (yaw 0 faces -Z). 1 stud = 28 cm. Player ~5 tall, jump 7.2, walk 16.
+1. Plan first, in 2-5 lines: purpose, style (low_poly | realistic | cartoon), footprint, height, palette, part budget. Ask at most one question, only if size or style is truly unknown.
+2. Never emit hundreds of single parts. Use generators (generate_model; place_terrain for the ground) and operations (modeling_op: arrays, mirror, scatter, align, fills, curves). Raw parts (build_from_spec "parts") only for one-off details.
+3. Describe, do not compute: give sizes, counts and endpoints and let generators, arrays and mirror place the pieces; do not work out rotations, half-heights or offsets by hand.
+4. Work in phases, each approved call is one undo step: blockout (ground, volumes, routes) -> check -> structure and openings -> detail and props -> optimize. Do not detail before the blockout passes the check.
+5. Grid 4 (2 and 1 for details); round values (multiples of 0.25). Mirror or array instead of repeating parts.
+6. Scale (studs): door >= 5x8 (min 4x7), hallway >= 10 wide, ceiling 10-14, stairs rise 1 / run 1.5, path >= 6, road lane 12, tabletop 3.5, seat 1.5, car 12-16 long. A barrier meant to stop players must be >= 8 high.
+7. Style: low_poly = SmoothPlastic, 5-8 flat colors; realistic = real materials (Brick, Concrete, WoodPlanks, Slate...); cartoon = saturated palette. Always use a named palette; never leave default gray (#a3a2a5).
+8. Keep defaults: anchored; decor canCollide false; small details castShadow false. Keep gameplay parts (spawns, triggers, doors) separate from decor.
+9. Repetition: one template + arrays or scatter (seed, 2+ variants, scale 0.8-1.25, random yaw), not unique parts.
+10. Budgets: house <= 60-120 parts, prop <= 12 parts, scene as agreed (<= 2000 parts per build). Prefer boxes and wedges over unions; merge / subtract only for holes or curves, and check the result.
+11. Verify every phase: validate_spec before build_from_spec; after each build read back with model_summary or describe_model (bounds, counts, floating, unanchored, default gray, budget). Fix the 2 biggest defects per round, 2 rounds max, then report what remains.
+12. Do not touch what the developer built unless asked. Give your models clear names; describe_model before editing a previous build; change a generated model with regenerate_model (only the changed params).
+13. If a tool fails or a limit is hit (part limit, CSG failure), say so and fall back to fewer, simpler pieces. Never claim success without a readback.
+14. Finish with: what was built (paths, size in studs, part count), what to check by hand, what is left.]]
+
+local function modeling(): any
+	local Modeling = optionalModule("Modeling")
+	if not Modeling then
+		error("Motorul de modelare (Modeling) nu e disponibil în plugin.", 0)
+	end
+	return Modeling
+end
+
+-- "#rrggbb" / 12 / true / "Brick" / [[x,y,z], ...] as short text for the generator list
+local function guideValue(Spec, v: any): string
+	if type(v) == "table" then
+		return Spec.toJSON(v)
+	end
+	return tostring(v)
+end
+
+-- the generator schemas in one line each: key=default [min..max] | a|b|c
+local function generatorLines(Modeling): string
+	local Spec = Modeling.Spec
+	local lines = {}
+	for _, g in Modeling.GENERATORS do
+		local fields = {}
+		for _, f in g.params do
+			local text
+			if f.kind == "choice" then -- the options, the default marked with *
+				local options = {}
+				for _, o in f.options do
+					table.insert(options, o == f.default and (o .. "*") or o)
+				end
+				text = f.key .. "=" .. table.concat(options, "|")
+			else
+				text = f.key .. "=" .. guideValue(Spec, f.default)
+				if f.kind == "number" then
+					text ..= string.format(" [%s-%s]", tostring(f.min), tostring(f.max))
+				elseif f.kind == "int" then
+					text ..= f.max > 1e6 and " int" or string.format(" int[%s-%s]", tostring(f.min), tostring(f.max))
+				end
+			end
+			table.insert(fields, text)
+		end
+		table.insert(lines, string.format("%s%s: %s", g.key, g.terrainOnly and " (smooth terrain: place_terrain)" or "",
+			table.concat(fields, ", ")))
+	end
+	return table.concat(lines, "\n")
+end
+
+local function scaleLine(Modeling): string
+	local keys = {}
+	for k in Modeling.SCALE do
+		table.insert(keys, k)
+	end
+	table.sort(keys)
+	local parts = {}
+	for _, k in keys do
+		table.insert(parts, k .. " " .. guideValue(Modeling.Spec, Modeling.SCALE[k]))
+	end
+	return table.concat(parts, ", ")
+end
+
+local function modelingGuide(input): (boolean, string)
+	local Modeling = modeling()
+	local topic = input.topic or "all"
+	local sections = {}
+	if topic == "all" or topic == "instructions" then
+		table.insert(sections, Tools.MODELING_INSTRUCTIONS)
+		table.insert(sections, "## Scale (Modeling.SCALE, studs)\n" .. scaleLine(Modeling))
+	end
+	if topic == "all" or topic == "generators" then
+		table.insert(sections, "## Generators (generate_model; key=default [min-max], options a|b*|c with * = default; unknown params are errors)\n"
+			.. generatorLines(Modeling))
+	end
+	if topic == "all" or topic == "spec" then
+		table.insert(sections, "## Build spec (validate_spec / build_from_spec)\n" .. Modeling.SPEC_DOC)
+	end
+	if #sections == 0 then
+		return false, "topic: all, instructions, generators sau spec."
+	end
+	return true, table.concat(sections, "\n\n")
+end
+
+-- a path, "selection" or nothing -> an instance (or the list of selected instances)
+local function modelingTarget(path: any): any
+	if path == nil or path == "" or path == "selection" then
+		local sel = Selection:Get()
+		if #sel == 0 then
+			error("Nu e nimic selectat în Studio: dă calea modelului (path).", 0)
+		end
+		return #sel == 1 and sel[1] or sel
+	end
+	local inst = resolve(path)
+	if not inst then
+		error(notFound(path), 0)
+	end
+	return inst
+end
+
+local function targetName(target: any): string
+	if typeof(target) == "Instance" then
+		return fullName(target)
+	end
+	return string.format("selecția (%d obiecte)", #target)
+end
+
+-- [x, y, z] or {x, y, z} -> Vector3 (nil when missing)
+local function vec3(v: any, what: string): Vector3?
+	if v == nil then
+		return nil
+	end
+	if type(v) == "table" then
+		local x, y, z = v[1] or v.x or v.X, v[2] or v.y or v.Y, v[3] or v.z or v.Z
+		if type(x) == "number" and type(y) == "number" and type(z) == "number" then
+			return Vector3.new(x, y, z)
+		end
+	end
+	error(string.format("„%s” trebuie să fie [x, y, z] (numere).", what), 0)
+end
+
+local function vecList(v: any, what: string): { Vector3 }
+	if type(v) ~= "table" then
+		error(string.format("„%s” trebuie să fie o listă de puncte [[x, y, z], ...].", what), 0)
+	end
+	local out = {}
+	for i, p in v do
+		table.insert(out, vec3(p, what .. "[" .. tostring(i) .. "]") :: Vector3)
+	end
+	return out
+end
+
+-- where a new model goes: position + yaw, else on the ground in front of the camera, its front (-Z) toward the camera
+local function placementOf(Modeling, position: any, yaw: any): CFrame
+	local pos = vec3(position, "position")
+	local cf
+	if pos then
+		cf = CFrame.new(pos)
+	else
+		local ok, at = pcall(Modeling.placement)
+		cf = CFrame.new((ok and at or CFrame.new()).Position)
+		if yaw == nil and ok then
+			-- Modeling.placement() looks away from the camera: turn the front toward it
+			cf = at * CFrame.Angles(0, math.pi, 0)
+		end
+	end
+	if type(yaw) == "number" then
+		cf = CFrame.new(cf.Position) * CFrame.Angles(0, math.rad(yaw), 0)
+	end
+	return cf
+end
+
+local function parentOf(path: any): Instance?
+	if path == nil or path == "" then
+		return nil
+	end
+	local inst = resolve(path)
+	if not inst then
+		error(notFound(path), 0)
+	end
+	return inst
+end
+
+local function sizeText(v: Vector3): string
+	return string.format("%s × %s × %s studs", round(v.X, 2), round(v.Y, 2), round(v.Z, 2))
+end
+
+local function readback(Modeling, inst: Instance?): string
+	if not inst then
+		return ""
+	end
+	local ok, text = pcall(Modeling.summary, inst)
+	return ok and ("\nReadback:\n" .. text) or ""
+end
+
+-- the params object of a tool call (JSON object) or {}; snake_case keys become camelCase (min_distance -> minDistance)
+local function paramsOf(v: any): { [string]: any }
+	if v == nil then
+		return {}
+	end
+	if type(v) ~= "table" then
+		error("„params” trebuie să fie un obiect JSON.", 0)
+	end
+	local out = {}
+	for k, x in v do
+		local key = type(k) == "string" and string.gsub(k, "_(%l)", string.upper) or k
+		out[key] = x
+	end
+	return out
+end
+
+local function specOf(v: any): any
+	if type(v) == "string" or type(v) == "table" then
+		return v
+	end
+	error("„spec” trebuie să fie un obiect JSON (sau textul lui).", 0)
+end
+
+local function validateSpecTool(input): (boolean, string)
+	local Modeling = modeling()
+	local ok, errors, count = Modeling.validateSpec(specOf(input.spec))
+	if ok then
+		return true, string.format("Spec valid: %d piese (generatoare și copii incluse; limita %d).", count or 0,
+			Modeling.LIMITS.MAX_PARTS)
+	end
+	local shown = {}
+	for i, e in errors do
+		if i > 20 then
+			table.insert(shown, string.format("(încă %d erori)", #errors - 20))
+			break
+		end
+		table.insert(shown, "- " .. tostring(e))
+	end
+	return true, "Spec invalid; nimic nu s-ar construi:\n" .. table.concat(shown, "\n")
+end
+
+local function describeModelTool(input): (boolean, string)
+	local Modeling = modeling()
+	local target = modelingTarget(input.path)
+	local maxParts = math.clamp(math.floor(tonumber(input.max_parts) or 80), 1, 500)
+	local limit = AI.MAX_TOOL_RESULT - 600
+	local text
+	while true do
+		local spec = Modeling.describe(target, { maxParts = maxParts })
+		local summary = spec.summary
+		spec.summary = nil
+		text = string.format("%s\n%s\nspec (pos / rot relative to the pivot; build_from_spec rebuilds it):\n%s", targetName(target),
+			tostring(summary or ""), Modeling.Spec.toJSON(spec))
+		if #text <= limit or maxParts <= 5 then
+			break
+		end
+		maxParts = math.max(5, math.floor(maxParts * 0.6))
+	end
+	return true, text
+end
+
+local OPT_ROWS = { { "anchored", "to anchor" }, { "canCollide", "decor without collision" }, { "castShadow", "no shadow (small)" },
+	{ "renderFidelity", "render fidelity Performance" }, { "collisionFidelity", "collision Box" } }
+
+local function optimizeText(report: any, applied: boolean): string
+	local parts = {}
+	for _, r in OPT_ROWS do
+		table.insert(parts, string.format("%s %d", r[2], report[r[1]] or 0))
+	end
+	local text = string.format("%s: %d parts, %d changes (%s)", applied and "Optimized" or "Optimize (dry run)", report.parts or 0,
+		report.changes or 0, table.concat(parts, ", "))
+	if report.suggestions and #report.suggestions > 0 then
+		text ..= "\nsuggestions: " .. table.concat(report.suggestions, " | ")
+	end
+	return text
+end
+
+local function modelSummaryTool(input): (boolean, string)
+	local Modeling = modeling()
+	local target = modelingTarget(input.path)
+	local budget = tonumber(input.budget)
+	local text = Modeling.summary(target, { budget = budget and math.floor(budget) or nil })
+	if input.optimize_report then
+		local ok, report = pcall(Modeling.optimize, target, { dryRun = true })
+		text ..= "\n" .. (ok and optimizeText(report, false) or ("optimize: " .. cleanError(report)))
+	end
+	return true, text
+end
+
+local function buildFromSpecTool(input): (boolean, string)
+	local Modeling = modeling()
+	local spec = specOf(input.spec)
+	local ok, errors = Modeling.validateSpec(spec)
+	if not ok then
+		local shown = {}
+		for i = 1, math.min(12, #errors) do
+			table.insert(shown, "- " .. tostring(errors[i]))
+		end
+		return false, "Spec invalid, nu am construit nimic:\n" .. table.concat(shown, "\n")
+	end
+	local cf = placementOf(Modeling, input.position, input.yaw)
+	local model, report = Modeling.buildFromSpec(spec, parentOf(input.parent), cf)
+	return true, string.format("Am construit %s: %d piese, %d generatoare%s; %s.%s", fullName(model), report.parts,
+		report.generators, report.terrainOps > 0 and (", " .. report.terrainOps .. " operații de teren") or "",
+		sizeText(model:GetExtentsSize()), readback(Modeling, model))
+end
+
+local function generateModelTool(input): (boolean, string)
+	local Modeling = modeling()
+	local kind = tostring(input.kind or "")
+	local cf = placementOf(Modeling, input.position, input.yaw)
+	local model, report = Modeling.generate(kind, paramsOf(input.params), parentOf(input.parent), cf)
+	if not model then
+		return true, string.format("Am generat terenul (%s): %d operații de teren în jurul %s.", kind, report.terrainOps,
+			tostring(cf.Position))
+	end
+	if type(input.name) == "string" and input.name ~= "" then
+		model.Name = input.name
+	end
+	return true, string.format("Am generat %s (%s): %d piese, %s.\nparams: %s%s", fullName(model), kind, report.parts,
+		sizeText(report.size), Modeling.Spec.toJSON(report.params), readback(Modeling, model))
+end
+
+local function regenerateModelTool(input): (boolean, string)
+	local Modeling = modeling()
+	local model = resolve(input.path)
+	if not model then
+		return false, notFound(input.path)
+	end
+	local fresh, report = Modeling.regenerate(model, paramsOf(input.params))
+	return true, string.format("Am refăcut %s cu parametrii noi: %d piese, %s.\nparams: %s%s", fullName(fresh), report.parts,
+		sizeText(report.size), Modeling.Spec.toJSON(report.params), readback(Modeling, fresh))
+end
+
+local TERRAIN_KINDS = { "blob", "hill", "cave", "ramp", "clear" }
+
+local function placeTerrainTool(input): (boolean, string)
+	local Modeling = modeling()
+	local params = { kind = input.kind }
+	for _, key in { "radius", "lumps", "flatten", "tunnel", "seed", "material" } do
+		if input[key] ~= nil then
+			params[key] = input[key]
+		end
+	end
+	local cf = placementOf(Modeling, input.position, input.yaw)
+	local _, report = Modeling.generate("terrain", params, nil, cf)
+	return true, string.format("Teren „%s” la (%s, %s, %s): %d operații pe Terrain. params: %s", tostring(input.kind),
+		round(cf.Position.X, 1), round(cf.Position.Y, 1), round(cf.Position.Z, 1), report.terrainOps,
+		Modeling.Spec.toJSON(report.params))
+end
+
+-- the instances an operation works on: paths, or the Studio selection (default, or ["selection"])
+local function opTargets(list: any): { Instance }
+	if list == nil or (type(list) == "table" and (#list == 0 or (#list == 1 and list[1] == "selection"))) then
+		local sel = Selection:Get()
+		if #sel == 0 then
+			error("Nu e nimic selectat: dă căile obiectelor în „targets”.", 0)
+		end
+		return sel
+	end
+	if type(list) ~= "table" then
+		error("„targets” trebuie să fie o listă de căi (sau [\"selection\"]).", 0)
+	end
+	local out = {}
+	for _, path in list do
+		local inst = resolve(path)
+		if not inst then
+			error(notFound(path), 0)
+		end
+		table.insert(out, inst)
+	end
+	return out
+end
+
+local function positionOfInstance(inst: Instance): Vector3
+	if isA(inst, "Attachment") then
+		return (inst :: any).WorldPosition
+	elseif isA(inst, "BasePart") then
+		return (inst :: any).Position
+	elseif isA(inst, "Model") then
+		return (inst :: any):GetPivot().Position
+	end
+	error("„" .. fullName(inst) .. "” nu are o poziție (piesă, model sau atașament).", 0)
+end
+
+-- the points of a fill / curve: params.points, else the positions of the targets (in their order)
+local function pointsOf(p: any, targets: { Instance }, from: number?): { Vector3 }
+	if p.points ~= nil then
+		return vecList(p.points, "points")
+	end
+	local out = {}
+	for i = from or 1, #targets do
+		table.insert(out, positionOfInstance(targets[i]))
+	end
+	return out
+end
+
+local function pathsText(list: any, n: number?): string
+	local shown = {}
+	for i, inst in list do
+		if i > (n or 6) then
+			table.insert(shown, string.format("… (+%d)", #list - (n or 6)))
+			break
+		end
+		table.insert(shown, fullName(inst))
+	end
+	return table.concat(shown, ", ")
+end
+
+local function lookOf(p: any, out: { [string]: any })
+	out.color = p.color
+	out.material = p.material
+	return out
+end
+
+local MODELING_OPS = {
+	linear_array = function(M, t, p)
+		local copies = M.linearArray(t, { count = p.count, offset = vec3(p.offset, "offset") })
+		return string.format("%d copii: %s", #copies, pathsText(copies, 3))
+	end,
+	radial_array = function(M, t, p)
+		local copies = M.radialArray(t, { count = p.count, center = vec3(p.center, "center"), radius = p.radius,
+			axis = vec3(p.axis, "axis"), angle = p.angle })
+		return string.format("%d copii în cerc: %s", #copies, pathsText(copies, 3))
+	end,
+	arc_array = function(M, t, p)
+		local copies = M.arcArray(t, { count = p.count, angle = p.angle, axis = p.axis, radius = p.radius, length = p.length })
+		return string.format("%d copii în arc: %s", #copies, pathsText(copies, 3))
+	end,
+	path_array = function(M, t, p)
+		-- the template(s) = targets; the path = params.points, else the positions of the targets after the first one
+		local templates, points = t, nil
+		if p.points ~= nil then
+			points = vecList(p.points, "points")
+		else
+			templates, points = { t[1] }, pointsOf(p, t, 2)
+		end
+		local copies = M.pathArray(templates, points, p.spacing or 4, { align = p.align, tension = p.tension })
+		return string.format("%d copii pe traseu: %s", #copies, pathsText(copies, 3))
+	end,
+	mirror = function(M, t, p)
+		local plane = p.plane or "X"
+		if type(plane) == "table" then
+			plane = { point = vec3(plane.point, "plane.point"), normal = vec3(plane.normal, "plane.normal") }
+		end
+		local out, warnings = M.mirror(t, plane, { copy = p.copy })
+		local text = string.format("Oglindit (%s): %s", p.copy == false and "pe loc" or "copii", pathsText(out))
+		if warnings and #warnings > 0 then
+			text ..= "\nwarnings: " .. table.concat(warnings, " | ")
+		end
+		return text
+	end,
+	triangle_fill = function(M, t, p)
+		local pts = pointsOf(p, t)
+		if #pts ~= 3 then
+			error("triangle_fill are nevoie de exact 3 puncte (points sau 3 ținte).", 0)
+		end
+		local source = (#t > 0 and isA(t[1], "BasePart")) and t[1] or nil
+		local made = M.triangleFill(pts[1], pts[2], pts[3], lookOf(p, { thickness = p.thickness, align = p.align, source = source }))
+		return string.format("%d pene: %s", #made, pathsText(made))
+	end,
+	polygon_fill = function(M, t, p)
+		local source = (#t > 0 and isA(t[1], "BasePart")) and t[1] or nil
+		local made = M.polygonFill(pointsOf(p, t), lookOf(p, { thickness = p.thickness, align = p.align, source = source }))
+		return string.format("%d pene: %s", #made, pathsText(made))
+	end,
+	gap_fill = function(M, t, p)
+		local made
+		if p.edgeA ~= nil and p.edgeB ~= nil then
+			made = M.gapFill(vecList(p.edgeA, "edge_a"), vecList(p.edgeB, "edge_b"), lookOf(p, { thickness = p.thickness }))
+		else
+			if #t ~= 2 then
+				error("gap_fill are nevoie de 2 piese în targets (sau edge_a / edge_b).", 0)
+			end
+			made = M.gapFill(t[1], t[2], lookOf(p, { thickness = p.thickness }))
+		end
+		return string.format("%d piese de umplere: %s", #made, pathsText(made))
+	end,
+	align = function(M, t, p)
+		local target = p.target
+		if type(target) == "string" and target ~= "first" then
+			target = resolve(target) or error(notFound(target), 0)
+		end
+		M.align(t, p.axis or "Y", p.mode or "min", target)
+		return string.format("Aliniat %d obiecte pe %s (%s).", #t, tostring(p.axis or "Y"), tostring(p.mode or "min"))
+	end,
+	distribute = function(M, t, p)
+		M.distribute(t, p.axis or "X", p.mode)
+		return string.format("Distribuit %d obiecte pe %s.", #t, tostring(p.axis or "X"))
+	end,
+	drop_to_surface = function(M, t, p)
+		local moved, missed = M.dropToSurface(t, { alignToNormal = p.alignToNormal, offset = p.offset, maxDistance = p.maxDistance })
+		return string.format("Așezate pe suprafață: %d (fără nimic dedesubt: %d).", #moved, missed or 0)
+	end,
+	snap_to_grid = function(M, t, p)
+		M.snapToGrid(t, p.grid or 1, { rotation = p.rotation })
+		return string.format("Aliniat la grila de %s studs: %d obiecte.", tostring(p.grid or 1), #t)
+	end,
+	extend_to = function(M, t, p)
+		if #t ~= 2 then
+			error("extend_to are nevoie de 2 ținte: piesa care se întinde și ținta.", 0)
+		end
+		local _, dist = M.extendTo(t[1], p.face or "Top", t[2], { mode = p.mode, targetFace = p.targetFace })
+		return string.format("Am întins fața %s a %s cu %s studs.", tostring(p.face or "Top"), fullName(t[1]), round(dist, 3))
+	end,
+	scatter = function(M, t, p)
+		local where
+		if p.region ~= nil then
+			if type(p.region) ~= "table" then
+				error("„region” = { center: [x,y,z], size: [x,y,z] }.", 0)
+			end
+			where = { cframe = CFrame.new(vec3(p.region.center, "region.center") :: Vector3), size = vec3(p.region.size, "region.size") }
+		else
+			where = opTargets(p.surfaces)
+		end
+		local container, report = M.scatter(where, t, { count = p.count, density = p.density, minDistance = p.minDistance,
+			randomRotation = p.randomRotation, scaleRange = p.scaleRange, weights = p.weights, alignToNormal = p.alignToNormal,
+			maxSlope = p.maxSlope, sink = p.sink, seed = p.seed, name = p.name })
+		return string.format("Am împrăștiat %d obiecte în %s (fără suprafață: %d, seed %s).", report.placed, fullName(container),
+			report.missed, tostring(report.seed))
+	end,
+	along_spline = function(M, t, p)
+		local kind = p.kind or "rail"
+		local opts = lookOf(p, { spacing = p.spacing, width = p.width, thickness = p.thickness, height = p.height,
+			diameter = p.diameter, closed = p.closed, tension = p.tension, name = p.name })
+		if kind == "fence" and type(p.params) == "table" then
+			opts.params = paramsOf(p.params)
+		end
+		local made, report = M.alongSpline(kind, pointsOf(p, t), opts)
+		if typeof(made) == "Instance" then
+			return string.format("Am construit %s (%s): %d piese.%s", fullName(made), tostring(kind), report and report.parts or 0,
+				readback(M, made))
+		end
+		return string.format("%d copii pe curbă.", #made)
+	end,
+	merge = function(M, t, p)
+		local union, err = M.merge(t, { keep = p.keep, name = p.name, decor = p.decor })
+		if not union then
+			error(err, 0)
+		end
+		return "Unire: " .. fullName(union)
+	end,
+	subtract = function(M, t, p)
+		if #t < 2 then
+			error("subtract: prima țintă e baza, celelalte taie (cel puțin 2).", 0)
+		end
+		local result, err = M.subtract(t[1], table.move(t, 2, #t, 1, {}), { keepCutters = p.keepCutters })
+		if not result then
+			error(err, 0)
+		end
+		return "Scădere: " .. fullName(result)
+	end,
+	optimize = function(M, t, p)
+		local report = M.optimize(t, { dryRun = p.dryRun, anchorAll = p.anchorAll, canCollideDecor = p.canCollideDecor,
+			castShadowSmall = p.castShadowSmall, decorSize = p.decorSize, shadowSize = p.shadowSize, renderFidelity = p.renderFidelity,
+			collisionFidelityBox = p.collisionFidelityBox })
+		return optimizeText(report, not p.dryRun)
+	end,
+	group = function(M, t, p)
+		return "Grup: " .. fullName(M.group(t, p.name))
+	end,
+}
+local MODELING_OP_NAMES = {}
+for name in MODELING_OPS do
+	table.insert(MODELING_OP_NAMES, name)
+end
+table.sort(MODELING_OP_NAMES)
+
+local POINT_OPS = { triangle_fill = true, polygon_fill = true, along_spline = true }
+
+local function modelingOpTool(input): (boolean, string)
+	local Modeling = modeling()
+	local op = MODELING_OPS[input.op]
+	if not op then
+		return false, "Operație necunoscută „" .. tostring(input.op) .. "”. Există: " .. table.concat(MODELING_OP_NAMES, ", ") .. "."
+	end
+	local p = paramsOf(input.params)
+	local targets
+	if POINT_OPS[input.op] and p.points ~= nil and input.targets == nil then
+		targets = {} -- fills and curves through explicit points need no targets
+	else
+		targets = opTargets(input.targets)
+	end
+	return true, op(Modeling, targets, p)
+end
+
 local function quote(s: any): string
 	return "„" .. tostring(s or "?") .. "”"
 end
@@ -31613,7 +34178,7 @@ local LIST = {
 	{
 		name = "list_animations", label = "Listează animațiile", run = listAnimations,
 		description = "Lists the animations LostCube can generate (generate_animation keys with category, length, loop "
-			.. "and markers), the free Roblox-owned animation packs and emotes of the 📚 Lib tab, the animations already "
+			.. "and markers), the free Roblox-owned animation packs and emotes of the Bibliotecă (library) tab, the animations already "
 			.. "saved in ServerStorage.RBX_ANIMSAVES and the selected rig. Call it before generate_animation.",
 		params = {},
 		summary = function()
@@ -31847,6 +34412,168 @@ local LIST = {
 		},
 		summary = function(input)
 			return tostring(input.summary or "cod Luau")
+		end,
+	},
+	-- 3D modeling (LostCube Modeling): plan -> blockout (generators / spec) -> read back -> fix -> optimize
+	{
+		name = "get_modeling_guide", label = "Citește ghidul de modelare", run = modelingGuide,
+		description = "Returns LostCube's building guide: how to build well in Roblox Studio (phases, scale in studs, budgets, "
+			.. "style), every generator with its parameters, defaults and ranges, and the build spec format. Call it once "
+			.. "before you plan or build anything 3D (houses, stairs, bridges, towers, roads, fences, trees, rocks, "
+			.. "furniture, terrain, whole scenes), then follow it. topic narrows it down when you only need one part again.",
+		params = { { "topic", str("all (default), instructions, generators or spec.", { "all", "instructions", "generators", "spec" }) } },
+		summary = function(input)
+			return "ghidul de modelare" .. (input.topic and input.topic ~= "all" and (" · " .. tostring(input.topic)) or "")
+		end,
+	},
+	{
+		name = "validate_spec", label = "Verifică spec-ul", strict = false, run = validateSpecTool,
+		description = "Checks a build spec (the JSON format of get_modeling_guide) without building anything: every error "
+			.. "named by its place (parts[3].size ...) and the total part count. Call it before build_from_spec when the "
+			.. "spec is long or hand-written, and fix every error it reports.",
+		params = { { "spec", freeObject("The build spec: { name, parts, generators, arrays }."), true } },
+		summary = function(input)
+			local spec = type(input.spec) == "table" and input.spec or {}
+			return quote(spec.name or "spec")
+		end,
+	},
+	{
+		name = "describe_model", label = "Citește modelul", run = describeModelTool,
+		description = "Reads a model (or part, or the selection) back as a compact build spec: every part with size, "
+			.. "position and rotation relative to the pivot, generator-made sub-models as their recipe, plus the readback "
+			.. "summary (bounding box, counts, materials, floating / default-gray / unanchored parts). Call it before you "
+			.. "edit a build you did not just make, and to check a build in detail; model_summary is shorter.",
+		params = {
+			{ "path", str("Full path of the model or part; omit for the current selection.") },
+			{ "max_parts", int("At most this many parts listed (default 80, at most 500; the result is cut to fit).") },
+		},
+		summary = function(input)
+			return tostring(input.path or "selecția")
+		end,
+	},
+	{
+		name = "model_summary", label = "Rezumatul modelului", run = modelSummaryTool,
+		description = "A few lines about a model (or part, or the selection): bounding box, part / mesh / union counts, "
+			.. "materials, anchored and colliding parts, floating parts, default-gray parts, door sizes, a part budget "
+			.. "check, and optionally what an optimize pass would change. Call it after every build step to verify it "
+			.. "before you continue or report success.",
+		params = {
+			{ "path", str("Full path of the model or part; omit for the current selection.") },
+			{ "budget", int("Part budget to check against, e.g. 60 for a house.") },
+			{ "optimize_report", bool("true adds what modeling_op optimize would change (nothing is changed).") },
+		},
+		summary = function(input)
+			return tostring(input.path or "selecția")
+		end,
+	},
+	{
+		name = "generate_model", label = "Generează model", write = true, strict = false, run = generateModelTool,
+		description = "Builds one procedural model as a Model in Workspace (one undo step): building, stairs, fence, bridge, "
+			.. "tower, arch, colonnade, wall (with gate), road, tree, rock, crystals, furniture. Use it for the blockout "
+			.. "and for anything a generator covers instead of placing parts one by one; params and their ranges are in "
+			.. "get_modeling_guide (unknown params are errors, missing ones take defaults). The model stores its recipe, "
+			.. "so regenerate_model can change it later. The result has a readback; check it. Needs the developer's approval.",
+		params = {
+			{ "kind", str("Generator key.", { "building", "stairs", "fence", "bridge", "tower", "arch", "colonnade", "wall",
+				"road", "tree", "rock", "crystals", "furniture" }), true },
+			{ "params", freeObject("Generator parameters, e.g. {\"width\": 24, \"depth\": 20, \"floors\": 2, \"roof\": \"gable\", "
+				.. "\"wallColor\": \"#b8735a\"}.") },
+			{ "position", prop("array", "World position [x, y, z] of the centre of the footprint on the ground; default: in "
+				.. "front of the camera.", { items = Json.object({ type = "number" }) }) },
+			{ "yaw", num("Turn around Y in degrees (0 = the front faces -Z); default: facing the camera.") },
+			{ "name", str("Name of the new Model (default: the generator's label).") },
+			{ "parent", str("Full path of the parent (default Workspace).") },
+		},
+		summary = function(input)
+			return tostring(input.kind) .. (input.name and (" · " .. quote(input.name)) or "")
+				.. (keysOf(input.params) ~= "" and (" · " .. keysOf(input.params)) or "")
+		end,
+	},
+	{
+		name = "regenerate_model", label = "Refă modelul generat", write = true, strict = false, run = regenerateModelTool,
+		description = "Rebuilds a model made by generate_model (or a GEN entry of a spec build) with changed parameters, in "
+			.. "the same place, as one undo step: pass only the params that change. Use it to fix a generated model "
+			.. "(size, floors, colors, style) instead of editing its parts. Needs the developer's approval.",
+		params = {
+			{ "path", str("Full path of the generated Model."), true },
+			{ "params", freeObject("Only the parameters to change, e.g. {\"floors\": 3}."), true },
+		},
+		summary = function(input)
+			return tostring(input.path) .. " · " .. keysOf(input.params)
+		end,
+	},
+	{
+		name = "build_from_spec", label = "Construiește din spec", write = true, strict = false, run = buildFromSpecTool,
+		description = "Builds a whole model from a build spec (parts, generators, arrays; format in get_modeling_guide) as "
+			.. "one Model and one undo step, up to 2000 parts. Use it for a scene or a custom object made of several "
+			.. "generators and details; run validate_spec first for long specs. The result has a readback; check it and "
+			.. "fix the biggest problems before detailing. Needs the developer's approval.",
+		params = {
+			{ "spec", freeObject("The build spec: { name, parts, generators, arrays }."), true },
+			{ "position", prop("array", "World position [x, y, z] of the model origin; default: in front of the camera.",
+				{ items = Json.object({ type = "number" }) }) },
+			{ "yaw", num("Turn around Y in degrees; default: the front (-Z) faces the camera.") },
+			{ "parent", str("Full path of the parent (default Workspace).") },
+		},
+		summary = function(input)
+			local spec = type(input.spec) == "table" and input.spec or {}
+			local counts = {}
+			if type(spec.parts) == "table" then
+				table.insert(counts, #spec.parts .. " piese")
+			end
+			if type(spec.generators) == "table" then
+				table.insert(counts, #spec.generators .. " generatoare")
+			end
+			return quote(spec.name or "Model") .. (#counts > 0 and (" · " .. table.concat(counts, ", ")) or "")
+		end,
+	},
+	{
+		name = "modeling_op", label = "Operație de modelare", write = true, strict = false, run = modelingOpTool,
+		description = "One modeling operation on existing parts / models (one undo step). Use it to repeat, mirror, align, "
+			.. "fill, scatter and combine instead of placing many single parts. targets: full paths (or [\"selection\"], "
+			.. "the default). params by op: linear_array {count, offset:[x,y,z]} (count = total, original included); "
+			.. "radial_array {count, radius | center, axis, angle}; arc_array {count, angle, axis:\"X|Y|Z\", radius}; "
+			.. "path_array {points | targets after the first, spacing, align}; mirror {plane:\"X|Y|Z\", copy}; "
+			.. "triangle_fill / polygon_fill {points | target positions, thickness, align, color, material}; gap_fill "
+			.. "(2 parts) {thickness}; align {axis, mode:min|center|max, target: number | \"first\" | path}; distribute "
+			.. "{axis}; drop_to_surface {align_to_normal, offset}; snap_to_grid {grid, rotation}; extend_to (part, target) "
+			.. "{face, mode:center|outer|inner}; scatter (targets = templates) {surfaces:[paths] | region:{center, size}, "
+			.. "count | density, min_distance, scale_range:[min,max], random_rotation, align_to_normal, seed}; along_spline "
+			.. "{kind:rail|pipe|cable|road|wall|fence, points | target positions, spacing, width, diameter, closed}; merge "
+			.. "{keep}; subtract (first = base) {keep_cutters}; optimize {dry_run, anchor_all, can_collide_decor, "
+			.. "cast_shadow_small}; group {name}. Finish a build with optimize. Needs the developer's approval.",
+		params = {
+			{ "op", str("The operation.", MODELING_OP_NAMES), true },
+			{ "targets", prop("array", "Full paths of the parts / models (order matters for fills, curves, extend_to and "
+				.. "subtract); omit or [\"selection\"] for the Studio selection.", { items = Json.object({ type = "string" }) }) },
+			{ "params", freeObject("Parameters of the operation (see the description).") },
+		},
+		summary = function(input)
+			local targets = type(input.targets) == "table" and input.targets or {}
+			local what = (#targets == 0 or targets[1] == "selection") and "selecția" or string.format("%d ținte", #targets)
+			return tostring(input.op) .. " · " .. what .. (keysOf(input.params) ~= "" and (" · " .. keysOf(input.params)) or "")
+		end,
+	},
+	{
+		name = "place_terrain", label = "Modelează terenul", write = true, run = placeTerrainTool,
+		description = "Shapes smooth Terrain (one undo step): a blob or hill of the given radius, a cave tunnel, a ramp, or "
+			.. "clear (removes terrain in the radius). Use it for the ground of a scene before placing models on it; "
+			.. "then drop models onto it with modeling_op drop_to_surface. Needs the developer's approval.",
+		params = {
+			{ "kind", str("What to make.", TERRAIN_KINDS), true },
+			{ "radius", num("Radius in studs, 4 to 400 (default 16).") },
+			{ "lumps", int("Extra lumps, 0 to 20 (default 4).") },
+			{ "flatten", num("Height relative to the radius for hills, 0.1 to 2 (default 0.6).") },
+			{ "tunnel", num("Tunnel radius of a cave, 2 to 50 (default 5).") },
+			{ "seed", int("Variation seed (same seed = same shape).") },
+			{ "material", str("Terrain material, e.g. Grass, Rock, Sand, Snow, Mud, Ground (default Rock).") },
+			{ "position", prop("array", "World position [x, y, z] of the centre; default: in front of the camera.",
+				{ items = Json.object({ type = "number" }) }) },
+			{ "yaw", num("Turn around Y in degrees.") },
+		},
+		summary = function(input)
+			return tostring(input.kind) .. (input.radius and (" · rază " .. tostring(input.radius)) or "")
+				.. (input.material and (" · " .. tostring(input.material)) or "")
 		end,
 	},
 }

@@ -6,7 +6,8 @@ local ARGS = LC.run("tests/preview/args.luau")
 local P = LC.run("tests/preview/gui.luau", nil, LC, ARGS)
 local common = LC.run("tests/preview/common.luau", nil, LC, P, ARGS)
 
-local SCENES = { VFX = "vfx", Anim = "anim", Library = "library", Game = "game", Claude = "claude", Selftest = "selftest" }
+local SCENES = { VFX = "vfx", Anim = "anim", Library = "library", Game = "game", Build = "build", Claude = "claude",
+	Selftest = "selftest" }
 local file = SCENES[ARGS.tab]
 assert(file, "unknown tab " .. tostring(ARGS.tab))
 local scene = LC.run("tests/preview/scenes/" .. file .. ".luau", nil, LC, P, ARGS, common)

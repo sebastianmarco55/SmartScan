@@ -152,7 +152,7 @@ local function lastCall() return calls[#calls] end
 
 -- definitions
 local defs = Tools.definitions()
-check("21 tools", #defs == 21 and #Tools.LIST == 21)
+check("30 tools", #defs == 30 and #Tools.LIST == 30)
 check("definitions cached + deterministic", Tools.definitions() == defs and AI.Json.encode(defs) == AI.Json.encode(Tools.definitions()))
 local seen = {}
 for _, t in Tools.LIST do
@@ -241,7 +241,7 @@ check("selection", ok and has(text, "Selectate: 2") and has(text, "Workspace.Dum
 ok, text = run("list_effects", {})
 check("list effects", ok and has(text, "Boom (0.6 s, GROUND): Scântei [PARTICLES, SPARKLES]"), text)
 ok, text = run("describe_effect", { name = "Boom" })
-check("describe effect", ok and has(text, "Efect Boom: durată 0.6 s, atașat la GROUND") and has(text, "≈ 1.25 s"), text)
+check("describe effect", ok and has(text, "Efect Boom: durată 0.6 s, atașat la GROUND") and has(text, "~1.25 s"), text)
 check("describe json", has(text, '"position":{"x":0,"y":3,"z":0}') and has(text, '"color":["#FFFFFF","#9B5CFF"]')
 	and has(text, '"size":{"1":1,"2":9,"3":13,"mid":0.45}') and has(text, '"Orientation":"VelocityPerpendicular"'), text)
 ok, text = run("describe_effect", { name = "Nope" })
@@ -250,7 +250,7 @@ ok, text = run("list_templates_and_presets", {})
 check("templates", ok and has(text, "PUNCH — Lovitură de pumn (Luptă, 0.5 s, TORSO, culoare principală #FFB050)")
 	and has(text, "SPARKLES (PARTICLES)") and has(text, "Texturi (prop texture): SPARKLES, GLOW") and has(text, "RIGHT_HAND"), text)
 ok, text = run("preview_effect", { name = "Boom", scale = 100 })
-check("preview", ok and has(text, "Previzualizare pornită: Boom (≈ 1.25 s), pe Workspace.Dummy") and lastCall()[3].scale == 20, text)
+check("preview", ok and has(text, "Previzualizare pornită: Boom (~1.25 s), pe Workspace.Dummy") and lastCall()[3].scale == 20, text)
 
 -- animations (read)
 ok, text = run("list_animations", {})
@@ -328,7 +328,7 @@ local spawned = #WS:GetChildren()
 ok, text = run("run_luau", { code = 'print("salut", 1)\nwarn("atenție")\nlocal p = Instance.new("Part")\np.Name = "FromClaude"\np.Parent = workspace\nreturn p',
 	summary = "Pune o piesă." })
 check("code ok", ok and has(text, "Codul a rulat fără erori") and has(text, "Rezultat: Workspace.FromClaude (Part)")
-	and has(text, "Output:\nsalut 1\n⚠ atenție"), text)
+	and has(text, "Output:\nsalut 1\nAvertisment: atenție"), text)
 check("code changed the place", #WS:GetChildren() == spawned + 1)
 check("code recorded", CHS.log[1] == "begin LostCube (Claude): cod Luau" and CHS.log[2] == "finish Commit", table.concat(CHS.log, "; "))
 CHS.log = {}
@@ -438,7 +438,7 @@ check("recolor unknown effect", ok == false and has(text, "list_effects"), text)
 -- suggest_effect_colors (read)
 report = nil
 ok, text = run("suggest_effect_colors", {})
-check("no analysis", ok and has(text, "Nu există încă o analiză") and has(text, "tab-ul 🧠 Joc"), text)
+check("no analysis", ok and has(text, "Nu există încă o analiză") and has(text, "tab-ul Joc"), text)
 report = { name = "Arena" }
 ok, text = run("suggest_effect_colors", {})
 check("an analysis without a palette", ok and has(text, "nu are culorile hărții") and has(text, "stil vizual"), text)

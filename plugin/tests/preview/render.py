@@ -30,9 +30,9 @@ import luau_tools  # noqa: E402  (plugin/tests/checks/luau_tools.py: finds / dow
 import assets  # noqa: E402
 import htmlgen  # noqa: E402
 
-TABS = ["VFX", "Anim", "Library", "Game", "Claude"]
+TABS = ["VFX", "Anim", "Library", "Game", "Build", "Claude"]
 ALIASES = {"selftest": "Selftest", "vfx": "VFX", "anim": "Anim", "animatii": "Anim", "library": "Library", "lib": "Library", "game": "Game", "joc": "Game",
-           "claude": "Claude"}
+           "build": "Build", "modelare": "Build", "claude": "Claude"}
 OUT_DIR = os.path.join(HERE, "out")
 THEME_BG = {"dark": "rgb(46,46,46)", "light": "rgb(255,255,255)"}
 MAX_PASSES = 4
@@ -231,7 +231,7 @@ def render_one(runner, browser, opts, png, images):
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description="Render the LostCube GUI to PNG without Roblox Studio",
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
-    ap.add_argument("--tab", help="VFX | Anim | Library | Game | Claude (default VFX)")
+    ap.add_argument("--tab", help="VFX | Anim | Library | Game | Build | Claude (default VFX)")
     ap.add_argument("--all", action="store_true", help="every tab, both themes, into plugin/tests/preview/out/")
     ap.add_argument("--theme", default=None, choices=["dark", "light"], help="Studio theme (default dark; --all: both)")
     ap.add_argument("--width", type=int, default=360)
@@ -283,7 +283,7 @@ def main(argv=None):
     else:
         tab = ALIASES.get((args.tab or "VFX").lower())
         if not tab:
-            raise SystemExit("unknown tab %r (VFX, Anim, Library, Game, Claude)" % args.tab)
+            raise SystemExit("unknown tab %r (VFX, Anim, Library, Game, Build, Claude)" % args.tab)
         theme = args.theme or "dark"
         out = args.out or os.path.join(OUT_DIR, "%s-%s.png" % (tab, theme))
         os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)

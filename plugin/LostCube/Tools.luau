@@ -1,4 +1,4 @@
---[[ LostCube Tools - what Claude can do in Studio in agent mode (◆ Claude tab, "Mod agent").
+--[[ LostCube Tools - what Claude can do in Studio in agent mode (Claude tab, "Mod agent").
 Each tool = an API definition (name, description, input_schema) + an executor that runs inside the plugin:
 
 	local Tools = require(script.Parent.Tools)
@@ -48,11 +48,15 @@ local function round(x: number, decimals: number?): number
 end
 
 local function service(name: string): Instance?
-	local ok, s = pcall(game.FindService, game, name)
+	local ok, s = pcall(function()
+		return game:FindService(name)
+	end)
 	if ok and s then
 		return s
 	end
-	local okGet, got = pcall(game.GetService, game, name)
+	local okGet, got = pcall(function()
+		return game:GetService(name)
+	end)
 	return okGet and got or nil
 end
 
@@ -68,8 +72,25 @@ local function editorOf(ctx): any
 end
 
 local function fullName(inst: Instance): string
-	local ok, name = pcall(inst.GetFullName, inst)
-	return ok and name or tostring(inst)
+	local ok, name = pcall(function()
+		return inst:GetFullName()
+	end)
+	if ok and type(name) == "string" then
+		return name
+	end
+	-- no GetFullName (a stand-in instance): Name.Name... up to the root, which GetFullName leaves out too
+	local names, node = {}, inst
+	while node ~= nil and #names < 64 do
+		local okNode, nodeName, parent = pcall(function()
+			return node.Name, node.Parent
+		end)
+		if not okNode or parent == nil then
+			break
+		end
+		table.insert(names, 1, tostring(nodeName))
+		node = parent
+	end
+	return #names > 0 and table.concat(names, ".") or tostring(inst)
 end
 
 local function className(inst: Instance): string
@@ -367,7 +388,7 @@ local function gameOverview(): (boolean, string)
 	end
 	local okLoad, report = pcall(Analyzer.load)
 	if not okLoad or not report then
-		return true, "Nu există încă o analiză salvată a jocului. Dezvoltatorul o poate porni din tab-ul 🧠 Joc; "
+		return true, "Nu există încă o analiză salvată a jocului. Dezvoltatorul o poate porni din tab-ul Joc; "
 			.. "până atunci folosește find_instances, get_instance și read_script."
 	end
 	local okText, text = pcall(Analyzer.context, report, 20000)
@@ -375,7 +396,7 @@ local function gameOverview(): (boolean, string)
 		return false, "Analiza salvată nu poate fi citită: " .. cleanError(text)
 	end
 	local okStale, stale = pcall(Analyzer.isStale, report)
-	local note = (okStale and stale) and "\n\n(Analiza e veche: jocul s-a schimbat de atunci; o poți reface din tab-ul 🧠 Joc.)" or ""
+	local note = (okStale and stale) and "\n\n(Analiza e veche: jocul s-a schimbat de atunci; o poți reface din tab-ul Joc.)" or ""
 	return true, text .. note
 end
 
@@ -646,7 +667,7 @@ local function describeEffect(input, ctx): (boolean, string)
 			and (", din șablonul " .. tostring(fx:GetAttribute("LC_Template"))) or "") }
 	local okLength, length = pcall(Editor.length, fx)
 	if okLength then
-		table.insert(lines, string.format("O redare durează ≈ %s s.", round(length, 2)))
+		table.insert(lines, string.format("O redare durează ~%s s.", round(length, 2)))
 	end
 	local okElements, elements = pcall(Editor.elements, fx)
 	if not okElements or #elements == 0 then
@@ -702,7 +723,7 @@ local function listAnimations(): (boolean, string)
 	end
 	local AnimLibrary = optionalModule("AnimLibrary")
 	if AnimLibrary then
-		table.insert(lines, "## Animații Roblox gratuite (tab-ul 📚 Lib; le adaugă dezvoltatorul de acolo)")
+		table.insert(lines, "## Animații Roblox gratuite (tab-ul Bibliotecă; le adaugă dezvoltatorul de acolo)")
 		local okGroups, groups = pcall(AnimLibrary.groups)
 		for _, g in (okGroups and groups or {}) do
 			local states = {}
@@ -755,7 +776,7 @@ local function previewEffect(input, ctx): (boolean, string)
 	local okLength, length = pcall(Editor.length, fx)
 	local rig = selectedRig()
 	return true, string.format("Previzualizare pornită: %s%s, %s.", fx.Name,
-		okLength and string.format(" (≈ %s s)", round(length, 2)) or "",
+		okLength and string.format(" (~%s s)", round(length, 2)) or "",
 		rig and ("pe " .. fullName(rig)) or "pe selecție sau pe sol, în fața camerei")
 end
 
@@ -787,11 +808,11 @@ local function suggestEffectColors(input, ctx): (boolean, string)
 	local okLoad, report = pcall(Analyzer.load)
 	if not okLoad or not report then
 		return true, "Nu există încă o analiză salvată a jocului, deci nu cunosc paleta hărții. Dezvoltatorul o poate porni din "
-			.. "tab-ul 🧠 Joc; până atunci alege culorile după tema jocului."
+			.. "tab-ul Joc; până atunci alege culorile după tema jocului."
 	end
 	local okPalette, palette, mood = pcall(Editor.paletteOf, report)
 	if not okPalette then
-		return true, "Analiza salvată nu are culorile hărții (" .. cleanError(palette) .. "). Poate fi refăcută din tab-ul 🧠 Joc."
+		return true, "Analiza salvată nu are culorile hărții (" .. cleanError(palette) .. "). Poate fi refăcută din tab-ul Joc."
 	end
 	local count = math.clamp(math.floor(tonumber(input.count) or 4), 3, 5)
 	local suggestions = Editor.suggestColors(palette, { count = count, night = type(mood) == "table" and mood.night })
@@ -962,7 +983,7 @@ local function generateAnimation(input, ctx): (boolean, string)
 		end
 	end
 	return true, string.format("Am generat %s pentru %s%s și am salvat-o în %s. Markere: %s. Dezvoltatorul o deschide în "
-		.. "Animation Editor (selectează rigul → Animation Editor → ⋯ → Load) ca s-o ajusteze și s-o publice; apoi "
+		.. "Animation Editor (selectează rigul → Animation Editor → … → Load) ca s-o ajusteze și s-o publice; apoi "
 		.. "folosește ID-ul publicat într-un Animation.", kfs.Name, rigType, rig and (" (" .. fullName(rig) .. ")") or "",
 		fullName(kfs), #markers > 0 and table.concat(markers, ", ") or "niciunul")
 end
@@ -1096,7 +1117,7 @@ local function runLuau(input): (boolean, string)
 	local done, okRun, value = false, false, nil
 	local started = now()
 	task.spawn(function()
-		okRun, value = pcall(fn, capture("", print), capture("⚠ ", warn))
+		okRun, value = pcall(fn, capture("", print), capture("Avertisment: ", warn))
 		done = true
 	end)
 	while not done and now() - started < Tools.RUN_TIMEOUT do
@@ -1125,6 +1146,585 @@ end
 -- ---------------------------------------------------------------------------------------------
 -- the tool list
 -- ---------------------------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------------------------
+-- 3D modeling (LostCube Modeling engine): guide, readback, generators, spec builds, operations
+-- ---------------------------------------------------------------------------------------------
+-- docs/modeling-research.md 5.3 (the instructions block for Claude), with the real tool names
+Tools.MODELING_INSTRUCTIONS = [[
+## Building in Roblox Studio (LostCube Modeling)
+Units: studs and degrees, Y up, front = -Z (yaw 0 faces -Z). 1 stud = 28 cm. Player ~5 tall, jump 7.2, walk 16.
+1. Plan first, in 2-5 lines: purpose, style (low_poly | realistic | cartoon), footprint, height, palette, part budget. Ask at most one question, only if size or style is truly unknown.
+2. Never emit hundreds of single parts. Use generators (generate_model; place_terrain for the ground) and operations (modeling_op: arrays, mirror, scatter, align, fills, curves). Raw parts (build_from_spec "parts") only for one-off details.
+3. Describe, do not compute: give sizes, counts and endpoints and let generators, arrays and mirror place the pieces; do not work out rotations, half-heights or offsets by hand.
+4. Work in phases, each approved call is one undo step: blockout (ground, volumes, routes) -> check -> structure and openings -> detail and props -> optimize. Do not detail before the blockout passes the check.
+5. Grid 4 (2 and 1 for details); round values (multiples of 0.25). Mirror or array instead of repeating parts.
+6. Scale (studs): door >= 5x8 (min 4x7), hallway >= 10 wide, ceiling 10-14, stairs rise 1 / run 1.5, path >= 6, road lane 12, tabletop 3.5, seat 1.5, car 12-16 long. A barrier meant to stop players must be >= 8 high.
+7. Style: low_poly = SmoothPlastic, 5-8 flat colors; realistic = real materials (Brick, Concrete, WoodPlanks, Slate...); cartoon = saturated palette. Always use a named palette; never leave default gray (#a3a2a5).
+8. Keep defaults: anchored; decor canCollide false; small details castShadow false. Keep gameplay parts (spawns, triggers, doors) separate from decor.
+9. Repetition: one template + arrays or scatter (seed, 2+ variants, scale 0.8-1.25, random yaw), not unique parts.
+10. Budgets: house <= 60-120 parts, prop <= 12 parts, scene as agreed (<= 2000 parts per build). Prefer boxes and wedges over unions; merge / subtract only for holes or curves, and check the result.
+11. Verify every phase: validate_spec before build_from_spec; after each build read back with model_summary or describe_model (bounds, counts, floating, unanchored, default gray, budget). Fix the 2 biggest defects per round, 2 rounds max, then report what remains.
+12. Do not touch what the developer built unless asked. Give your models clear names; describe_model before editing a previous build; change a generated model with regenerate_model (only the changed params).
+13. If a tool fails or a limit is hit (part limit, CSG failure), say so and fall back to fewer, simpler pieces. Never claim success without a readback.
+14. Finish with: what was built (paths, size in studs, part count), what to check by hand, what is left.]]
+
+local function modeling(): any
+	local Modeling = optionalModule("Modeling")
+	if not Modeling then
+		error("Motorul de modelare (Modeling) nu e disponibil în plugin.", 0)
+	end
+	return Modeling
+end
+
+-- "#rrggbb" / 12 / true / "Brick" / [[x,y,z], ...] as short text for the generator list
+local function guideValue(Spec, v: any): string
+	if type(v) == "table" then
+		return Spec.toJSON(v)
+	end
+	return tostring(v)
+end
+
+-- the generator schemas in one line each: key=default [min..max] | a|b|c
+local function generatorLines(Modeling): string
+	local Spec = Modeling.Spec
+	local lines = {}
+	for _, g in Modeling.GENERATORS do
+		local fields = {}
+		for _, f in g.params do
+			local text
+			if f.kind == "choice" then -- the options, the default marked with *
+				local options = {}
+				for _, o in f.options do
+					table.insert(options, o == f.default and (o .. "*") or o)
+				end
+				text = f.key .. "=" .. table.concat(options, "|")
+			else
+				text = f.key .. "=" .. guideValue(Spec, f.default)
+				if f.kind == "number" then
+					text ..= string.format(" [%s-%s]", tostring(f.min), tostring(f.max))
+				elseif f.kind == "int" then
+					text ..= f.max > 1e6 and " int" or string.format(" int[%s-%s]", tostring(f.min), tostring(f.max))
+				end
+			end
+			table.insert(fields, text)
+		end
+		table.insert(lines, string.format("%s%s: %s", g.key, g.terrainOnly and " (smooth terrain: place_terrain)" or "",
+			table.concat(fields, ", ")))
+	end
+	return table.concat(lines, "\n")
+end
+
+local function scaleLine(Modeling): string
+	local keys = {}
+	for k in Modeling.SCALE do
+		table.insert(keys, k)
+	end
+	table.sort(keys)
+	local parts = {}
+	for _, k in keys do
+		table.insert(parts, k .. " " .. guideValue(Modeling.Spec, Modeling.SCALE[k]))
+	end
+	return table.concat(parts, ", ")
+end
+
+local function modelingGuide(input): (boolean, string)
+	local Modeling = modeling()
+	local topic = input.topic or "all"
+	local sections = {}
+	if topic == "all" or topic == "instructions" then
+		table.insert(sections, Tools.MODELING_INSTRUCTIONS)
+		table.insert(sections, "## Scale (Modeling.SCALE, studs)\n" .. scaleLine(Modeling))
+	end
+	if topic == "all" or topic == "generators" then
+		table.insert(sections, "## Generators (generate_model; key=default [min-max], options a|b*|c with * = default; unknown params are errors)\n"
+			.. generatorLines(Modeling))
+	end
+	if topic == "all" or topic == "spec" then
+		table.insert(sections, "## Build spec (validate_spec / build_from_spec)\n" .. Modeling.SPEC_DOC)
+	end
+	if #sections == 0 then
+		return false, "topic: all, instructions, generators sau spec."
+	end
+	return true, table.concat(sections, "\n\n")
+end
+
+-- a path, "selection" or nothing -> an instance (or the list of selected instances)
+local function modelingTarget(path: any): any
+	if path == nil or path == "" or path == "selection" then
+		local sel = Selection:Get()
+		if #sel == 0 then
+			error("Nu e nimic selectat în Studio: dă calea modelului (path).", 0)
+		end
+		return #sel == 1 and sel[1] or sel
+	end
+	local inst = resolve(path)
+	if not inst then
+		error(notFound(path), 0)
+	end
+	return inst
+end
+
+local function targetName(target: any): string
+	if typeof(target) == "Instance" then
+		return fullName(target)
+	end
+	return string.format("selecția (%d obiecte)", #target)
+end
+
+-- [x, y, z] or {x, y, z} -> Vector3 (nil when missing)
+local function vec3(v: any, what: string): Vector3?
+	if v == nil then
+		return nil
+	end
+	if type(v) == "table" then
+		local x, y, z = v[1] or v.x or v.X, v[2] or v.y or v.Y, v[3] or v.z or v.Z
+		if type(x) == "number" and type(y) == "number" and type(z) == "number" then
+			return Vector3.new(x, y, z)
+		end
+	end
+	error(string.format("„%s” trebuie să fie [x, y, z] (numere).", what), 0)
+end
+
+local function vecList(v: any, what: string): { Vector3 }
+	if type(v) ~= "table" then
+		error(string.format("„%s” trebuie să fie o listă de puncte [[x, y, z], ...].", what), 0)
+	end
+	local out = {}
+	for i, p in v do
+		table.insert(out, vec3(p, what .. "[" .. tostring(i) .. "]") :: Vector3)
+	end
+	return out
+end
+
+-- where a new model goes: position + yaw, else on the ground in front of the camera, its front (-Z) toward the camera
+local function placementOf(Modeling, position: any, yaw: any): CFrame
+	local pos = vec3(position, "position")
+	local cf
+	if pos then
+		cf = CFrame.new(pos)
+	else
+		local ok, at = pcall(Modeling.placement)
+		cf = CFrame.new((ok and at or CFrame.new()).Position)
+		if yaw == nil and ok then
+			-- Modeling.placement() looks away from the camera: turn the front toward it
+			cf = at * CFrame.Angles(0, math.pi, 0)
+		end
+	end
+	if type(yaw) == "number" then
+		cf = CFrame.new(cf.Position) * CFrame.Angles(0, math.rad(yaw), 0)
+	end
+	return cf
+end
+
+local function parentOf(path: any): Instance?
+	if path == nil or path == "" then
+		return nil
+	end
+	local inst = resolve(path)
+	if not inst then
+		error(notFound(path), 0)
+	end
+	return inst
+end
+
+local function sizeText(v: Vector3): string
+	return string.format("%s × %s × %s studs", round(v.X, 2), round(v.Y, 2), round(v.Z, 2))
+end
+
+local function readback(Modeling, inst: Instance?): string
+	if not inst then
+		return ""
+	end
+	local ok, text = pcall(Modeling.summary, inst)
+	return ok and ("\nReadback:\n" .. text) or ""
+end
+
+-- the params object of a tool call (JSON object) or {}; snake_case keys become camelCase (min_distance -> minDistance)
+local function paramsOf(v: any): { [string]: any }
+	if v == nil then
+		return {}
+	end
+	if type(v) ~= "table" then
+		error("„params” trebuie să fie un obiect JSON.", 0)
+	end
+	local out = {}
+	for k, x in v do
+		local key = type(k) == "string" and string.gsub(k, "_(%l)", string.upper) or k
+		out[key] = x
+	end
+	return out
+end
+
+local function specOf(v: any): any
+	if type(v) == "string" or type(v) == "table" then
+		return v
+	end
+	error("„spec” trebuie să fie un obiect JSON (sau textul lui).", 0)
+end
+
+local function validateSpecTool(input): (boolean, string)
+	local Modeling = modeling()
+	local ok, errors, count = Modeling.validateSpec(specOf(input.spec))
+	if ok then
+		return true, string.format("Spec valid: %d piese (generatoare și copii incluse; limita %d).", count or 0,
+			Modeling.LIMITS.MAX_PARTS)
+	end
+	local shown = {}
+	for i, e in errors do
+		if i > 20 then
+			table.insert(shown, string.format("(încă %d erori)", #errors - 20))
+			break
+		end
+		table.insert(shown, "- " .. tostring(e))
+	end
+	return true, "Spec invalid; nimic nu s-ar construi:\n" .. table.concat(shown, "\n")
+end
+
+local function describeModelTool(input): (boolean, string)
+	local Modeling = modeling()
+	local target = modelingTarget(input.path)
+	local maxParts = math.clamp(math.floor(tonumber(input.max_parts) or 80), 1, 500)
+	local limit = AI.MAX_TOOL_RESULT - 600
+	local text
+	while true do
+		local spec = Modeling.describe(target, { maxParts = maxParts })
+		local summary = spec.summary
+		spec.summary = nil
+		text = string.format("%s\n%s\nspec (pos / rot relative to the pivot; build_from_spec rebuilds it):\n%s", targetName(target),
+			tostring(summary or ""), Modeling.Spec.toJSON(spec))
+		if #text <= limit or maxParts <= 5 then
+			break
+		end
+		maxParts = math.max(5, math.floor(maxParts * 0.6))
+	end
+	return true, text
+end
+
+local OPT_ROWS = { { "anchored", "to anchor" }, { "canCollide", "decor without collision" }, { "castShadow", "no shadow (small)" },
+	{ "renderFidelity", "render fidelity Performance" }, { "collisionFidelity", "collision Box" } }
+
+local function optimizeText(report: any, applied: boolean): string
+	local parts = {}
+	for _, r in OPT_ROWS do
+		table.insert(parts, string.format("%s %d", r[2], report[r[1]] or 0))
+	end
+	local text = string.format("%s: %d parts, %d changes (%s)", applied and "Optimized" or "Optimize (dry run)", report.parts or 0,
+		report.changes or 0, table.concat(parts, ", "))
+	if report.suggestions and #report.suggestions > 0 then
+		text ..= "\nsuggestions: " .. table.concat(report.suggestions, " | ")
+	end
+	return text
+end
+
+local function modelSummaryTool(input): (boolean, string)
+	local Modeling = modeling()
+	local target = modelingTarget(input.path)
+	local budget = tonumber(input.budget)
+	local text = Modeling.summary(target, { budget = budget and math.floor(budget) or nil })
+	if input.optimize_report then
+		local ok, report = pcall(Modeling.optimize, target, { dryRun = true })
+		text ..= "\n" .. (ok and optimizeText(report, false) or ("optimize: " .. cleanError(report)))
+	end
+	return true, text
+end
+
+local function buildFromSpecTool(input): (boolean, string)
+	local Modeling = modeling()
+	local spec = specOf(input.spec)
+	local ok, errors = Modeling.validateSpec(spec)
+	if not ok then
+		local shown = {}
+		for i = 1, math.min(12, #errors) do
+			table.insert(shown, "- " .. tostring(errors[i]))
+		end
+		return false, "Spec invalid, nu am construit nimic:\n" .. table.concat(shown, "\n")
+	end
+	local cf = placementOf(Modeling, input.position, input.yaw)
+	local model, report = Modeling.buildFromSpec(spec, parentOf(input.parent), cf)
+	return true, string.format("Am construit %s: %d piese, %d generatoare%s; %s.%s", fullName(model), report.parts,
+		report.generators, report.terrainOps > 0 and (", " .. report.terrainOps .. " operații de teren") or "",
+		sizeText(model:GetExtentsSize()), readback(Modeling, model))
+end
+
+local function generateModelTool(input): (boolean, string)
+	local Modeling = modeling()
+	local kind = tostring(input.kind or "")
+	local cf = placementOf(Modeling, input.position, input.yaw)
+	local model, report = Modeling.generate(kind, paramsOf(input.params), parentOf(input.parent), cf)
+	if not model then
+		return true, string.format("Am generat terenul (%s): %d operații de teren în jurul %s.", kind, report.terrainOps,
+			tostring(cf.Position))
+	end
+	if type(input.name) == "string" and input.name ~= "" then
+		model.Name = input.name
+	end
+	return true, string.format("Am generat %s (%s): %d piese, %s.\nparams: %s%s", fullName(model), kind, report.parts,
+		sizeText(report.size), Modeling.Spec.toJSON(report.params), readback(Modeling, model))
+end
+
+local function regenerateModelTool(input): (boolean, string)
+	local Modeling = modeling()
+	local model = resolve(input.path)
+	if not model then
+		return false, notFound(input.path)
+	end
+	local fresh, report = Modeling.regenerate(model, paramsOf(input.params))
+	return true, string.format("Am refăcut %s cu parametrii noi: %d piese, %s.\nparams: %s%s", fullName(fresh), report.parts,
+		sizeText(report.size), Modeling.Spec.toJSON(report.params), readback(Modeling, fresh))
+end
+
+local TERRAIN_KINDS = { "blob", "hill", "cave", "ramp", "clear" }
+
+local function placeTerrainTool(input): (boolean, string)
+	local Modeling = modeling()
+	local params = { kind = input.kind }
+	for _, key in { "radius", "lumps", "flatten", "tunnel", "seed", "material" } do
+		if input[key] ~= nil then
+			params[key] = input[key]
+		end
+	end
+	local cf = placementOf(Modeling, input.position, input.yaw)
+	local _, report = Modeling.generate("terrain", params, nil, cf)
+	return true, string.format("Teren „%s” la (%s, %s, %s): %d operații pe Terrain. params: %s", tostring(input.kind),
+		round(cf.Position.X, 1), round(cf.Position.Y, 1), round(cf.Position.Z, 1), report.terrainOps,
+		Modeling.Spec.toJSON(report.params))
+end
+
+-- the instances an operation works on: paths, or the Studio selection (default, or ["selection"])
+local function opTargets(list: any): { Instance }
+	if list == nil or (type(list) == "table" and (#list == 0 or (#list == 1 and list[1] == "selection"))) then
+		local sel = Selection:Get()
+		if #sel == 0 then
+			error("Nu e nimic selectat: dă căile obiectelor în „targets”.", 0)
+		end
+		return sel
+	end
+	if type(list) ~= "table" then
+		error("„targets” trebuie să fie o listă de căi (sau [\"selection\"]).", 0)
+	end
+	local out = {}
+	for _, path in list do
+		local inst = resolve(path)
+		if not inst then
+			error(notFound(path), 0)
+		end
+		table.insert(out, inst)
+	end
+	return out
+end
+
+local function positionOfInstance(inst: Instance): Vector3
+	if isA(inst, "Attachment") then
+		return (inst :: any).WorldPosition
+	elseif isA(inst, "BasePart") then
+		return (inst :: any).Position
+	elseif isA(inst, "Model") then
+		return (inst :: any):GetPivot().Position
+	end
+	error("„" .. fullName(inst) .. "” nu are o poziție (piesă, model sau atașament).", 0)
+end
+
+-- the points of a fill / curve: params.points, else the positions of the targets (in their order)
+local function pointsOf(p: any, targets: { Instance }, from: number?): { Vector3 }
+	if p.points ~= nil then
+		return vecList(p.points, "points")
+	end
+	local out = {}
+	for i = from or 1, #targets do
+		table.insert(out, positionOfInstance(targets[i]))
+	end
+	return out
+end
+
+local function pathsText(list: any, n: number?): string
+	local shown = {}
+	for i, inst in list do
+		if i > (n or 6) then
+			table.insert(shown, string.format("… (+%d)", #list - (n or 6)))
+			break
+		end
+		table.insert(shown, fullName(inst))
+	end
+	return table.concat(shown, ", ")
+end
+
+local function lookOf(p: any, out: { [string]: any })
+	out.color = p.color
+	out.material = p.material
+	return out
+end
+
+local MODELING_OPS = {
+	linear_array = function(M, t, p)
+		local copies = M.linearArray(t, { count = p.count, offset = vec3(p.offset, "offset") })
+		return string.format("%d copii: %s", #copies, pathsText(copies, 3))
+	end,
+	radial_array = function(M, t, p)
+		local copies = M.radialArray(t, { count = p.count, center = vec3(p.center, "center"), radius = p.radius,
+			axis = vec3(p.axis, "axis"), angle = p.angle })
+		return string.format("%d copii în cerc: %s", #copies, pathsText(copies, 3))
+	end,
+	arc_array = function(M, t, p)
+		local copies = M.arcArray(t, { count = p.count, angle = p.angle, axis = p.axis, radius = p.radius, length = p.length })
+		return string.format("%d copii în arc: %s", #copies, pathsText(copies, 3))
+	end,
+	path_array = function(M, t, p)
+		-- the template(s) = targets; the path = params.points, else the positions of the targets after the first one
+		local templates, points = t, nil
+		if p.points ~= nil then
+			points = vecList(p.points, "points")
+		else
+			templates, points = { t[1] }, pointsOf(p, t, 2)
+		end
+		local copies = M.pathArray(templates, points, p.spacing or 4, { align = p.align, tension = p.tension })
+		return string.format("%d copii pe traseu: %s", #copies, pathsText(copies, 3))
+	end,
+	mirror = function(M, t, p)
+		local plane = p.plane or "X"
+		if type(plane) == "table" then
+			plane = { point = vec3(plane.point, "plane.point"), normal = vec3(plane.normal, "plane.normal") }
+		end
+		local out, warnings = M.mirror(t, plane, { copy = p.copy })
+		local text = string.format("Oglindit (%s): %s", p.copy == false and "pe loc" or "copii", pathsText(out))
+		if warnings and #warnings > 0 then
+			text ..= "\nwarnings: " .. table.concat(warnings, " | ")
+		end
+		return text
+	end,
+	triangle_fill = function(M, t, p)
+		local pts = pointsOf(p, t)
+		if #pts ~= 3 then
+			error("triangle_fill are nevoie de exact 3 puncte (points sau 3 ținte).", 0)
+		end
+		local source = (#t > 0 and isA(t[1], "BasePart")) and t[1] or nil
+		local made = M.triangleFill(pts[1], pts[2], pts[3], lookOf(p, { thickness = p.thickness, align = p.align, source = source }))
+		return string.format("%d pene: %s", #made, pathsText(made))
+	end,
+	polygon_fill = function(M, t, p)
+		local source = (#t > 0 and isA(t[1], "BasePart")) and t[1] or nil
+		local made = M.polygonFill(pointsOf(p, t), lookOf(p, { thickness = p.thickness, align = p.align, source = source }))
+		return string.format("%d pene: %s", #made, pathsText(made))
+	end,
+	gap_fill = function(M, t, p)
+		local made
+		if p.edgeA ~= nil and p.edgeB ~= nil then
+			made = M.gapFill(vecList(p.edgeA, "edge_a"), vecList(p.edgeB, "edge_b"), lookOf(p, { thickness = p.thickness }))
+		else
+			if #t ~= 2 then
+				error("gap_fill are nevoie de 2 piese în targets (sau edge_a / edge_b).", 0)
+			end
+			made = M.gapFill(t[1], t[2], lookOf(p, { thickness = p.thickness }))
+		end
+		return string.format("%d piese de umplere: %s", #made, pathsText(made))
+	end,
+	align = function(M, t, p)
+		local target = p.target
+		if type(target) == "string" and target ~= "first" then
+			target = resolve(target) or error(notFound(target), 0)
+		end
+		M.align(t, p.axis or "Y", p.mode or "min", target)
+		return string.format("Aliniat %d obiecte pe %s (%s).", #t, tostring(p.axis or "Y"), tostring(p.mode or "min"))
+	end,
+	distribute = function(M, t, p)
+		M.distribute(t, p.axis or "X", p.mode)
+		return string.format("Distribuit %d obiecte pe %s.", #t, tostring(p.axis or "X"))
+	end,
+	drop_to_surface = function(M, t, p)
+		local moved, missed = M.dropToSurface(t, { alignToNormal = p.alignToNormal, offset = p.offset, maxDistance = p.maxDistance })
+		return string.format("Așezate pe suprafață: %d (fără nimic dedesubt: %d).", #moved, missed or 0)
+	end,
+	snap_to_grid = function(M, t, p)
+		M.snapToGrid(t, p.grid or 1, { rotation = p.rotation })
+		return string.format("Aliniat la grila de %s studs: %d obiecte.", tostring(p.grid or 1), #t)
+	end,
+	extend_to = function(M, t, p)
+		if #t ~= 2 then
+			error("extend_to are nevoie de 2 ținte: piesa care se întinde și ținta.", 0)
+		end
+		local _, dist = M.extendTo(t[1], p.face or "Top", t[2], { mode = p.mode, targetFace = p.targetFace })
+		return string.format("Am întins fața %s a %s cu %s studs.", tostring(p.face or "Top"), fullName(t[1]), round(dist, 3))
+	end,
+	scatter = function(M, t, p)
+		local where
+		if p.region ~= nil then
+			if type(p.region) ~= "table" then
+				error("„region” = { center: [x,y,z], size: [x,y,z] }.", 0)
+			end
+			where = { cframe = CFrame.new(vec3(p.region.center, "region.center") :: Vector3), size = vec3(p.region.size, "region.size") }
+		else
+			where = opTargets(p.surfaces)
+		end
+		local container, report = M.scatter(where, t, { count = p.count, density = p.density, minDistance = p.minDistance,
+			randomRotation = p.randomRotation, scaleRange = p.scaleRange, weights = p.weights, alignToNormal = p.alignToNormal,
+			maxSlope = p.maxSlope, sink = p.sink, seed = p.seed, name = p.name })
+		return string.format("Am împrăștiat %d obiecte în %s (fără suprafață: %d, seed %s).", report.placed, fullName(container),
+			report.missed, tostring(report.seed))
+	end,
+	along_spline = function(M, t, p)
+		local kind = p.kind or "rail"
+		local opts = lookOf(p, { spacing = p.spacing, width = p.width, thickness = p.thickness, height = p.height,
+			diameter = p.diameter, closed = p.closed, tension = p.tension, name = p.name })
+		if kind == "fence" and type(p.params) == "table" then
+			opts.params = paramsOf(p.params)
+		end
+		local made, report = M.alongSpline(kind, pointsOf(p, t), opts)
+		if typeof(made) == "Instance" then
+			return string.format("Am construit %s (%s): %d piese.%s", fullName(made), tostring(kind), report and report.parts or 0,
+				readback(M, made))
+		end
+		return string.format("%d copii pe curbă.", #made)
+	end,
+	merge = function(M, t, p)
+		local union, err = M.merge(t, { keep = p.keep, name = p.name, decor = p.decor })
+		if not union then
+			error(err, 0)
+		end
+		return "Unire: " .. fullName(union)
+	end,
+	subtract = function(M, t, p)
+		if #t < 2 then
+			error("subtract: prima țintă e baza, celelalte taie (cel puțin 2).", 0)
+		end
+		local result, err = M.subtract(t[1], table.move(t, 2, #t, 1, {}), { keepCutters = p.keepCutters })
+		if not result then
+			error(err, 0)
+		end
+		return "Scădere: " .. fullName(result)
+	end,
+	optimize = function(M, t, p)
+		local report = M.optimize(t, { dryRun = p.dryRun, anchorAll = p.anchorAll, canCollideDecor = p.canCollideDecor,
+			castShadowSmall = p.castShadowSmall, decorSize = p.decorSize, shadowSize = p.shadowSize, renderFidelity = p.renderFidelity,
+			collisionFidelityBox = p.collisionFidelityBox })
+		return optimizeText(report, not p.dryRun)
+	end,
+	group = function(M, t, p)
+		return "Grup: " .. fullName(M.group(t, p.name))
+	end,
+}
+local MODELING_OP_NAMES = {}
+for name in MODELING_OPS do
+	table.insert(MODELING_OP_NAMES, name)
+end
+table.sort(MODELING_OP_NAMES)
+
+local POINT_OPS = { triangle_fill = true, polygon_fill = true, along_spline = true }
+
+local function modelingOpTool(input): (boolean, string)
+	local Modeling = modeling()
+	local op = MODELING_OPS[input.op]
+	if not op then
+		return false, "Operație necunoscută „" .. tostring(input.op) .. "”. Există: " .. table.concat(MODELING_OP_NAMES, ", ") .. "."
+	end
+	local p = paramsOf(input.params)
+	local targets
+	if POINT_OPS[input.op] and p.points ~= nil and input.targets == nil then
+		targets = {} -- fills and curves through explicit points need no targets
+	else
+		targets = opTargets(input.targets)
+	end
+	return true, op(Modeling, targets, p)
+end
+
 local function quote(s: any): string
 	return "„" .. tostring(s or "?") .. "”"
 end
@@ -1244,7 +1844,7 @@ local LIST = {
 	{
 		name = "list_animations", label = "Listează animațiile", run = listAnimations,
 		description = "Lists the animations LostCube can generate (generate_animation keys with category, length, loop "
-			.. "and markers), the free Roblox-owned animation packs and emotes of the 📚 Lib tab, the animations already "
+			.. "and markers), the free Roblox-owned animation packs and emotes of the Bibliotecă (library) tab, the animations already "
 			.. "saved in ServerStorage.RBX_ANIMSAVES and the selected rig. Call it before generate_animation.",
 		params = {},
 		summary = function()
@@ -1478,6 +2078,168 @@ local LIST = {
 		},
 		summary = function(input)
 			return tostring(input.summary or "cod Luau")
+		end,
+	},
+	-- 3D modeling (LostCube Modeling): plan -> blockout (generators / spec) -> read back -> fix -> optimize
+	{
+		name = "get_modeling_guide", label = "Citește ghidul de modelare", run = modelingGuide,
+		description = "Returns LostCube's building guide: how to build well in Roblox Studio (phases, scale in studs, budgets, "
+			.. "style), every generator with its parameters, defaults and ranges, and the build spec format. Call it once "
+			.. "before you plan or build anything 3D (houses, stairs, bridges, towers, roads, fences, trees, rocks, "
+			.. "furniture, terrain, whole scenes), then follow it. topic narrows it down when you only need one part again.",
+		params = { { "topic", str("all (default), instructions, generators or spec.", { "all", "instructions", "generators", "spec" }) } },
+		summary = function(input)
+			return "ghidul de modelare" .. (input.topic and input.topic ~= "all" and (" · " .. tostring(input.topic)) or "")
+		end,
+	},
+	{
+		name = "validate_spec", label = "Verifică spec-ul", strict = false, run = validateSpecTool,
+		description = "Checks a build spec (the JSON format of get_modeling_guide) without building anything: every error "
+			.. "named by its place (parts[3].size ...) and the total part count. Call it before build_from_spec when the "
+			.. "spec is long or hand-written, and fix every error it reports.",
+		params = { { "spec", freeObject("The build spec: { name, parts, generators, arrays }."), true } },
+		summary = function(input)
+			local spec = type(input.spec) == "table" and input.spec or {}
+			return quote(spec.name or "spec")
+		end,
+	},
+	{
+		name = "describe_model", label = "Citește modelul", run = describeModelTool,
+		description = "Reads a model (or part, or the selection) back as a compact build spec: every part with size, "
+			.. "position and rotation relative to the pivot, generator-made sub-models as their recipe, plus the readback "
+			.. "summary (bounding box, counts, materials, floating / default-gray / unanchored parts). Call it before you "
+			.. "edit a build you did not just make, and to check a build in detail; model_summary is shorter.",
+		params = {
+			{ "path", str("Full path of the model or part; omit for the current selection.") },
+			{ "max_parts", int("At most this many parts listed (default 80, at most 500; the result is cut to fit).") },
+		},
+		summary = function(input)
+			return tostring(input.path or "selecția")
+		end,
+	},
+	{
+		name = "model_summary", label = "Rezumatul modelului", run = modelSummaryTool,
+		description = "A few lines about a model (or part, or the selection): bounding box, part / mesh / union counts, "
+			.. "materials, anchored and colliding parts, floating parts, default-gray parts, door sizes, a part budget "
+			.. "check, and optionally what an optimize pass would change. Call it after every build step to verify it "
+			.. "before you continue or report success.",
+		params = {
+			{ "path", str("Full path of the model or part; omit for the current selection.") },
+			{ "budget", int("Part budget to check against, e.g. 60 for a house.") },
+			{ "optimize_report", bool("true adds what modeling_op optimize would change (nothing is changed).") },
+		},
+		summary = function(input)
+			return tostring(input.path or "selecția")
+		end,
+	},
+	{
+		name = "generate_model", label = "Generează model", write = true, strict = false, run = generateModelTool,
+		description = "Builds one procedural model as a Model in Workspace (one undo step): building, stairs, fence, bridge, "
+			.. "tower, arch, colonnade, wall (with gate), road, tree, rock, crystals, furniture. Use it for the blockout "
+			.. "and for anything a generator covers instead of placing parts one by one; params and their ranges are in "
+			.. "get_modeling_guide (unknown params are errors, missing ones take defaults). The model stores its recipe, "
+			.. "so regenerate_model can change it later. The result has a readback; check it. Needs the developer's approval.",
+		params = {
+			{ "kind", str("Generator key.", { "building", "stairs", "fence", "bridge", "tower", "arch", "colonnade", "wall",
+				"road", "tree", "rock", "crystals", "furniture" }), true },
+			{ "params", freeObject("Generator parameters, e.g. {\"width\": 24, \"depth\": 20, \"floors\": 2, \"roof\": \"gable\", "
+				.. "\"wallColor\": \"#b8735a\"}.") },
+			{ "position", prop("array", "World position [x, y, z] of the centre of the footprint on the ground; default: in "
+				.. "front of the camera.", { items = Json.object({ type = "number" }) }) },
+			{ "yaw", num("Turn around Y in degrees (0 = the front faces -Z); default: facing the camera.") },
+			{ "name", str("Name of the new Model (default: the generator's label).") },
+			{ "parent", str("Full path of the parent (default Workspace).") },
+		},
+		summary = function(input)
+			return tostring(input.kind) .. (input.name and (" · " .. quote(input.name)) or "")
+				.. (keysOf(input.params) ~= "" and (" · " .. keysOf(input.params)) or "")
+		end,
+	},
+	{
+		name = "regenerate_model", label = "Refă modelul generat", write = true, strict = false, run = regenerateModelTool,
+		description = "Rebuilds a model made by generate_model (or a GEN entry of a spec build) with changed parameters, in "
+			.. "the same place, as one undo step: pass only the params that change. Use it to fix a generated model "
+			.. "(size, floors, colors, style) instead of editing its parts. Needs the developer's approval.",
+		params = {
+			{ "path", str("Full path of the generated Model."), true },
+			{ "params", freeObject("Only the parameters to change, e.g. {\"floors\": 3}."), true },
+		},
+		summary = function(input)
+			return tostring(input.path) .. " · " .. keysOf(input.params)
+		end,
+	},
+	{
+		name = "build_from_spec", label = "Construiește din spec", write = true, strict = false, run = buildFromSpecTool,
+		description = "Builds a whole model from a build spec (parts, generators, arrays; format in get_modeling_guide) as "
+			.. "one Model and one undo step, up to 2000 parts. Use it for a scene or a custom object made of several "
+			.. "generators and details; run validate_spec first for long specs. The result has a readback; check it and "
+			.. "fix the biggest problems before detailing. Needs the developer's approval.",
+		params = {
+			{ "spec", freeObject("The build spec: { name, parts, generators, arrays }."), true },
+			{ "position", prop("array", "World position [x, y, z] of the model origin; default: in front of the camera.",
+				{ items = Json.object({ type = "number" }) }) },
+			{ "yaw", num("Turn around Y in degrees; default: the front (-Z) faces the camera.") },
+			{ "parent", str("Full path of the parent (default Workspace).") },
+		},
+		summary = function(input)
+			local spec = type(input.spec) == "table" and input.spec or {}
+			local counts = {}
+			if type(spec.parts) == "table" then
+				table.insert(counts, #spec.parts .. " piese")
+			end
+			if type(spec.generators) == "table" then
+				table.insert(counts, #spec.generators .. " generatoare")
+			end
+			return quote(spec.name or "Model") .. (#counts > 0 and (" · " .. table.concat(counts, ", ")) or "")
+		end,
+	},
+	{
+		name = "modeling_op", label = "Operație de modelare", write = true, strict = false, run = modelingOpTool,
+		description = "One modeling operation on existing parts / models (one undo step). Use it to repeat, mirror, align, "
+			.. "fill, scatter and combine instead of placing many single parts. targets: full paths (or [\"selection\"], "
+			.. "the default). params by op: linear_array {count, offset:[x,y,z]} (count = total, original included); "
+			.. "radial_array {count, radius | center, axis, angle}; arc_array {count, angle, axis:\"X|Y|Z\", radius}; "
+			.. "path_array {points | targets after the first, spacing, align}; mirror {plane:\"X|Y|Z\", copy}; "
+			.. "triangle_fill / polygon_fill {points | target positions, thickness, align, color, material}; gap_fill "
+			.. "(2 parts) {thickness}; align {axis, mode:min|center|max, target: number | \"first\" | path}; distribute "
+			.. "{axis}; drop_to_surface {align_to_normal, offset}; snap_to_grid {grid, rotation}; extend_to (part, target) "
+			.. "{face, mode:center|outer|inner}; scatter (targets = templates) {surfaces:[paths] | region:{center, size}, "
+			.. "count | density, min_distance, scale_range:[min,max], random_rotation, align_to_normal, seed}; along_spline "
+			.. "{kind:rail|pipe|cable|road|wall|fence, points | target positions, spacing, width, diameter, closed}; merge "
+			.. "{keep}; subtract (first = base) {keep_cutters}; optimize {dry_run, anchor_all, can_collide_decor, "
+			.. "cast_shadow_small}; group {name}. Finish a build with optimize. Needs the developer's approval.",
+		params = {
+			{ "op", str("The operation.", MODELING_OP_NAMES), true },
+			{ "targets", prop("array", "Full paths of the parts / models (order matters for fills, curves, extend_to and "
+				.. "subtract); omit or [\"selection\"] for the Studio selection.", { items = Json.object({ type = "string" }) }) },
+			{ "params", freeObject("Parameters of the operation (see the description).") },
+		},
+		summary = function(input)
+			local targets = type(input.targets) == "table" and input.targets or {}
+			local what = (#targets == 0 or targets[1] == "selection") and "selecția" or string.format("%d ținte", #targets)
+			return tostring(input.op) .. " · " .. what .. (keysOf(input.params) ~= "" and (" · " .. keysOf(input.params)) or "")
+		end,
+	},
+	{
+		name = "place_terrain", label = "Modelează terenul", write = true, run = placeTerrainTool,
+		description = "Shapes smooth Terrain (one undo step): a blob or hill of the given radius, a cave tunnel, a ramp, or "
+			.. "clear (removes terrain in the radius). Use it for the ground of a scene before placing models on it; "
+			.. "then drop models onto it with modeling_op drop_to_surface. Needs the developer's approval.",
+		params = {
+			{ "kind", str("What to make.", TERRAIN_KINDS), true },
+			{ "radius", num("Radius in studs, 4 to 400 (default 16).") },
+			{ "lumps", int("Extra lumps, 0 to 20 (default 4).") },
+			{ "flatten", num("Height relative to the radius for hills, 0.1 to 2 (default 0.6).") },
+			{ "tunnel", num("Tunnel radius of a cave, 2 to 50 (default 5).") },
+			{ "seed", int("Variation seed (same seed = same shape).") },
+			{ "material", str("Terrain material, e.g. Grass, Rock, Sand, Snow, Mud, Ground (default Rock).") },
+			{ "position", prop("array", "World position [x, y, z] of the centre; default: in front of the camera.",
+				{ items = Json.object({ type = "number" }) }) },
+			{ "yaw", num("Turn around Y in degrees.") },
+		},
+		summary = function(input)
+			return tostring(input.kind) .. (input.radius and (" · rază " .. tostring(input.radius)) or "")
+				.. (input.material and (" · " .. tostring(input.material)) or "")
 		end,
 	},
 }

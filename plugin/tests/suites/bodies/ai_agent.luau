@@ -181,7 +181,11 @@ for _, t in b1.tools do
 		end
 	end
 end
-check("s1 strict count", strictCount == #Tools.LIST - 2, strictCount) -- (add_element and set_element_props are not strict)
+local nonStrict = 0 -- tools that take a free-form object (add_element / set_element_props props, modeling params / spec)
+for _, def in Tools.LIST do
+	if def.strict == false then nonStrict += 1 end
+end
+check("s1 strict count", nonStrict >= 2 and strictCount == #Tools.LIST - nonStrict, strictCount)
 check("s1 add_element not strict", byName.add_element.strict == nil and byName.set_element_props.strict == nil)
 check("s1 run_luau strict + required", byName.run_luau.strict == true and #byName.run_luau.input_schema.required == 2)
 check("s1 enum attach", byName.create_effect_from_template.input_schema.properties.attach.enum[1] == "GROUND")
